@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: component-warehouse-backend
+    environment:
+      DATABASE_URL: sqlite:///./data/component_warehouse.db
+      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,https://wxylab.ltd
+      APP_ACCESS_TOKEN: ${APP_ACCESS_TOKEN:-component-warehouse-local-token}
+      APP_PASSWORD: ${APP_PASSWORD:-componentwarehouse}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-wxylab.ltd,*.wxylab.ltd,localhost,127.0.0.1}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-0}
+      LOGIN_RATE_LIMIT_WINDOW: ${LOGIN_RATE_LIMIT_WINDOW:-600}
+      LOGIN_RATE_LIMIT_MAX: ${LOGIN_RATE_LIMIT_MAX:-8}
+      MIMO_API_KEY: ${MIMO_API_KEY:-}
+      MIMO_BASE_URL: ${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}
+      MIMO_MODEL: ${MIMO_MODEL:-mimo-v2.5}
+      MIMO_TIMEOUT_SECONDS: ${MIMO_TIMEOUT_SECONDS:-90}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_BASE: ${VITE_BASE:-/cw/}
+    container_name: component-warehouse-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped
