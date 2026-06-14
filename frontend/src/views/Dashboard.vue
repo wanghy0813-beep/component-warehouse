@@ -205,22 +205,35 @@ function projectMatchStats(project) {
   return matchStats(project)
 }
 
+const chartPalette = ['#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#475569', '#0d9488', '#ea580c', '#6366f1', '#ca8a04', '#be185d', '#0369a1', '#65a30d', '#b91c1c', '#8b5cf6', '#0e7490']
+
 function renderCharts() {
   if (categoryChartRef.value) {
     categoryChart ||= echarts.init(categoryChartRef.value)
+    const stats = (summary.value.category_stats || []).filter((item) => item.value > 0)
     categoryChart.setOption({
-      tooltip: { trigger: 'item' },
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#e5e7eb',
+        borderWidth: 1,
+        formatter: (params) => `<div style="font-weight:600">${params.name}</div><div>${params.value} 种 · ${params.percent}%</div>`,
+      },
       legend: { show: false },
+      color: chartPalette,
       series: [
         {
           type: 'pie',
-          radius: ['52%', '74%'],
+          radius: ['50%', '74%'],
           center: ['50%', '50%'],
           avoidLabelOverlap: true,
-          label: { color: '#475467', formatter: '{b}' },
-          data: summary.value.category_stats || []
-        }
-      ]
+          label: { color: '#475467', fontSize: 11, formatter: '{b}' },
+          labelLine: { length: 12, length2: 8 },
+          emphasis: { scaleSize: 6 },
+          itemStyle: { borderColor: '#fff', borderWidth: 2 },
+          data: stats,
+        },
+      ],
     })
     categoryChart.resize()
   }
@@ -229,7 +242,18 @@ function renderCharts() {
     projectMatchChart ||= echarts.init(projectMatchChartRef.value)
     const projects = projectSnapshots.value.slice(0, 5)
     projectMatchChart.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#e5e7eb',
+        borderWidth: 1,
+        formatter: (params) => {
+          const name = params[0]?.name || ''
+          const lines = params.map((p) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px"></span>${p.seriesName} <b>${p.value}</b>`)
+          return `<div style="font-weight:600;margin-bottom:4px">${name}</div>${lines.join('<br>')}`
+        },
+      },
       grid: { left: 8, right: 8, top: 18, bottom: 4, containLabel: true },
       xAxis: { type: 'value', max: 'dataMax', splitLine: { lineStyle: { color: '#eef2f7' } } },
       yAxis: { type: 'category', data: projects.map((project) => project.name), axisTick: { show: false }, axisLine: { show: false } },
@@ -245,14 +269,22 @@ function renderCharts() {
   if (stockChartRef.value) {
     stockChart ||= echarts.init(stockChartRef.value)
     stockChart.setOption({
-      tooltip: { trigger: 'item' },
-      legend: { bottom: 0, icon: 'circle' },
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#e5e7eb',
+        borderWidth: 1,
+        formatter: (params) => `<div style="font-weight:600">${params.name}</div><div>${params.value} 个 · ${params.percent}%</div>`,
+      },
+      legend: { bottom: 0, icon: 'circle', textStyle: { fontSize: 12 } },
       series: [
         {
           type: 'pie',
-          radius: ['58%', '78%'],
+          radius: ['56%', '78%'],
           center: ['50%', '44%'],
           label: { show: false },
+          emphasis: { scaleSize: 6 },
+          itemStyle: { borderColor: '#fff', borderWidth: 2 },
           data: [
             { name: '可用', value: summary.value.available_quantity || 0, itemStyle: { color: '#22c55e' } },
             { name: '预占', value: summary.value.reserved_quantity || 0, itemStyle: { color: '#3b82f6' } }

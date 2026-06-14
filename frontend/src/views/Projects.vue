@@ -77,7 +77,7 @@
             <div v-if="projectMissingItems.length" class="missing-preview">
               <strong>待采购清单</strong>
               <span v-for="item in projectMissingItems.slice(0, 4)" :key="`${item.source_row}-${item.manufacturer_part || item.description}`">
-                {{ item.manufacturer_part || item.description || item.value || '未命名物料' }}
+                {{ missingItemDisplay(item) }}
               </span>
             </div>
             <div v-if="hasStoredBomMatchBatch" class="match-resume">
@@ -107,7 +107,9 @@
                     <el-tag v-if="item.component.package" size="small">{{ item.component.package }}</el-tag>
                     <el-tag v-if="bomMatchSourceLabel(item)" size="small" :type="bomMatchSourceType(item)">{{ bomMatchSourceLabel(item) }}</el-tag>
                     <el-tag size="small" :type="bomStatusType(item.status)">{{ bomStatusLabel(item.status) }}</el-tag>
+                    <el-tag v-if="componentStatusTag(item.component)" size="small" :type="componentStatusTag(item.component).type" effect="dark">{{ componentStatusTag(item.component).label }}</el-tag>
                     <el-tag v-if="item.component.ai_confidence === 'low'" size="small" type="warning">参数待核对</el-tag>
+                    <el-tag v-if="item.component.ai_status === 'pending' || item.component.ai_status === 'stale'" size="small" type="info" effect="plain">待整理</el-tag>
                   </div>
                 </div>
                 <div class="bom-stock">
@@ -283,13 +285,11 @@
       <el-table :data="activeBomMatchRows" row-key="id" max-height="520" empty-text="当前分栏没有 BOM 行" class="bom-match-table">
         <el-table-column prop="designator" label="位号" min-width="120" />
         <el-table-column prop="required_quantity" label="数量" width="80" />
-        <el-table-column label="BOM 指定" min-width="220">
+        <el-table-column label="BOM 指定" min-width="240">
           <template #default="{ row }">
-            <strong>{{ row.value || row.manufacturer_part || row.supplier_part || '-' }}</strong>
+            <strong class="bom-primary-model">{{ bomPrimaryDisplay(row) }}</strong>
             <div class="muted compact-meta">
-              <span v-if="row.manufacturer_part">型号 {{ row.manufacturer_part }}</span>
-              <span v-if="row.footprint">封装 {{ row.footprint }}</span>
-              <span v-if="row.supplier_part">立创 {{ row.supplier_part }}</span>
+              <span v-for="(part, idx) in bomSecondaryDisplay(row)" :key="idx">{{ part }}</span>
             </div>
           </template>
         </el-table-column>
@@ -989,6 +989,64 @@ function bomRole(item) {
   return componentOneLineUsage(item.component)
 }
 
+function formatBomValue(row) {
+  const raw = String(row?.value || '').trim()
+  if (!raw) return ''
+  if (/[a-zA-Z]/.test(raw)) return raw
+  const num = Number(raw)
+  if (!Number.isFinite(num)) return raw
+  const fp = String(row?.footprint || row?.comment || '').toLowerCase()
+  const comment = String(row?.comment || '').toLowerCase()
+  const hint = `${fp} ${comment}`
+  if (/capacit|电容|pf|nf|µf|uf|mf/.test(hint)) {
+    if (Math.abs(num) >= 1e-3) return `${num * 1e3}mF`
+    if (Math.abs(num) >= 1e-6) return `${num * 1e6}µF`
+    if (Math.abs(num) >= 1e-9) return `${num * 1e9}nF`
+    return `${num * 1e12}pF`
+  }
+  if (/induc|电感|uh|µh|nh|mh/.test(hint)) {
+    if (Math.abs(num) >= 1e-3) return `${num * 1e3}mH`
+    if (Math.abs(num) >= 1e-6) return `${num * 1e6}µH`
+    return `${num * 1e9}nH`
+  }
+  if (Math.abs(num) >= 1e6) return `${num / 1e6}MΩ`
+  if (Math.abs(num) >= 1e3) return `${num / 1e3}kΩ`
+  return `${raw}Ω`
+}
+
+function bomPrimaryDisplay(row) {
+  if (row?.manufacturer_part) return row.manufacturer_part
+  const formatted = formatBomValue(row)
+  if (formatted && formatted !== '-') return formatted
+  return row?.supplier_part || row?.comment || '-'
+}
+
+function bomSecondaryDisplay(row) {
+  const parts = []
+  if (row?.manufacturer_part && row?.value) parts.push(formatBomValue(row))
+  if (row?.footprint) parts.push(row.footprint)
+  if (row?.supplier_part) parts.push(`LCSC ${row.supplier_part}`)
+  if (row?.comment && !parts.some(p => p === row.comment)) parts.push(row.comment)
+  return parts
+}
+
+function missingItemDisplay(item) {
+  if (item?.manufacturer_part) return item.manufacturer_part
+  const formatted = formatBomValue(item)
+  if (formatted && formatted !== '-') return formatted
+  return item?.description || item?.value || '未命名物料'
+}
+
+function componentStatusTag(component) {
+  const status = component?.status
+  if (status === 'pending_purchase') return { label: '待采购', type: 'danger' }
+  if (status === 'pending') return { label: '待验证', type: 'info' }
+  if (status === 'obsolete') return { label: '停用', type: 'info' }
+  if ((component?.quantity || 0) <= 0) return { label: '无库存', type: 'danger' }
+  if ((component?.quantity || 0) <= 5) return { label: '低库存', type: 'warning' }
+  return null
+}
+
 async function handleBomMatchUpload({ file }) {
   matchingBom.value = true
   try {
@@ -1553,6 +1611,14 @@ h4 {
   gap: 8px;
   margin-top: 5px;
   font-size: 12px;
+}
+
+.bom-primary-model {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #101828;
+  line-height: 1.3;
 }
 
 .match-flags,
