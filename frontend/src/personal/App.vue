@@ -1,0 +1,580 @@
+<template>
+  <el-config-provider>
+    <div v-if="checking" class="boot">Loading...</div>
+    <div v-else-if="isPublicRoute" class="standalone-shell">
+      <router-view />
+      <app-footer />
+    </div>
+    <div v-else-if="needsLogin" class="standalone-shell">
+      <auth-panel
+        class="standalone-auth"
+        :eyebrow="BRAND_NAME"
+        title="个人版"
+        subtitle="个人器件库存、项目 BOM 与 AI 工程知识"
+        @authenticated="handleAuthenticated"
+      />
+      <app-footer />
+    </div>
+    <div v-else class="personal-app">
+      <header class="personal-header">
+        <router-link class="personal-brand" to="/">
+          <img v-if="BRAND_SHOW_LOGO" :src="logo" :alt="BRAND_SHORT" />
+          <span><strong>{{ BRAND_NAME }}</strong><small>个人版</small></span>
+        </router-link>
+        <nav class="personal-desktop-nav" aria-label="个人版主导航">
+          <router-link to="/" @click="trackNav('dashboard')"><DataBoard />仪表盘</router-link>
+          <router-link to="/components" @click="trackNav('components')"><Box />元器件</router-link>
+          <router-link to="/coverage" @click="trackNav('coverage')"><Monitor />覆盖图</router-link>
+          <router-link to="/projects" @click="trackNav('projects')"><Files />项目</router-link>
+          <router-link v-if="FEATURE_EDA_ENABLED" to="/eda" @click="trackNav('eda')"><Cpu />EDA 库</router-link>
+          <router-link v-if="isAdmin" to="/admin" @click="trackNav('admin')"><DataAnalysis />管理</router-link>
+          <router-link to="/about" @click="trackNav('more')"><InfoFilled />更多</router-link>
+        </nav>
+        <div class="personal-header-actions">
+          <account-popover
+            v-if="authRequired"
+            :user="currentUser"
+            @logout="handleLogout"
+            @user-updated="handleProfileUpdated"
+          />
+        </div>
+      </header>
+
+      <main class="personal-main">
+        <div class="personal-context">
+          <div>
+            <strong>{{ routeTitle }}</strong>
+            <small>{{ currentUserLabel }}</small>
+          </div>
+        </div>
+        <router-view />
+        <app-footer />
+      </main>
+
+      <nav class="personal-mobile-nav" aria-label="个人版移动导航">
+        <router-link to="/" @click="trackNav('mobile_dashboard')"><DataBoard />仪表盘</router-link>
+        <router-link to="/components" @click="trackNav('mobile_components')"><Box />元器件</router-link>
+        <router-link to="/projects" @click="trackNav('mobile_projects')"><Files />项目</router-link>
+        <router-link v-if="FEATURE_EDA_ENABLED" to="/eda" @click="trackNav('mobile_eda')"><Cpu />EDA</router-link>
+        <router-link to="/about" @click="trackNav('mobile_more')"><InfoFilled />更多</router-link>
+      </nav>
+      <back-to-top @click="trackBackToTop" />
+    </div>
+  </el-config-provider>
+</template>
+
+<script setup>
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from '../shared/elementApi'
+import { useRoute } from 'vue-router'
+import { Box, Cpu, DataAnalysis, DataBoard, Files, InfoFilled, Monitor } from '@element-plus/icons-vue'
+import logo from '../assets/brand-logo.png'
+import { authConfig, getCurrentUser, recordUsageEvent } from '../api/client'
+import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth } from '../api/authSessionApi'
+import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
+import { FEATURE_EDA_ENABLED } from '../shared/features'
+import AuthPanel from '../components/AuthPanel.vue'
+import AccountPopover from '../shared/components/AccountPopover.vue'
+import AppFooter from '../shared/components/AppFooter.vue'
+import BackToTop from '../shared/components/BackToTop.vue'
+import { trackUsage } from '../shared/usageTracker'
+
+const route = useRoute()
+const checking = ref(true)
+const authRequired = ref(true)
+const accessToken = ref(getAuthToken())
+const currentUser = ref(getStoredUser())
+const sessionVerified = ref(false)
+localStorage.removeItem('personal_sidebar_collapsed')
+localStorage.removeItem('cw_sidebar_collapsed')
+
+const isPublicRoute = computed(() => route.path.startsWith('/public/') || route.name === 'personal-scan')
+const needsLogin = computed(() => authRequired.value && (!accessToken.value || !sessionVerified.value))
+const isAdmin = computed(() => Boolean(currentUser.value?.isAdmin || currentUser.value?.is_admin))
+const currentUserLabel = computed(() => {
+  if (!authRequired.value) return '库存优先，AI 辅助选型'
+  const user = currentUser.value
+  if (user?.phone) return `${user.nickname || '用户'} · ${user.phone}`
+  return '已登录'
+})
+const routeTitle = computed(() => {
+  const titles = {
+    '/': 'Dashboard',
+    '/components': '元器件库',
+    '/coverage': '覆盖图',
+    '/projects': '项目',
+    '/eda': 'AD 库与工程资料',
+    '/eda-guide': 'AD 元件库使用说明',
+    '/manual': '使用说明书',
+    '/purchases': '采购与入库',
+    '/risks': '工程风险检查',
+    '/admin': '管理员看板',
+    '/about': '更多'
+  }
+  return titles[route.path] || BRAND_NAME
+})
+
+onMounted(async () => {
+  window.addEventListener('cw-auth-cleared', handleAuthCleared)
+  window.addEventListener('cw-profile-updated', handleProfileEvent)
+  window.addEventListener('cw-native-auth-session', handleNativeAuthSession)
+  try {
+    const config = await authConfig()
+    authRequired.value = config.auth_required
+    if (authRequired.value && accessToken.value) {
+      await refreshCurrentUser()
+    } else if (!authRequired.value) {
+      sessionVerified.value = true
+    }
+  } catch (error) {
+    authRequired.value = true
+    sessionVerified.value = false
+    ElMessage.error('无法验证登录状态，请联网后重试')
+  } finally {
+    checking.value = false
+  }
+})
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (!needsLogin.value && !isPublicRoute.value) {
+      trackUsage(recordUsageEvent, 'ui.page.view', { entry: 'personal-router' })
+    }
+  },
+  { immediate: false }
+)
+
+function trackNav(entry) {
+  trackUsage(recordUsageEvent, 'ui.nav.click', { entry })
+}
+
+function trackBackToTop() {
+  trackUsage(recordUsageEvent, 'ui.back_to_top.click', { entry: 'personal-app' })
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('cw-auth-cleared', handleAuthCleared)
+  window.removeEventListener('cw-profile-updated', handleProfileEvent)
+  window.removeEventListener('cw-native-auth-session', handleNativeAuthSession)
+})
+
+function handleAuthCleared() {
+  accessToken.value = ''
+  currentUser.value = null
+  sessionVerified.value = false
+}
+
+function handleProfileUpdated(user) {
+  currentUser.value = { ...currentUser.value, ...user }
+}
+
+function handleProfileEvent(event) {
+  if (event.detail) handleProfileUpdated(event.detail)
+}
+
+async function handleNativeAuthSession(event) {
+  const session = rememberAuth(event.detail || {})
+  if (!session.token) return
+  await handleAuthenticated(session)
+}
+
+async function handleAuthenticated(data) {
+  accessToken.value = data.token
+  currentUser.value = data.user || null
+  checking.value = true
+  await refreshCurrentUser()
+  checking.value = false
+}
+
+async function refreshCurrentUser() {
+  try {
+    const data = await getCurrentUser()
+    currentUser.value = data.user || null
+    sessionVerified.value = Boolean(currentUser.value)
+    if (currentUser.value) {
+      localStorage.setItem('cw_legacy_user', JSON.stringify(currentUser.value))
+    }
+  } catch (error) {
+    sessionVerified.value = false
+    accessToken.value = ''
+    currentUser.value = null
+  }
+}
+
+async function handleLogout() {
+  await logoutAuthSession()
+  accessToken.value = ''
+  currentUser.value = null
+  sessionVerified.value = false
+}
+
+</script>
+
+<style scoped>
+.boot,
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-page {
+  background: linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.login-shell {
+  width: min(920px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.login-intro,
+.login-card {
+  border: 1px solid var(--cw-border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--cw-shadow);
+}
+
+.login-intro {
+  padding: 36px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.login-mark {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 22px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--cw-accent) 12%, transparent);
+  color: var(--cw-accent);
+}
+
+.login-intro h1 {
+  margin: 0;
+  font-size: clamp(34px, 5vw, 56px);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.login-intro p {
+  max-width: 420px;
+  margin: 18px 0 0;
+  color: var(--cw-muted);
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.login-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 32px;
+}
+
+.login-notes span {
+  padding: 8px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.login-card {
+  padding: 10px;
+}
+
+.login-card-head {
+  margin-bottom: 18px;
+}
+
+.login-card-head strong,
+.login-card-head small {
+  display: block;
+}
+
+.login-card-head strong {
+  font-size: 24px;
+}
+
+.login-card-head small {
+  margin-top: 6px;
+  color: var(--cw-muted);
+}
+
+.login-alert {
+  margin: 16px 0;
+}
+
+.login-button {
+  width: 100%;
+  height: 44px;
+  border-radius: 16px;
+}
+
+.auth-tabs {
+  margin-top: -6px;
+}
+
+.code-button {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 760px) {
+  .login-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .login-intro {
+    padding: 24px;
+  }
+}
+
+.personal-app {
+  min-height: 100vh;
+  background: var(--cw-bg);
+}
+
+.standalone-shell,
+.standalone-auth {
+  min-height: 100vh;
+  background: var(--cw-bg);
+}
+
+.standalone-shell {
+  display: flex;
+  flex-direction: column;
+}
+
+.standalone-shell > :first-child {
+  flex: 1 0 auto;
+}
+
+.personal-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: minmax(230px, auto) minmax(420px, 1fr) auto;
+  gap: 20px;
+  align-items: center;
+  padding: 0 max(20px, calc((100vw - 1280px) / 2));
+  border-bottom: 1px solid var(--cw-border);
+  background: rgba(255, 255, 255, .94);
+  backdrop-filter: blur(18px);
+}
+
+.personal-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.personal-brand img {
+  width: 104px;
+  height: 44px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.personal-brand span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.personal-brand strong {
+  overflow: hidden;
+  color: #9a3412;
+  font-size: 15px;
+  letter-spacing: .03em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-brand small,
+.personal-context small {
+  color: var(--cw-muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.personal-desktop-nav {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.personal-desktop-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 13px;
+  border-radius: var(--cw-radius-control);
+  color: #506866;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.personal-desktop-nav svg {
+  width: 18px;
+  height: 18px;
+}
+
+.personal-desktop-nav a.router-link-exact-active {
+  color: #c2410c;
+  background: #fff7ed;
+  font-weight: 700;
+}
+
+.personal-header-actions {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.personal-main {
+  width: min(1560px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 18px 0 40px;
+}
+
+.personal-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  margin-bottom: 14px;
+  padding: 0 2px;
+}
+
+.personal-context > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.personal-context strong {
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-context small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-mobile-nav {
+  display: none;
+}
+
+@media (max-width: 1040px) {
+  .personal-header {
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+  }
+
+  .personal-brand span {
+    display: none;
+  }
+
+  .personal-desktop-nav a {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 760px) {
+  .personal-header {
+    min-height: 58px;
+    grid-template-columns: 1fr auto;
+    padding: 0 12px;
+  }
+
+  .personal-brand img {
+    width: 88px;
+    height: 38px;
+  }
+
+  .personal-desktop-nav {
+    display: none;
+  }
+
+  .personal-main {
+    width: min(100% - 20px, 1280px);
+    padding: 14px 0 86px;
+  }
+
+  .personal-context {
+    margin-bottom: 10px;
+  }
+
+  .personal-mobile-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 7px max(6px, env(safe-area-inset-left)) calc(7px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--cw-border);
+    background: rgba(255, 255, 255, .96);
+  }
+
+  .personal-mobile-nav a {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    overflow: hidden;
+    color: #71817f;
+    font-size: 11px;
+    line-height: 1.2;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .personal-mobile-nav svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .personal-mobile-nav a.router-link-exact-active {
+    color: #c2410c;
+    font-weight: 700;
+  }
+}
+
+:global(.cw-app-embedded) .personal-header,
+:global(.cw-app-embedded) .personal-mobile-nav,
+:global(.cw-app-embedded) .personal-context {
+  display: none;
+}
+
+:global(.cw-app-embedded) .personal-main {
+  width: 100%;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+}
+</style>

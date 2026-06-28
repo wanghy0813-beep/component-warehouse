@@ -1,0 +1,10 @@
+{
+  "name": "Component Warehouse Team",
+  "short_name": "CW Team",
+  "start_url": "/component-warehouse/team/",
+  "scope": "/component-warehouse/team/",
+  "display": "standalone",
+  "background_color": "#fff7ed",
+  "theme_color": "#f97316",
+  "icons": []
+}

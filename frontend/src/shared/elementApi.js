@@ -1,0 +1,6 @@
+export { ElAlert } from 'element-plus/es/components/alert/index'
+export { ElButton } from 'element-plus/es/components/button/index'
+export { ElInput } from 'element-plus/es/components/input/index'
+export { ElMessage } from 'element-plus/es/components/message/index'
+export { ElMessageBox } from 'element-plus/es/components/message-box/index'
+export { ElNotification } from 'element-plus/es/components/notification/index'

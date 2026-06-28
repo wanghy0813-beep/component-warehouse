@@ -1,0 +1,72 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: component-warehouse-backend
+    environment:
+      DATABASE_URL: sqlite:///./data/component_warehouse.db
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      AUTH_MODE: ${AUTH_MODE:-local-password}
+      ACCOUNT_PROVIDER_LABEL: ${ACCOUNT_PROVIDER_LABEL:-Account V1}
+      ACCOUNT_BASE_URL: ${ACCOUNT_BASE_URL:-}
+      ACCOUNT_SERVICE_CLIENT_ID: ${ACCOUNT_SERVICE_CLIENT_ID:-componentwarehouse-service}
+      ACCOUNT_WEB_CLIENT_ID: ${ACCOUNT_WEB_CLIENT_ID:-componentwarehouse-web}
+      ACCOUNT_CLIENT_SECRET: ${ACCOUNT_CLIENT_SECRET:-}
+      LOCAL_AUTH_SECRET: ${LOCAL_AUTH_SECRET:-}
+      LOCAL_AUTH_ALLOW_REGISTRATION: ${LOCAL_AUTH_ALLOW_REGISTRATION:-1}
+      ADMIN_PHONE_NUMBERS: ${ADMIN_PHONE_NUMBERS:-}
+      APP_BRAND_NAME: ${APP_BRAND_NAME:-Component Warehouse}
+      APP_BACKUP_NAME: ${APP_BACKUP_NAME:-component-warehouse}
+      APP_SHOW_BRAND_LOGO: ${APP_SHOW_BRAND_LOGO:-0}
+      FEATURE_EDA_ENABLED: ${FEATURE_EDA_ENABLED:-0}
+      AUTH_VERIFY_CACHE_SECONDS: ${AUTH_VERIFY_CACHE_SECONDS:-60}
+      AUTH_OUTAGE_GRACE_SECONDS: ${AUTH_OUTAGE_GRACE_SECONDS:-1800}
+      AUTH_HTTP_TIMEOUT_SECONDS: ${AUTH_HTTP_TIMEOUT_SECONDS:-8}
+      TEAM_INVITE_SECRET: ${TEAM_INVITE_SECRET:-}
+      PUBLIC_TEAM_BASE_URL: ${PUBLIC_TEAM_BASE_URL:-http://localhost:8080/component-warehouse/team}
+      TEAM_MEDIA_ROOT: /app/data/contest-media
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-0}
+      PUBLIC_PERSONAL_BASE_URL: ${PUBLIC_PERSONAL_BASE_URL:-http://localhost:8080/component-warehouse/personal}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-gpt-compatible-model}
+      MIMO_API_KEY: ${MIMO_API_KEY:-}
+      MIMO_BASE_URL: ${MIMO_BASE_URL:-}
+      MIMO_MODEL: ${MIMO_MODEL:-gpt-compatible-model}
+      MIMO_TIMEOUT_SECONDS: ${MIMO_TIMEOUT_SECONDS:-90}
+      FOREGROUND_AI_WORKERS: ${FOREGROUND_AI_WORKERS:-2}
+      AI_WORKER_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-1}
+      CUSTOM_LABEL_STORAGE_ROOT: ${CUSTOM_LABEL_STORAGE_ROOT:-/app/data/custom-labels}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_BRAND_NAME: ${VITE_BRAND_NAME:-Component Warehouse}
+        VITE_BRAND_SHORT: ${VITE_BRAND_SHORT:-Component Warehouse}
+        VITE_BRAND_PERSONAL_TITLE: ${VITE_BRAND_PERSONAL_TITLE:-Component Warehouse · Personal}
+        VITE_BRAND_TEAM_TITLE: ${VITE_BRAND_TEAM_TITLE:-Component Warehouse · Team}
+        VITE_BRAND_SHOW_LOGO: ${VITE_BRAND_SHOW_LOGO:-0}
+        VITE_FEATURE_EDA_ENABLED: ${VITE_FEATURE_EDA_ENABLED:-0}
+    container_name: component-warehouse-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped

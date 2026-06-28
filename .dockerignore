@@ -1,0 +1,10 @@
+.git
+data
+frontend/node_modules
+frontend/dist
+tools/ad-sync/bin
+tools/ad-sync/obj
+backend/.pytest_cache
+backend/**/__pycache__
+*.pyc
+.DS_Store

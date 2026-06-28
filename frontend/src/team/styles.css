@@ -1,0 +1,153 @@
+:root {
+  --el-color-primary: #f97316;
+  --el-color-primary-light-3: #fb923c;
+  --el-color-primary-light-5: #fdba74;
+  --el-color-primary-light-7: #fed7aa;
+  --el-color-primary-light-9: #fff7ed;
+  --el-color-primary-dark-2: #ea580c;
+  --app-radius-card: 16px;
+  --app-radius-control: 16px;
+  --cw-radius-card: 16px;
+  --cw-radius-control: 16px;
+  --cw-radius-chip: 999px;
+  color: #17202a;
+  background: #f8fafc;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: #f8fafc; }
+button, .el-button, .el-input__wrapper, .el-select__wrapper { border-radius: var(--app-radius-control); }
+.el-dialog, .el-drawer { --el-border-radius-small: var(--app-radius-card); }
+a { color: inherit; text-decoration: none; }
+
+.team-boot {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: #475467;
+}
+
+.team-app { min-height: 100vh; }
+
+.team-standalone-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+}
+
+.team-standalone-shell > :first-child {
+  flex: 1 0 auto;
+}
+
+.team-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 66px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 24px;
+  align-items: center;
+  padding: 0 max(20px, calc((100vw - 1280px) / 2));
+  background: rgba(255, 255, 255, .94);
+  border-bottom: 1px solid rgba(20, 132, 116, .14);
+  backdrop-filter: blur(18px);
+}
+
+.team-brand { display: flex; align-items: center; gap: 10px; }
+.team-brand img { width: 104px; height: 44px; object-fit: contain; object-position: center; }
+.team-brand span { display: flex; flex-direction: column; }
+.team-brand strong { letter-spacing: .04em; color: #9a3412; }
+.team-brand small { color: #6b7f7d; }
+
+.desktop-nav { display: flex; justify-content: center; gap: 8px; }
+.desktop-nav a {
+  padding: 9px 16px;
+  border-radius: var(--app-radius-control);
+  color: #506866;
+}
+.desktop-nav a.router-link-active { color: #c2410c; background: #fff7ed; font-weight: 700; }
+
+.header-actions { display: flex; align-items: center; gap: 10px; color: #607572; font-size: 14px; }
+.team-main { width: min(1280px, calc(100vw - 32px)); margin: 0 auto; padding: 22px 0 40px; }
+.mobile-nav { display: none; }
+
+.team-page { display: flex; flex-direction: column; gap: 16px; }
+.team-page-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 20px; border-radius: var(--app-radius-card); background: linear-gradient(120deg, #f8fafc, #ffffff 68%); border: 1px solid #e2e8f0; }
+.team-page-head h1 { margin: 0; font-size: 26px; color: #17202a; }
+.team-page-head p { margin: 6px 0 0; color: #71817f; }
+.team-panel {
+  padding: 16px;
+  border: 1px solid rgba(20, 132, 116, .13);
+  border-radius: var(--app-radius-card);
+  background: white;
+  box-shadow: 0 8px 28px rgba(38, 78, 73, .06);
+}
+.team-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.team-toolbar .el-button + .el-button,
+.detail-actions .el-button + .el-button,
+.import-actions .el-button + .el-button,
+.profile-actions .el-button + .el-button,
+.marker-head .el-button + .el-button {
+  margin-left: 0;
+}
+.library-grid, .pcb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.library-card { position: relative; overflow: hidden; cursor: pointer; transition: transform .16s ease, box-shadow .16s ease; border-top: 4px solid #f97316; }
+.library-card::after { content: ""; position: absolute; width: 120px; height: 120px; right: -45px; top: -55px; border-radius: 50%; background: rgba(24, 165, 143, .08); }
+.library-card.tone-1 { border-top-color: #4b75df; }
+.library-card.tone-1::after { background: rgba(75, 117, 223, .09); }
+.library-card.tone-2 { border-top-color: #e59a2f; }
+.library-card.tone-2::after { background: rgba(229, 154, 47, .1); }
+.library-card.tone-3 { border-top-color: #b65bc5; }
+.library-card.tone-3::after { background: rgba(182, 91, 197, .09); }
+.library-card:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(38, 78, 73, .1); }
+.muted { color: #7a8c89; font-size: 13px; }
+.empty-state { padding: 50px 20px; text-align: center; color: #70827f; }
+.readonly-banner { border-radius: var(--cw-radius-control); }
+.image-placeholder { display: grid; place-items: center; min-height: 150px; color: #8aa09d; background: #edf5f3; border-radius: var(--cw-radius-control); }
+
+@media (max-width: 900px) {
+  .library-grid, .pcb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .team-header { padding: 0 16px; }
+}
+
+@media (max-width: 680px) {
+  .team-header { height: 58px; grid-template-columns: 1fr auto; }
+  .team-brand span, .header-actions > span, .desktop-nav { display: none; }
+  .team-brand img { width: 88px; height: 38px; }
+  .team-main { width: min(100% - 20px, 1280px); padding: 14px 0 86px; }
+  .team-page-head { align-items: stretch; flex-direction: column; }
+  .team-page-head > .team-toolbar { width: 100%; }
+  .team-page-head > .team-toolbar .el-button { flex: 1 1 140px; margin-left: 0; }
+  .library-grid, .pcb-grid { grid-template-columns: 1fr; }
+  .mobile-nav {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 7px max(8px, env(safe-area-inset-left)) calc(7px + env(safe-area-inset-bottom));
+    background: rgba(255,255,255,.96);
+    border-top: 1px solid rgba(20, 132, 116, .16);
+  }
+  .mobile-nav a { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; overflow: hidden; font-size: 11px; color: #71817f; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-nav svg { width: 22px; }
+.mobile-nav a.router-link-active { color: #c2410c; font-weight: 700; }
+  .team-panel { padding: 12px; border-radius: 16px; }
+}
+
+.cw-app-embedded .team-header,
+.cw-app-embedded .mobile-nav {
+  display: none;
+}
+
+.cw-app-embedded .team-main {
+  width: 100%;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+}
