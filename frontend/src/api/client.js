@@ -8,6 +8,7 @@ export const api = axios.create({
 })
 
 api.interceptors.request.use(async (config) => {
+  if (String(config.url || '').endsWith('/auth/config')) return config
   const token = await getValidAuthToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
@@ -98,12 +99,15 @@ export const exportComponentInventory = () =>
   api.get('/components/export/inventory.xlsx', { responseType: 'blob' }).then((response) => response.data)
 
 export async function exportComponentLabelSheet(ids = [], exportAll = false, options = {}) {
-  const { data } = await api.post('/components/export/label-sheet', { ids, all: exportAll, ...options }, { responseType: 'blob' })
+  const { data } = await api.post('/components/export/label-sheet', { ids, all: exportAll, output_format: 'pdf', ...options }, { responseType: 'blob' })
   return data
 }
 
 export const listCustomLabels = () =>
   api.get('/custom-labels').then((response) => response.data)
+
+export const getCustomLabelCategorySummary = () =>
+  api.get('/custom-labels/category-summary').then((response) => response.data)
 
 export const createCustomLabel = (payload) =>
   api.post('/custom-labels', payload).then((response) => response.data)

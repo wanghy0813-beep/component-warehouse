@@ -27,6 +27,15 @@ def test_mobile_scan_resolve_personal_and_ambiguity(team_env):
     )
     assert resolved.status_code == 200
     assert resolved.json()["component"]["id"] == "SEN-00000088"
+    for value in [
+        "https://example.test/component-warehouse/personal/scan/SEN-00000088/?from=label",
+        "/component-warehouse/personal/scan/SEN-00000088",
+        "personal/scan/SEN-00000088",
+        "SEN-00000088",
+    ]:
+        variant = client.post("/api/mobile/v1/resolve", json={"value": value})
+        assert variant.status_code == 200
+        assert variant.json()["component"]["id"] == "SEN-00000088"
 
     db = Session()
     db.add(

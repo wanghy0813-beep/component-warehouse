@@ -1,11 +1,11 @@
 <template>
   <el-config-provider>
-    <div v-if="checking" class="boot">Loading...</div>
-    <div v-else-if="isPublicRoute" class="standalone-shell">
+    <div v-if="checking" class="boot notranslate" lang="zh-CN" translate="no">正在加载...</div>
+    <div v-else-if="isPublicRoute" class="standalone-shell notranslate" lang="zh-CN" translate="no">
       <router-view />
       <app-footer />
     </div>
-    <div v-else-if="needsLogin" class="standalone-shell">
+    <div v-else-if="needsLogin" class="standalone-shell notranslate" lang="zh-CN" translate="no">
       <auth-panel
         class="standalone-auth"
         :eyebrow="BRAND_NAME"
@@ -15,9 +15,10 @@
       />
       <app-footer />
     </div>
-    <div v-else class="personal-app">
+    <div v-else class="personal-app notranslate" lang="zh-CN" translate="no">
       <header class="personal-header">
         <router-link class="personal-brand" to="/">
+          <img class="brand-icon" :src="appIcon" alt="" />
           <img v-if="BRAND_SHOW_LOGO" :src="logo" :alt="BRAND_SHORT" />
           <span><strong>{{ BRAND_NAME }}</strong><small>个人版</small></span>
         </router-link>
@@ -66,20 +67,23 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from '../shared/elementApi'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Box, Cpu, DataAnalysis, DataBoard, Files, InfoFilled, Monitor } from '@element-plus/icons-vue'
 import logo from '../assets/brand-logo.png'
+import appIcon from '../assets/generated/cw-app-icon.png'
 import { authConfig, getCurrentUser, recordUsageEvent } from '../api/client'
-import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth } from '../api/authSessionApi'
+import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth, setupAuthActivityTracking } from '../api/authSessionApi'
 import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
 import AuthPanel from '../components/AuthPanel.vue'
 import AccountPopover from '../shared/components/AccountPopover.vue'
 import AppFooter from '../shared/components/AppFooter.vue'
 import BackToTop from '../shared/components/BackToTop.vue'
+import { setupPwaInstallPrompt } from '../shared/pwaInstall'
 import { trackUsage } from '../shared/usageTracker'
 
 const route = useRoute()
+const router = useRouter()
 const checking = ref(true)
 const authRequired = ref(true)
 const accessToken = ref(getAuthToken())
@@ -88,7 +92,7 @@ const sessionVerified = ref(false)
 localStorage.removeItem('personal_sidebar_collapsed')
 localStorage.removeItem('cw_sidebar_collapsed')
 
-const isPublicRoute = computed(() => route.path.startsWith('/public/') || route.name === 'personal-scan')
+const isPublicRoute = computed(() => route.path.startsWith('/public/') || route.name === 'personal-scan' || route.name === 'auth-callback')
 const needsLogin = computed(() => authRequired.value && (!accessToken.value || !sessionVerified.value))
 const isAdmin = computed(() => Boolean(currentUser.value?.isAdmin || currentUser.value?.is_admin))
 const currentUserLabel = computed(() => {
@@ -115,6 +119,8 @@ const routeTitle = computed(() => {
 })
 
 onMounted(async () => {
+  setupPwaInstallPrompt()
+  setupAuthActivityTracking()
   window.addEventListener('cw-auth-cleared', handleAuthCleared)
   window.addEventListener('cw-profile-updated', handleProfileEvent)
   window.addEventListener('cw-native-auth-session', handleNativeAuthSession)
@@ -185,6 +191,7 @@ async function handleAuthenticated(data) {
   checking.value = true
   await refreshCurrentUser()
   checking.value = false
+  if (!isPublicRoute.value && route.path !== '/') router.replace('/')
 }
 
 async function refreshCurrentUser() {
@@ -349,16 +356,17 @@ async function handleLogout() {
 .standalone-shell,
 .standalone-auth {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--cw-bg);
 }
 
 .standalone-shell {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .standalone-shell > :first-child {
-  flex: 1 0 auto;
+  min-height: 0;
 }
 
 .personal-header {
@@ -390,6 +398,12 @@ async function handleLogout() {
   height: 44px;
   flex: 0 0 auto;
   object-fit: contain;
+}
+
+.personal-brand .brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
 }
 
 .personal-brand span {
@@ -513,6 +527,11 @@ async function handleLogout() {
   .personal-brand img {
     width: 88px;
     height: 38px;
+  }
+
+  .personal-brand .brand-icon {
+    width: 34px;
+    height: 34px;
   }
 
   .personal-desktop-nav {

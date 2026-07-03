@@ -3,6 +3,7 @@ import { FEATURE_EDA_ENABLED } from '../shared/features'
 
 const routes = [
   { path: '/', name: 'libraries', component: () => import('./views/Libraries.vue') },
+  { path: '/auth/callback', name: 'team-auth-callback', meta: { authCallback: true }, component: () => import('../shared/views/AuthCallback.vue') },
   { path: '/join/:token', name: 'join', meta: { publicJoin: true }, component: () => import('./views/Join.vue') },
   {
     path: '/scan/:libraryId/:itemId',
@@ -13,6 +14,7 @@ const routes = [
     })
   },
   { path: '/library/:libraryId/components', name: 'team-components', component: () => import('./views/Components.vue') },
+  { path: '/library/:libraryId/labels', name: 'team-custom-labels', component: () => import('./views/CustomLabels.vue') },
   { path: '/library/:libraryId/pcbs', name: 'team-pcbs', component: () => import('./views/Pcbs.vue') },
   { path: '/library/:libraryId/projects', name: 'team-projects', component: () => import('./views/Projects.vue') },
   { path: '/library/:libraryId/manual', name: 'team-manual', component: () => import('../shared/views/UserManual.vue') },

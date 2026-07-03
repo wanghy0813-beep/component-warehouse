@@ -7,6 +7,8 @@ const target = process.env.VITE_APP_TARGET || 'personal'
 const isTeam = target === 'team'
 const personalTitle = process.env.VITE_BRAND_PERSONAL_TITLE || 'Component Warehouse · Personal'
 const teamTitle = process.env.VITE_BRAND_TEAM_TITLE || 'Component Warehouse · Team'
+const personalAppName = process.env.VITE_PWA_PERSONAL_NAME || 'WXY LAB 器件管理'
+const teamAppName = process.env.VITE_PWA_TEAM_NAME || 'WXY LAB 器件管理团队版'
 const elementName = (name) => name
   .replace(/^El/, '')
   .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
@@ -64,11 +66,15 @@ export default defineConfig({
       transformIndexHtml: {
         order: 'pre',
         handler(html) {
-          const titledHtml = html.replace('<title>Component Warehouse · Personal</title>', `<title>${isTeam ? teamTitle : personalTitle}</title>`)
+          const appName = isTeam ? teamAppName : personalAppName
+          const titledHtml = html
+            .replace('<title>Component Warehouse · Personal</title>', `<title>${isTeam ? teamTitle : personalTitle}</title>`)
+            .replace('<meta name="application-name" content="Component Warehouse" />', `<meta name="application-name" content="${appName}" />`)
+            .replace('<meta name="apple-mobile-web-app-title" content="Component Warehouse" />', `<meta name="apple-mobile-web-app-title" content="${appName}" />`)
           if (!isTeam) return titledHtml
           return titledHtml
             .replace('/src/personal/main.js', '/src/team/main.js')
-            .replace('</head>', `  <link rel="manifest" href="${TEAM_BASE}team-manifest.webmanifest" />\n  <meta name="theme-color" content="#F97316" />\n</head>`)
+            .replace(`${TEAM_BASE}manifest.webmanifest`, `${TEAM_BASE}team-manifest.webmanifest`)
         }
       }
     }

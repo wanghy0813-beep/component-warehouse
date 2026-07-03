@@ -1,0 +1,20 @@
+[Unit]
+Description=Component Warehouse backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ComponentWarehouse/backend
+EnvironmentFile=/etc/component-warehouse/backend.env
+ExecStart=/opt/ComponentWarehouse/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18080
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

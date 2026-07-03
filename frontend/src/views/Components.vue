@@ -10,7 +10,7 @@
         <el-upload :show-file-list="false" accept=".xlsx,.xls" :http-request="handleExcelUpload">
           <el-button :icon="Upload">导入立创订单</el-button>
         </el-upload>
-        <el-button :icon="Camera" @click="scannerVisible = true">扫码查找</el-button>
+        <el-button :icon="Camera" @click="openScanner()">扫码查找</el-button>
         <el-popover placement="bottom-end" trigger="click" width="220" popper-class="cw-more-popover">
           <template #reference>
             <el-button :icon="MoreFilled">更多操作</el-button>
@@ -117,6 +117,8 @@
       title="扫描二维码查找个人器件"
       :resolve-batch="resolvePersonalScanBatch"
       :search-candidates="searchPersonalScanCandidates"
+      :initial-expected-code="scannerTarget?.warehouse_code || ''"
+      :initial-expected-label="scannerTarget ? componentDisplayTitle(scannerTarget) : ''"
       @select="openScannedComponent"
     />
 
@@ -127,18 +129,6 @@
       :category-options="categories"
       :custom-label-templates="customLabels"
       @export="runLabelExport"
-    />
-
-    <custom-label-dialog
-      v-model="customLabelDialog"
-      :templates="customLabels"
-      :saving="customLabelSaving"
-      :save-template="savePersonalCustomLabel"
-      :archive-template="archivePersonalCustomLabel"
-      :upload-asset="uploadPersonalCustomLabelAsset"
-      :load-asset="loadPersonalCustomLabelAsset"
-      :export-sheet="exportPersonalCustomLabelSheet"
-      @refresh="loadCustomLabels"
     />
 
     <el-drawer v-model="drawerVisible" :title="drawerTitle" size="700px">
@@ -166,6 +156,7 @@
             <div class="detail-links">
               <el-button size="small" type="primary" plain :icon="CopyDocument" @click="copyComponentName(selected)">复制型号</el-button>
               <el-button size="small" type="primary" plain @click="openComponentLabel(selected)">二维码标签</el-button>
+              <el-button size="small" type="primary" plain :icon="Camera" @click="openScannerForSelected">扫码定位此器件</el-button>
               <el-button size="small" type="primary" plain @click="openLcsc(selected)">立创搜索</el-button>
               <el-button v-if="selected.datasheet_url" size="small" plain @click="windowOpen(selected.datasheet_url)">数据手册</el-button>
               <el-button size="small" type="danger" plain @click="removeSelectedComponent">移除记录</el-button>
@@ -447,34 +438,29 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from '../shared/elementApi'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Camera, CopyDocument, MoreFilled, Picture, Plus, Search, Upload } from '@element-plus/icons-vue'
 import InventoryComponentCard from '../components/inventory/InventoryComponentCard.vue'
 import InventoryComponentDetail from '../components/inventory/InventoryComponentDetail.vue'
 import MultiQrScanner from '../shared/components/MultiQrScanner.vue'
 import LabelExportDialog from '../shared/components/LabelExportDialog.vue'
-import CustomLabelDialog from '../shared/components/CustomLabelDialog.vue'
 import {
   commitExcel,
   commitExternalOrder,
   askComponentAi,
   aiComponentInfo,
-  createCustomLabel,
   createComponentLot,
-  deleteCustomLabel,
   deleteComponent,
   decrementComponentQuantity,
   downloadExternalOrderTemplate,
   exportComponentIdTable,
   exportComponentInventory,
   exportComponentLabelSheet,
-  exportCustomLabelSheet,
   incrementComponentQuantity,
   getCategories,
   getComponentAi,
   getComponentLots,
   getComponentUsageRecords,
-  getCustomLabelAssetBlob,
   getGroupedComponentsPage,
   getOrderImportBatches,
   getSearchSuggestions,
@@ -489,12 +475,10 @@ import {
   searchPersonalScanCandidates,
   rollbackOrderImportBatch,
   saveComponent,
-  updateCustomLabel,
-  uploadCustomLabelAsset,
   undoLatestComponentAi
 } from '../api/client'
 import { componentOneLineUsage, componentUnitHints, extractComponentChips, makeLcscSearchUrl, normalizeToken, splitTags } from '../utils/componentUi'
-import { uniqueDisplayParts } from '../shared/componentDisplay'
+import { componentDisplayTitle, uniqueDisplayParts } from '../shared/componentDisplay'
 import { listEdaBindings, listSupplierParts } from '../shared/engineeringApi'
 import { trackUsage } from '../shared/usageTracker'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
@@ -520,13 +504,12 @@ const imagePreviewRows = ref([])
 const externalPreviewRows = ref([])
 const drawerVisible = ref(false)
 const scannerVisible = ref(false)
+const scannerTarget = ref(null)
 const labelDialog = ref(false)
 const labelExporting = ref(false)
 const labelExportMode = ref('all')
 const labelSingleId = ref(null)
-const customLabelDialog = ref(false)
 const customLabels = ref([])
-const customLabelSaving = ref(false)
 const selected = ref(null)
 const knowledgeCards = ref([])
 const usageRecords = ref([])
@@ -546,6 +529,7 @@ const inventoryChannel = 'BroadcastChannel' in window ? new BroadcastChannel('cw
 const editing = ref(false)
 const collapsedGroups = ref(new Set())
 const route = useRoute()
+const router = useRouter()
 const searchSuggestion = ref(null)
 const pagination = reactive({ page: 1, pageSize: 60, total: 0 })
 const categoryPaging = reactive({ page: 1, pageSize: 3, categoryTotal: 0, hasMore: false })
@@ -1040,8 +1024,7 @@ async function runLabelExport(options) {
 }
 
 async function openCustomLabelDialog() {
-  await loadCustomLabels()
-  customLabelDialog.value = true
+  router.push({ name: 'custom-labels' })
 }
 
 async function loadCustomLabels() {
@@ -1050,37 +1033,6 @@ async function loadCustomLabels() {
   } catch {
     customLabels.value = []
   }
-}
-
-async function savePersonalCustomLabel(payload) {
-  customLabelSaving.value = true
-  try {
-    const body = { name: payload.name || '自定义标签', content: payload.content || {} }
-    const saved = payload.id ? await updateCustomLabel(payload.id, body) : await createCustomLabel(body)
-    await loadCustomLabels()
-    return saved
-  } finally {
-    customLabelSaving.value = false
-  }
-}
-
-async function archivePersonalCustomLabel(id) {
-  await deleteCustomLabel(id)
-  await loadCustomLabels()
-}
-
-async function uploadPersonalCustomLabelAsset(id, file) {
-  const asset = await uploadCustomLabelAsset(id, file)
-  await loadCustomLabels()
-  return asset
-}
-
-async function loadPersonalCustomLabelAsset(assetId) {
-  return getCustomLabelAssetBlob(assetId)
-}
-
-async function exportPersonalCustomLabelSheet(payload) {
-  return exportCustomLabelSheet(payload)
 }
 
 function normalizeKeySpec(item) {
@@ -1417,6 +1369,16 @@ function openScannedComponent(component) {
     ...component,
     id: component.component_id
   }))
+}
+
+function openScanner(target = null) {
+  scannerTarget.value = target
+  scannerVisible.value = true
+}
+
+function openScannerForSelected() {
+  if (!selected.value) return
+  openScanner(selected.value)
 }
 
 async function loadUsage(limit = 20) {

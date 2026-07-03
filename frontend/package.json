@@ -9,6 +9,7 @@
     "build:personal": "VITE_APP_TARGET=personal vite build",
     "build:team": "VITE_APP_TARGET=team vite build",
     "check:copy": "python3 ../scripts/check_copy.py",
+    "test": "npm run test:frontend",
     "test:frontend": "node --test tests/*.test.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },

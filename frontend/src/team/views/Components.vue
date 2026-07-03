@@ -6,7 +6,7 @@
         <p>团队器件实时读取来源成员的个人版库存，并共享位置、标记与备注。</p>
       </div>
       <div class="team-toolbar">
-        <el-button :icon="Camera" @click="scannerVisible = true">扫码查找</el-button>
+        <el-button :icon="Camera" @click="openScanner()">扫码查找</el-button>
         <el-button @click="exportTeamInventory">导出库存 XLSX</el-button>
         <el-button v-if="isCaptain" @click="exportAllTeamLabels">导出全库二维码</el-button>
         <el-button @click="openCustomLabelDialog">自定义标签</el-button>
@@ -109,6 +109,7 @@
           <div class="detail-actions">
             <el-button v-if="selected.warehouse_code" plain @click="copyText(selected.warehouse_code, '器件 ID')">复制器件 ID</el-button>
             <el-button v-if="selected.lcsc_number" plain @click="copyText(selected.lcsc_number, '立创 ID')">复制立创 ID</el-button>
+            <el-button plain :icon="Camera" @click="openScannerForSelected">扫码定位此器件</el-button>
             <el-button v-if="selected.datasheet_url" @click="openUrl(selected.datasheet_url)">数据手册</el-button>
             <el-dropdown trigger="click" @command="handleDetailCommand">
               <el-button circle :icon="MoreFilled" aria-label="更多操作" />
@@ -305,6 +306,8 @@
       title="扫描二维码查找团队器件"
       :resolve-batch="resolveCurrentTeamScanBatch"
       :search-candidates="searchCurrentTeamScanCandidates"
+      :initial-expected-code="scannerTarget?.warehouse_code || scannerTarget?.id || ''"
+      :initial-expected-label="scannerTarget ? componentDisplayTitle(scannerTarget) : ''"
       @select="openScannedComponent"
     />
     <label-export-dialog
@@ -315,17 +318,6 @@
       :category-options="categoryOptions"
       :custom-label-templates="customLabels"
       @export="runTeamLabelExport"
-    />
-    <custom-label-dialog
-      v-model="customLabelDialog"
-      :templates="customLabels"
-      :saving="customLabelSaving"
-      :save-template="saveTeamCustomLabel"
-      :archive-template="archiveTeamCustomLabel"
-      :upload-asset="uploadTeamCustomLabelFile"
-      :load-asset="loadTeamCustomLabelFile"
-      :export-sheet="exportTeamCustomLabelFile"
-      @refresh="loadCustomLabels"
     />
   </section>
 </template>
@@ -339,23 +331,19 @@ import InventoryComponentCard from '../../components/inventory/InventoryComponen
 import InventoryComponentDetail from '../../components/inventory/InventoryComponentDetail.vue'
 import MultiQrScanner from '../../shared/components/MultiQrScanner.vue'
 import LabelExportDialog from '../../shared/components/LabelExportDialog.vue'
-import CustomLabelDialog from '../../shared/components/CustomLabelDialog.vue'
 import {
   bulkAddComponents,
   askTeamComponentAi,
   aiComponentInfo,
-  createTeamCustomLabel,
   teamImportTemplateUrl,
   createTeamComponentLot,
   createComponentMarker,
   createComponent,
   deleteComponent,
-  deleteTeamCustomLabel,
   deleteComponentMarker,
   decrementTeamComponentQuantity,
   exportTeamComponentLabels,
   exportTeamComponentInventory,
-  exportTeamCustomLabelSheet,
   getLibrary,
   getTeamScannedComponent,
   importComponents,
@@ -363,7 +351,6 @@ import {
   listTeamComponentLots,
   listComponents,
   listTeamComponentUsage,
-  getTeamCustomLabelAssetBlob,
   recordTeamUsageEvent,
   rebindComponent,
   resolveCwCode,
@@ -373,9 +360,7 @@ import {
   searchTeamScanCandidates,
   updateComponent,
   updateComponentMarker,
-  updateComponentQuantity,
-  updateTeamCustomLabel,
-  uploadTeamCustomLabelAsset
+  updateComponentQuantity
 } from '../api'
 import { clearLibrarySnapshots, readSnapshot, writeSnapshot } from '../cache'
 import { teamState } from '../store'
@@ -453,11 +438,10 @@ const quantityForm = reactive({ quantity: 0, remark: '' })
 const markerDialog = ref(false)
 const markerSaving = ref(false)
 const scannerVisible = ref(false)
+const scannerTarget = ref(null)
 const labelDialog = ref(false)
 const labelExporting = ref(false)
-const customLabelDialog = ref(false)
 const customLabels = ref([])
-const customLabelSaving = ref(false)
 const markerColors = TEAM_MARKER_COLORS
 const markerForm = reactive({ id: '', category: '', color: DEFAULT_TEAM_MARKER_COLOR, flagged: false, note: '' })
 const categoryOptions = ref([])
@@ -826,14 +810,23 @@ function openScannedComponent(component) {
   openDetail(current || component)
 }
 
+function openScanner(target = null) {
+  scannerTarget.value = target
+  scannerVisible.value = true
+}
+
+function openScannerForSelected() {
+  if (!selected.value) return
+  openScanner(selected.value)
+}
+
 async function exportAllTeamLabels() {
   await loadCustomLabels()
   labelDialog.value = true
 }
 
 async function openCustomLabelDialog() {
-  await loadCustomLabels()
-  customLabelDialog.value = true
+  router.push({ name: 'team-custom-labels', params: { libraryId } })
 }
 
 async function loadCustomLabels() {
@@ -842,39 +835,6 @@ async function loadCustomLabels() {
   } catch {
     customLabels.value = []
   }
-}
-
-async function saveTeamCustomLabel(payload) {
-  customLabelSaving.value = true
-  try {
-    const body = { name: payload.name || '自定义标签', content: payload.content || {} }
-    const saved = payload.id
-      ? await updateTeamCustomLabel(libraryId, payload.id, body)
-      : await createTeamCustomLabel(libraryId, body)
-    await loadCustomLabels()
-    return saved
-  } finally {
-    customLabelSaving.value = false
-  }
-}
-
-async function archiveTeamCustomLabel(id) {
-  await deleteTeamCustomLabel(libraryId, id)
-  await loadCustomLabels()
-}
-
-async function uploadTeamCustomLabelFile(id, file) {
-  const asset = await uploadTeamCustomLabelAsset(libraryId, id, file)
-  await loadCustomLabels()
-  return asset
-}
-
-async function loadTeamCustomLabelFile(assetId) {
-  return getTeamCustomLabelAssetBlob(libraryId, assetId)
-}
-
-async function exportTeamCustomLabelFile(payload) {
-  return exportTeamCustomLabelSheet(libraryId, payload)
 }
 
 async function exportTeamInventory() {

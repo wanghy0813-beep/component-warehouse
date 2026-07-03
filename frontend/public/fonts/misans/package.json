@@ -1,0 +1,16 @@
+{
+  "name": "misans-vf",
+  "version": "1.0.0",
+  "description": "MiSans (subsetted) fonts from Xiaomi for free commercial use. Variable fonts version.",
+  "keywords": [
+    "misans",
+    "font",
+    "webfont",
+    "woff2"
+  ],
+  "author": "Bluemangoo",
+  "license": "Apache-2.0",
+  "main": "./lib/MiSans.min.css",
+  "style": "./lib/MiSans.min.css",
+  "repository": "github:Bluemangoo/MiSans-VF"
+}

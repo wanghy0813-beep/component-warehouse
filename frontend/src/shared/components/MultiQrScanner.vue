@@ -45,6 +45,7 @@
             remote
             clearable
             reserve-keyword
+            popper-class="scanner-candidate-popper"
             :remote-method="searchExpected"
             :loading="candidateLoading"
             placeholder="输入器件 ID、立创 ID、型号、规格或名称"
@@ -58,13 +59,6 @@
           </el-select>
           <small>选中后会在画面中高亮目标；点击下方结果再进入详情。</small>
         </details>
-        <el-input
-          v-model="manualInput"
-          type="textarea"
-          :rows="2"
-          placeholder="也可直接粘贴器件 ID、立创 ID 或二维码内容，每行一个"
-          @change="addManualCodes"
-        />
         <div class="scanner-summary">
           <strong>{{ scanSummaryText }}</strong>
           <span v-if="resolving">正在实时查找…</span>
@@ -106,7 +100,9 @@ const props = defineProps({
   title: { type: String, default: '扫描二维码查找器件' },
   resolveBatch: { type: Function, required: true },
   searchCandidates: { type: Function, default: null },
-  maxCodes: { type: Number, default: 200 }
+  maxCodes: { type: Number, default: 200 },
+  initialExpectedCode: { type: String, default: '' },
+  initialExpectedLabel: { type: String, default: '' }
 })
 const emit = defineEmits(['update:modelValue', 'resolved', 'select'])
 
@@ -116,7 +112,6 @@ const cameraError = ref('')
 const codes = ref([])
 const results = ref([])
 const resolving = ref(false)
-const manualInput = ref('')
 const expectedCode = ref('')
 const candidates = ref([])
 const candidateLoading = ref(false)
@@ -141,19 +136,20 @@ const highlightBoxes = computed(() => {
     const code = String(result?.component?.warehouse_code || result?.component?.id || '')
     const isExpected = result?.status === 'matched' && expectedCode.value && code === expectedCode.value
     const isMatched = result?.status === 'matched'
-    if (expectedCode.value && !isExpected) return null
+    if (expectedCode.value) {
+      return {
+        ...box,
+        tone: isExpected ? 'target' : 'scanned',
+        label: isExpected ? '目标器件' : '已扫描',
+        style: boxStyle(box)
+      }
+    }
     if (!expectedCode.value && !isMatched) return null
-    const label = isExpected ? '目标器件' : '已识别'
     return {
       ...box,
       tone: 'target',
-      label,
-      style: {
-        left: `${box.x}%`,
-        top: `${box.y}%`,
-        width: `${box.width}%`,
-        height: `${box.height}%`
-      }
+      label: '已识别',
+      style: boxStyle(box)
     }
   }).filter(Boolean)
 })
@@ -173,6 +169,22 @@ watch(expectedCode, () => {
   detectionBoxes.value = []
   if (codes.value.length) scheduleResolve()
 })
+
+watch(
+  () => [props.initialExpectedCode, props.initialExpectedLabel],
+  () => {
+    if (props.modelValue) applyInitialExpected()
+  }
+)
+
+function boxStyle(box) {
+  return {
+    left: `${box.x}%`,
+    top: `${box.y}%`,
+    width: `${box.width}%`,
+    height: `${box.height}%`
+  }
+}
 
 function normalizeCode(value) {
   return String(value || '').trim()
@@ -199,18 +211,33 @@ function addCodes(values, options = {}) {
   scheduleResolve()
 }
 
-function addManualCodes() {
-  addCodes(manualInput.value.split(/\r?\n|,/))
-  manualInput.value = ''
-}
-
 function clearCodes() {
   codes.value = []
   results.value = []
   detectionBoxes.value = []
-  manualInput.value = ''
   matchedExpectedCode = ''
   droppedCodeCount.value = 0
+}
+
+function addInitialCandidate() {
+  const value = normalizeCode(props.initialExpectedCode)
+  if (!value) return
+  if (candidates.value.some((item) => String(item.warehouse_code || item.id || '') === value)) return
+  candidates.value = [{
+    id: value,
+    warehouse_code: value,
+    name: props.initialExpectedLabel || value
+  }, ...candidates.value]
+}
+
+function applyInitialExpected() {
+  const value = normalizeCode(props.initialExpectedCode)
+  if (!value) {
+    expectedCode.value = ''
+    return
+  }
+  addInitialCandidate()
+  expectedCode.value = value
 }
 
 async function searchExpected(query) {
@@ -218,14 +245,21 @@ async function searchExpected(query) {
   const sequence = ++candidateSequence
   if (!props.searchCandidates || !value) {
     candidates.value = []
+    addInitialCandidate()
     return
   }
   candidateLoading.value = true
   try {
     const rows = await props.searchCandidates(value)
-    if (sequence === candidateSequence) candidates.value = rows || []
+    if (sequence === candidateSequence) {
+      candidates.value = rows || []
+      addInitialCandidate()
+    }
   } catch {
-    if (sequence === candidateSequence) candidates.value = []
+    if (sequence === candidateSequence) {
+      candidates.value = []
+      addInitialCandidate()
+    }
   } finally {
     if (sequence === candidateSequence) candidateLoading.value = false
   }
@@ -241,7 +275,7 @@ async function resolveNow() {
   const sequence = ++resolveSequence
   resolving.value = true
   try {
-    const data = await props.resolveBatch([...codes.value])
+    const data = await resolveInBatches([...codes.value])
     if (sequence !== resolveSequence) return
     let nextResults = data.results || []
     if (expectedCode.value) {
@@ -279,6 +313,31 @@ async function resolveNow() {
   } finally {
     if (sequence === resolveSequence) resolving.value = false
   }
+}
+
+async function resolveInBatches(values) {
+  const batchSize = 50
+  const chunks = []
+  for (let index = 0; index < values.length; index += batchSize) {
+    chunks.push(values.slice(index, index + batchSize))
+  }
+  const resolved = []
+  let matched = 0
+  for (const chunk of chunks) {
+    try {
+      const data = await props.resolveBatch(chunk)
+      const rows = data.results || []
+      resolved.push(...rows)
+      matched += Number(data.matched || rows.filter((item) => item.status === 'matched').length)
+    } catch (error) {
+      resolved.push(...chunk.map((value) => ({
+        value,
+        status: 'error',
+        error: { code: error?.response?.data?.detail || 'RESOLVE_FAILED' }
+      })))
+    }
+  }
+  return { results: resolved, matched, total: values.length }
 }
 
 async function detectLoop(detector) {
@@ -423,7 +482,7 @@ async function startCamera() {
     scanning.value = false
     cameraError.value = error?.name === 'NotAllowedError'
       ? '未获得相机权限，请在浏览器或 App 中允许相机访问。'
-      : '相机启动失败，可使用 App 扫码或手动粘贴二维码内容。'
+      : '相机启动失败，可使用 App 扫码或重新打开扫码窗口。'
   }
 }
 
@@ -482,6 +541,7 @@ function handleNativeScan(event) {
 }
 
 function handleOpen() {
+  applyInitialExpected()
   window.removeEventListener('cw-native-scan', handleNativeScan)
   window.addEventListener('cw-native-scan', handleNativeScan)
 }
@@ -523,6 +583,8 @@ onBeforeUnmount(() => {
 .scan-box b { position: absolute; left: 0; top: -26px; padding: 3px 8px; border-radius: 999px; background: #16a34a; color: #fff; font-size: 12px; white-space: nowrap; }
 .scan-box.target { border-color: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.18); }
 .scan-box.target b { background: #16a34a; }
+.scan-box.scanned { border-color: #facc15; box-shadow: 0 0 0 4px rgba(250,204,21,.20); }
+.scan-box.scanned b { background: #ca8a04; }
 .expected-picker { display: grid; gap: 7px; padding: 10px; border: 1px solid #e2e8f0; border-radius: var(--cw-radius-control); background: #f8fafc; }
 .expected-picker summary { cursor: pointer; font-weight: 800; color: #344054; }
 .expected-picker small { color: #667085; }
@@ -544,8 +606,11 @@ onBeforeUnmount(() => {
   :deep(.scanner-dialog) {
     width: min(94vw, 520px) !important;
     margin: 8px auto !important;
+    height: calc(100dvh - 16px);
     max-height: calc(100dvh - 16px);
   }
+  :deep(.scanner-dialog .el-dialog__header),
+  :deep(.scanner-dialog .el-dialog__body) { flex: 0 0 auto; }
   :deep(.scanner-dialog .el-dialog__header) {
     padding: 14px 16px 6px;
   }
@@ -553,18 +618,45 @@ onBeforeUnmount(() => {
     font-size: 19px;
   }
   :deep(.scanner-dialog .el-dialog__body) {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
     padding: 8px 12px 12px;
   }
-  .scanner-layout { grid-template-columns: 1fr; }
+  .scanner-layout {
+    height: 100%;
+    min-height: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+    overflow: hidden;
+  }
+  .scanner-camera, .scanner-results { min-height: 0; gap: 8px; }
   .video-shell {
-    width: min(100%, calc(56dvh * 3 / 4));
+    width: min(100%, calc(42dvh * 3 / 4), 330px);
     margin-inline: auto;
     aspect-ratio: 3 / 4;
   }
   .scanner-camera video { object-fit: cover; }
   .scanner-actions :deep(.el-button) { flex: 1 1 120px; }
-  .expected-picker { padding: 8px 10px; }
+  .expected-picker { padding: 8px 10px; overflow: hidden; }
+  .expected-picker :deep(.el-select) { width: 100%; }
   .scanner-tip { font-size: 12px; padding: 7px 9px; }
-  .scanner-code-list { max-height: 28dvh; }
+  .scanner-results {
+    align-content: stretch;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .scanner-code-list { max-height: none; min-height: 0; }
+}
+</style>
+
+<style>
+.scanner-candidate-popper {
+  max-width: min(92vw, 520px);
+}
+.scanner-candidate-popper .el-select-dropdown__item {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

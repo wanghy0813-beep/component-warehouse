@@ -5,7 +5,10 @@
         <h1 class="page-title">更多</h1>
         <p class="page-subtitle">管理导入记录、AI 整理、数据备份、操作记录和危险操作</p>
       </div>
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
+      <div class="more-hero-actions">
+        <install-app-button />
+        <el-button :icon="Refresh" @click="load">刷新</el-button>
+      </div>
     </div>
 
     <nav class="more-shortcuts" aria-label="更多功能入口">
@@ -151,6 +154,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from '../shared/elementApi'
 import { Refresh } from '@element-plus/icons-vue'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
+import InstallAppButton from '../shared/components/InstallAppButton.vue'
 import {
   clearDatabase,
   dashboardSummary,
@@ -338,6 +342,13 @@ onMounted(load)
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.78);
   box-shadow: none;
+}
+
+.more-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .more-shortcuts {

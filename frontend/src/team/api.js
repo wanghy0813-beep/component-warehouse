@@ -82,11 +82,13 @@ export const searchTeamScanCandidates = (id, query) =>
 export const getTeamScannedComponent = (id, itemId) =>
   teamApi.get(`/mobile/v1/team/libraries/${id}/components/${itemId}`).then((r) => r.data)
 export const exportTeamComponentLabels = (id, options = {}) =>
-  teamApi.post(`${base}/libraries/${id}/components/export/label-sheet`, options, { responseType: 'blob' }).then((r) => r.data)
+  teamApi.post(`${base}/libraries/${id}/components/export/label-sheet`, { output_format: 'pdf', ...options }, { responseType: 'blob' }).then((r) => r.data)
 export const exportTeamComponentInventory = (id) =>
   teamApi.get(`${base}/libraries/${id}/components/export/inventory.xlsx`, { responseType: 'blob' }).then((r) => r.data)
 export const listTeamCustomLabels = (id) =>
   teamApi.get(`${base}/libraries/${id}/custom-labels`).then((r) => r.data)
+export const getTeamCustomLabelCategorySummary = (id) =>
+  teamApi.get(`${base}/libraries/${id}/custom-labels/category-summary`).then((r) => r.data)
 export const createTeamCustomLabel = (id, payload) =>
   teamApi.post(`${base}/libraries/${id}/custom-labels`, payload).then((r) => r.data)
 export const updateTeamCustomLabel = (id, templateId, payload) =>

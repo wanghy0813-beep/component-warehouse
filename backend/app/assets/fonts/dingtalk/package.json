@@ -1,0 +1,28 @@
+{
+  "name": "cn-fontsource-ding-talk-jin-bu-ti-regular",
+  "description": "钉钉品牌字库 更具人文温度的免费商用字体",
+  "version": "1.0.3",
+  "repository": "https://github.com/wc-ex/cn-fontsource",
+  "keywords": [
+    "cn",
+    "cnfont",
+    "cn-font",
+    "fontsource",
+    "钉钉进步体"
+  ],
+  "font": {
+    "name": "钉钉进步体",
+    "type": "free",
+    "fontClass": [
+      "钉钉",
+      "黑体"
+    ],
+    "link": "https://page.dingtalk.com/wow/dingtalk/default/dingtalk/y-W5aF3_ZJwzulU0nceIl",
+    "version": "Version 1.00.00",
+    "familyName": "DingTalk JinBuTi",
+    "subfamilyName": "Regular",
+    "copyright": "Copyright © 2022 DingTalk (China) Information Technology Co., Ltd. All rights reserved.",
+    "characterCount": 7498
+  },
+  "license": "unknown"
+}

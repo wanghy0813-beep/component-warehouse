@@ -1,6 +1,5 @@
-import re
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -109,15 +108,22 @@ def safe_personal_component(
 
 def scan_parts(value: str) -> tuple[str, list[str]]:
     raw = str(value or "").strip()
+    if not raw:
+        return "identifier", [""]
     parsed = urlparse(raw)
-    path = parsed.path if parsed.scheme and parsed.netloc else raw
-    personal = re.search(r"/component-warehouse/personal/scan/([^/?#]+)", path)
-    if personal:
-        return "personal", [personal.group(1)]
-    team = re.search(r"/component-warehouse/team/scan/([^/?#]+)/([^/?#]+)", path)
-    if team:
-        return "team", [team.group(1), team.group(2)]
-    return "identifier", [raw.rstrip("/").split("/")[-1]]
+    path = parsed.path if (parsed.scheme or parsed.netloc) else raw
+    path = path.split("?", 1)[0].split("#", 1)[0].strip()
+    segments = [unquote(item).strip() for item in path.split("/") if unquote(item).strip()]
+    if "component-warehouse" in segments:
+        root_index = segments.index("component-warehouse")
+        segments = segments[root_index + 1:]
+    if len(segments) >= 3 and segments[0] == "personal" and segments[1] == "scan":
+        return "personal", [segments[2]]
+    if len(segments) >= 4 and segments[0] == "team" and segments[1] == "scan":
+        return "team", [segments[2], segments[3]]
+    if len(segments) >= 2 and segments[-2] == "scan":
+        return "identifier", [segments[-1]]
+    return "identifier", [unquote(raw.rstrip("/").split("/")[-1].split("?", 1)[0].split("#", 1)[0]).strip()]
 
 
 @router.post("/resolve")

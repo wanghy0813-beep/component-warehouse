@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import Depends, Header, HTTPException, status
@@ -18,12 +19,15 @@ from .features import feature_config
 from .models import User
 
 
-AUTH_MODE = os.getenv("AUTH_MODE", "local-password").strip().lower()
+AUTH_MODE = os.getenv("AUTH_MODE", "account-v1").strip().lower()
 ACCOUNT_PROVIDER_LABEL = os.getenv("ACCOUNT_PROVIDER_LABEL", "Account V1").strip() or "Account V1"
 ACCOUNT_BASE_URL = os.getenv("ACCOUNT_BASE_URL", "").rstrip("/")
 ACCOUNT_SERVICE_CLIENT_ID = os.getenv("ACCOUNT_SERVICE_CLIENT_ID", "componentwarehouse-service").strip()
 ACCOUNT_WEB_CLIENT_ID = os.getenv("ACCOUNT_WEB_CLIENT_ID", "componentwarehouse-web").strip()
 ACCOUNT_CLIENT_SECRET = os.getenv("ACCOUNT_CLIENT_SECRET", "").strip()
+ACCOUNT_SSO_REDIRECT_URI = os.getenv("ACCOUNT_SSO_REDIRECT_URI", "").strip()
+ACCOUNT_SSO_AUTHORIZE_URL = os.getenv("ACCOUNT_SSO_AUTHORIZE_URL", "").strip()
+ACCOUNT_SSO_TOKEN_URL = os.getenv("ACCOUNT_SSO_TOKEN_URL", "").strip()
 LEGACY_CLIENT_ID_HEADER = "-".join(["X", "".join(["W", "XY"]), "Client", "Id"])
 LEGACY_CLIENT_SECRET_HEADER = "-".join(["X", "".join(["W", "XY"]), "Client", "Secret"])
 AUTH_VERIFY_CACHE_SECONDS = max(10, int(os.getenv("AUTH_VERIFY_CACHE_SECONDS", "60")))
@@ -48,6 +52,21 @@ NO_AUTH_USER_ID = int(os.getenv("NO_AUTH_USER_ID", "1"))
 NO_AUTH_PHONE = os.getenv("NO_AUTH_PHONE", "local-user").strip() or "local-user"
 NO_AUTH_NICKNAME = os.getenv("NO_AUTH_NICKNAME", "本地用户").strip() or "本地用户"
 NO_AUTH_ADMIN = os.getenv("NO_AUTH_ADMIN", "1") == "1"
+
+
+def account_public_url(path: str) -> str:
+    if not ACCOUNT_BASE_URL:
+        return ""
+    parts = urlsplit(ACCOUNT_BASE_URL)
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+if not ACCOUNT_SSO_AUTHORIZE_URL:
+    ACCOUNT_SSO_AUTHORIZE_URL = account_public_url("/sso/authorize")
+if not ACCOUNT_SSO_TOKEN_URL:
+    ACCOUNT_SSO_TOKEN_URL = account_public_url("/sso/token")
 
 
 @dataclass(frozen=True)
@@ -91,9 +110,12 @@ def auth_public_config() -> dict:
         "provider_label": ACCOUNT_PROVIDER_LABEL,
         "auth_base_url": ACCOUNT_BASE_URL,
         "web_client_id": ACCOUNT_WEB_CLIENT_ID,
-        "sms_captcha_required": AUTH_MODE == "account-v1",
+        "sso_enabled": bool(ACCOUNT_SSO_AUTHORIZE_URL and ACCOUNT_SSO_TOKEN_URL),
+        "sso_authorize_url": ACCOUNT_SSO_AUTHORIZE_URL,
+        "sso_redirect_uri": ACCOUNT_SSO_REDIRECT_URI,
+        "sms_captcha_required": False,
         "auth_outage_grace_seconds": AUTH_OUTAGE_GRACE_SECONDS,
-        "registration_enabled": AUTH_MODE != "local-password" or LOCAL_AUTH_ALLOW_REGISTRATION,
+        "registration_enabled": False,
         "features": feature_config(),
     }
 

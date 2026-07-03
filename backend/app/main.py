@@ -3,6 +3,7 @@ import asyncio
 import base64
 import hashlib
 import html
+import hmac
 import io
 import json
 import os
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,19 +29,16 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session, joinedload, object_session
 from openpyxl import Workbook
+import httpx
 import qrcode
 from qrcode.image.svg import SvgPathImage
 
+from . import auth as auth_module
 from .auth import (
     AuthContext,
     auth_public_config,
-    local_login,
-    local_refresh,
-    local_register,
-    password_hash,
     require_access,
     require_admin,
-    verify_password,
 )
 from .branding import APP_BACKUP_NAME, APP_BRAND_NAME, APP_SHOW_BRAND_LOGO
 from .team import clear_team_media, router as team_router
@@ -109,8 +107,6 @@ from .schemas import (
     AiTaskOut,
     AiTaskSummary,
     ActivityLogOut,
-    AuthLoginRequest,
-    AuthRegisterRequest,
     BomItemCreate,
     BomImportRowSelection,
     BomSolderPointBulkUpdate,
@@ -200,10 +196,18 @@ from .services.substitutions import substitution_suggestions_for_bom_items
 from .services.stock_ledger import ensure_component_lot, migrate_legacy_inventory_lots, reconcile_component_lots, record_stock_delta
 from .services.eda_storage import storage_root as eda_storage_root
 from .labels import (
+    custom_label_font_keys,
+    category_package_summary_from_records,
     data_uri_from_bytes,
+    is_standard_category_label_group,
+    label_document,
     print_timestamp,
+    render_component_label_pdf,
     render_component_label_sheet,
+    render_basic_custom_label_pdf_items,
     render_custom_label_cards,
+    render_standard_category_label_pdf_items,
+    render_standard_category_label_cards,
     render_custom_label_sheet,
     sanitize_svg_markup,
 )
@@ -276,7 +280,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
     response.headers.setdefault("Cache-Control", "no-store" if request.url.path.startswith("/api/") else "no-cache")
     return response
 
@@ -286,6 +290,255 @@ def client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",", 1)[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+AUTH_PROXY_LIMITS = {
+    "captcha_ip": (60, 300),
+    "sms_ip": (8, 600),
+    "sms_phone": (3, 600),
+    "login_ip": (30, 600),
+    "login_phone": (8, 600),
+    "reset_ip": (8, 600),
+    "reset_phone": (3, 600),
+}
+_AUTH_PROXY_EVENTS: dict[str, list[float]] = {}
+_AUTH_PROXY_LOCK = threading.Lock()
+
+
+def enforce_auth_proxy_limit(bucket: str, key: str) -> None:
+    limit, window = AUTH_PROXY_LIMITS[bucket]
+    now = time.monotonic()
+    event_key = f"{bucket}:{key}"
+    cutoff = now - window
+    with _AUTH_PROXY_LOCK:
+        events = [stamp for stamp in _AUTH_PROXY_EVENTS.get(event_key, []) if stamp >= cutoff]
+        if len(events) >= limit:
+            _AUTH_PROXY_EVENTS[event_key] = events
+            raise HTTPException(status_code=429, detail="登录请求过于频繁，请稍后再试")
+        events.append(now)
+        _AUTH_PROXY_EVENTS[event_key] = events
+        if len(_AUTH_PROXY_EVENTS) > 5000:
+            stale_cutoff = now - max(window for _, window in AUTH_PROXY_LIMITS.values())
+            for stale_key in list(_AUTH_PROXY_EVENTS):
+                _AUTH_PROXY_EVENTS[stale_key] = [stamp for stamp in _AUTH_PROXY_EVENTS[stale_key] if stamp >= stale_cutoff]
+                if not _AUTH_PROXY_EVENTS[stale_key]:
+                    _AUTH_PROXY_EVENTS.pop(stale_key, None)
+
+
+def auth_proxy_phone(payload: dict) -> str:
+    return re.sub(r"\D", "", str(payload.get("phone") or ""))[:20] or "unknown"
+
+
+def auth_proxy_text(value: object, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def legacy_login_retired() -> None:
+    raise HTTPException(status_code=410, detail="旧登录方式已停用，请使用 WXY LAB 统一账号 SSO 登录")
+
+
+SSO_STATE_COOKIE = "cw_sso_pending"
+SSO_STATE_MAX_AGE_SECONDS = 600
+
+
+def b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def sso_cookie_secret() -> str:
+    secret = auth_module.LOCAL_AUTH_SECRET or auth_module.ACCOUNT_CLIENT_SECRET
+    if not secret:
+        raise HTTPException(status_code=503, detail="SSO 状态密钥未配置，请设置 LOCAL_AUTH_SECRET")
+    return secret
+
+
+def request_public_origin(request: Request) -> str:
+    redirect_parts = urlsplit(auth_module.ACCOUNT_SSO_REDIRECT_URI or "")
+    if redirect_parts.scheme and redirect_parts.netloc:
+        return f"{redirect_parts.scheme}://{redirect_parts.netloc}"
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip() or "https"
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc)).split(",", 1)[0].strip()
+    return f"{proto}://{host}"
+
+
+def safe_sso_return_to(value: object, request: Request) -> str:
+    origin = request_public_origin(request)
+    default = f"{origin}/component-warehouse/personal/"
+    raw = auth_proxy_text(value, 1200)
+    if not raw:
+        return default
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        allowed_origin = urlsplit(origin)
+        if parsed.scheme != allowed_origin.scheme or parsed.netloc != allowed_origin.netloc:
+            return default
+        path = parsed.path
+    else:
+        path = raw if raw.startswith("/") else f"/{raw}"
+        parsed = urlsplit(path)
+        path = parsed.path
+    if not (
+        path.startswith("/component-warehouse/personal/")
+        or path.startswith("/component-warehouse/team/")
+    ):
+        return default
+    return urlunsplit((urlsplit(origin).scheme, urlsplit(origin).netloc, path, parsed.query, ""))
+
+
+def sign_sso_cookie(payload: dict) -> str:
+    body = b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(sso_cookie_secret().encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    return f"{body}.{b64url(signature)}"
+
+
+def parse_sso_cookie(value: str | None) -> dict | None:
+    if not value:
+        return None
+    try:
+        body, signature = value.split(".", 1)
+        expected = hmac.new(sso_cookie_secret().encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+        if not hmac.compare_digest(b64url_decode(signature), expected):
+            return None
+        payload = json.loads(b64url_decode(body))
+        if int(payload.get("iat") or 0) + SSO_STATE_MAX_AGE_SECONDS < int(time.time()):
+            return None
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def clear_sso_cookie(response: Response) -> None:
+    response.delete_cookie(SSO_STATE_COOKIE, path="/component-warehouse")
+
+
+def set_sso_cookie(response: Response, request: Request, payload: dict) -> None:
+    response.set_cookie(
+        SSO_STATE_COOKIE,
+        sign_sso_cookie(payload),
+        max_age=SSO_STATE_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip() == "https",
+        samesite="lax",
+        path="/component-warehouse",
+    )
+
+
+def sso_code_challenge(verifier: str) -> str:
+    return b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+
+
+def build_sso_authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
+    parts = urlsplit(auth_module.ACCOUNT_SSO_AUTHORIZE_URL)
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params.update({
+        "client_id": auth_module.ACCOUNT_WEB_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    })
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
+
+
+def account_sso_start(payload: dict, request: Request, response: Response) -> dict:
+    if auth_module.AUTH_MODE == "local-password":
+        raise HTTPException(status_code=404, detail="当前账号模式不需要统一账号 SSO")
+    if not auth_module.ACCOUNT_SSO_AUTHORIZE_URL or not auth_module.ACCOUNT_SSO_TOKEN_URL:
+        raise HTTPException(status_code=503, detail="统一账号 SSO 未配置")
+    redirect_uri = (
+        auth_proxy_text(payload.get("redirectUri"), 800)
+        or auth_module.ACCOUNT_SSO_REDIRECT_URI
+        or f"{request_public_origin(request)}/component-warehouse/personal/auth/callback"
+    )
+    state = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(48)
+    return_to = safe_sso_return_to(payload.get("returnTo"), request)
+    set_sso_cookie(response, request, {
+        "state": state,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+        "return_to": return_to,
+        "iat": int(time.time()),
+    })
+    return {
+        "authorizeUrl": build_sso_authorize_url(redirect_uri, state, sso_code_challenge(code_verifier)),
+        "state": state,
+        "redirectUri": redirect_uri,
+        "returnTo": return_to,
+    }
+
+
+async def account_v1_proxy_request(method: str, path: str, payload: dict | None = None, token: str | None = None) -> dict:
+    if auth_module.AUTH_MODE == "local-password":
+        raise HTTPException(status_code=404, detail="当前账号模式不需要统一账号代理")
+    if not auth_module.ACCOUNT_BASE_URL:
+        raise HTTPException(status_code=503, detail="统一账号地址未配置")
+    headers = {
+        "X-Account-Client-Id": auth_module.ACCOUNT_WEB_CLIENT_ID,
+        auth_module.LEGACY_CLIENT_ID_HEADER: auth_module.ACCOUNT_WEB_CLIENT_ID,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=auth_module.AUTH_HTTP_TIMEOUT_SECONDS) as client:
+            response = await client.request(method, f"{auth_module.ACCOUNT_BASE_URL}{path}", headers=headers, json=payload)
+    except httpx.RequestError as error:
+        raise HTTPException(status_code=503, detail="统一账号暂时不可用，请稍后重试") from error
+    try:
+        data = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="统一账号返回格式异常") from error
+    if response.status_code >= 400:
+        message = data.get("error", {}).get("message") if isinstance(data, dict) else ""
+        raise HTTPException(status_code=response.status_code, detail=message or "统一账号请求失败")
+    return data
+
+
+async def account_sso_token_request(payload: dict, request: Request | None = None) -> dict:
+    if auth_module.AUTH_MODE == "local-password":
+        raise HTTPException(status_code=404, detail="当前账号模式不需要统一账号 SSO")
+    if not auth_module.ACCOUNT_SSO_TOKEN_URL:
+        raise HTTPException(status_code=503, detail="统一账号 SSO 未配置")
+    cookie_payload = parse_sso_cookie(request.cookies.get(SSO_STATE_COOKIE) if request else None)
+    state = auth_proxy_text(payload.get("state"), 200)
+    if cookie_payload:
+        if not state or state != auth_proxy_text(cookie_payload.get("state"), 200):
+            raise HTTPException(status_code=400, detail="统一账号登录状态校验失败，请重新登录")
+    body = {
+        "client_id": auth_module.ACCOUNT_WEB_CLIENT_ID,
+        "redirect_uri": (
+            auth_proxy_text(payload.get("redirectUri"), 800)
+            or auth_proxy_text(cookie_payload.get("redirect_uri") if cookie_payload else "", 800)
+            or auth_module.ACCOUNT_SSO_REDIRECT_URI
+        ),
+        "code": auth_proxy_text(payload.get("code"), 500),
+        "code_verifier": (
+            auth_proxy_text(payload.get("codeVerifier"), 200)
+            or auth_proxy_text(cookie_payload.get("code_verifier") if cookie_payload else "", 200)
+        ),
+    }
+    if not body["redirect_uri"] or not body["code"] or not body["code_verifier"]:
+        raise HTTPException(status_code=400, detail="SSO 登录参数不完整")
+    try:
+        async with httpx.AsyncClient(timeout=auth_module.AUTH_HTTP_TIMEOUT_SECONDS) as client:
+            response = await client.post(auth_module.ACCOUNT_SSO_TOKEN_URL, json=body)
+    except httpx.RequestError as error:
+        raise HTTPException(status_code=503, detail="统一账号 SSO 暂时不可用，请稍后重试") from error
+    try:
+        data = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="统一账号 SSO 返回格式异常") from error
+    if response.status_code >= 400:
+        message = data.get("error", {}).get("message") if isinstance(data, dict) else ""
+        raise HTTPException(status_code=response.status_code, detail=message or "统一账号 SSO 登录失败")
+    if cookie_payload and cookie_payload.get("return_to"):
+        data["returnTo"] = cookie_payload["return_to"]
+    return data
 
 
 def ensure_sqlite_columns(connection, table: str, columns: dict[str, str]) -> None:
@@ -1738,8 +1991,10 @@ def clean_custom_label_content(content: dict | None) -> dict:
             if not isinstance(item, dict):
                 continue
             element_type = str(item.get("type") or "text").strip()
-            if element_type not in {"text", "image", "svg"}:
+            if element_type not in {"text", "image", "svg", "field", "qr", "shape", "category_badge"}:
                 element_type = "text"
+            if element_type in {"field", "category_badge"} and str(item.get("field") or "").strip() == "print_date":
+                continue
             clean = {
                 "id": str(item.get("id") or f"el-{index + 1}")[:80],
                 "type": element_type,
@@ -1747,21 +2002,59 @@ def clean_custom_label_content(content: dict | None) -> dict:
                 "y": item.get("y", 34),
                 "width": item.get("width", 56),
                 "height": item.get("height", 30),
+                "x_mm": item.get("x_mm"),
+                "y_mm": item.get("y_mm"),
+                "width_mm": item.get("width_mm"),
+                "height_mm": item.get("height_mm"),
                 "rotate": item.get("rotate", 0),
                 "font_size": item.get("font_size", 13),
+                "font_weight": item.get("font_weight", 400),
+                "font_family": str(item.get("font_family") or "system")[:40],
                 "color": str(item.get("color") or "#111827")[:40],
                 "align": str(item.get("align") or "center")[:16],
             }
+            if item.get("role"):
+                clean["role"] = str(item.get("role") or "")[:80]
             if element_type == "text":
                 clean["text"] = str(item.get("text") or "自定义标签")[:1000]
-            else:
+            elif element_type in {"image", "svg"}:
                 clean["asset_id"] = str(item.get("asset_id") or "")[:80]
                 if element_type == "svg" and item.get("svg"):
                     clean["svg"] = sanitize_svg_markup(str(item.get("svg") or ""))
+            elif element_type in {"field", "qr", "category_badge"}:
+                clean["field"] = str(item.get("field") or ("scan_url" if element_type == "qr" else "name"))[:80]
+                clean["prefix"] = str(item.get("prefix") or "")[:80]
+            elif element_type == "shape":
+                clean["fill"] = str(item.get("fill") or "#eff6ff")[:40]
+                clean["stroke"] = str(item.get("stroke") or "#93c5fd")[:40]
+                clean["radius"] = item.get("radius", 1)
+            for mm_key in ("x_mm", "y_mm", "width_mm", "height_mm"):
+                if clean.get(mm_key) is None:
+                    clean.pop(mm_key, None)
             cleaned_elements.append(clean)
     if not cleaned_elements:
-        cleaned_elements = [{"id": "text-1", "type": "text", "text": str(raw.get("text") or "自定义标签")[:1000], "x": 18, "y": 33, "width": 64, "height": 30, "font_size": 16, "color": "#111827", "align": "center"}]
-    return {"elements": cleaned_elements}
+        cleaned_elements = [{"id": "text-1", "type": "text", "text": str(raw.get("text") or "自定义标签")[:1000], "x": 18, "y": 33, "width": 64, "height": 30, "font_size": 16, "font_family": "system", "color": "#111827", "align": "center"}]
+    result = {"elements": cleaned_elements, "show_logo": raw.get("show_logo") is not False}
+    if raw.get("kind"):
+        result["kind"] = str(raw.get("kind") or "")[:80]
+    styles = raw.get("styles")
+    cleaned_styles: list[dict] = []
+    if isinstance(styles, list):
+        for index, style in enumerate(styles[:20]):
+            if not isinstance(style, dict):
+                continue
+            style_content = clean_custom_label_content({"elements": style.get("elements")})
+            cleaned_styles.append({
+                "id": str(style.get("id") or f"style-{index + 1}")[:80],
+                "name": str(style.get("name") or f"样式 {index + 1}")[:80],
+                "category_name": str(style.get("category_name") or "")[:80],
+                "elements": style_content["elements"],
+            })
+    if cleaned_styles:
+        result["styles"] = cleaned_styles
+        active_style_id = str(raw.get("active_style_id") or cleaned_styles[0]["id"])[:80]
+        result["active_style_id"] = active_style_id
+    return result
 
 
 def custom_label_asset_root(template: CustomLabelTemplate) -> Path:
@@ -1856,23 +2149,64 @@ def custom_label_asset_resolver(db: Session, template: CustomLabelTemplate):
     return resolve
 
 
-def component_export_custom_label_cards(db: Session, auth: AuthContext, items: list, printed_at: str) -> list[str]:
+def component_export_custom_label_cards(db: Session, auth: AuthContext, items: list, printed_at: str, records: list[dict] | None = None) -> list[str]:
     cards: list[str] = []
+    package_summary = category_package_summary_from_records(records)
     for item in items or []:
         template_id = str(getattr(item, "template_id", "") or "").strip()
         if not template_id:
             continue
         template = require_custom_label_template(db, template_id, auth)
         content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        if is_standard_category_label_group(content):
+            cards.extend(
+                render_standard_category_label_cards(
+                    content,
+                    package_summary,
+                    copies=int(getattr(item, "copies", 1) or 1),
+                    printed_at=printed_at,
+                )
+            )
+            continue
         cards.extend(
             render_custom_label_cards(
                 content,
                 asset_resolver=custom_label_asset_resolver(db, template),
                 copies=int(getattr(item, "copies", 1) or 1),
                 printed_at=printed_at,
+                include_all_styles=True,
             )
         )
     return cards
+
+
+def component_export_custom_label_font_keys(db: Session, auth: AuthContext, items: list) -> set[str]:
+    keys: set[str] = set()
+    for item in items or []:
+        template_id = str(getattr(item, "template_id", "") or "").strip()
+        if not template_id:
+            continue
+        template = require_custom_label_template(db, template_id, auth)
+        content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        keys.update(custom_label_font_keys(content))
+    return keys
+
+
+def component_export_custom_label_pdf_items(db: Session, auth: AuthContext, items: list, records: list[dict] | None = None) -> list[dict]:
+    pdf_items: list[dict] = []
+    package_summary = category_package_summary_from_records(records)
+    for item in items or []:
+        template_id = str(getattr(item, "template_id", "") or "").strip()
+        if not template_id:
+            continue
+        template = require_custom_label_template(db, template_id, auth)
+        content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        copies = int(getattr(item, "copies", 1) or 1)
+        if is_standard_category_label_group(content):
+            pdf_items.extend(render_standard_category_label_pdf_items(content, package_summary, copies=copies))
+        else:
+            pdf_items.extend(render_basic_custom_label_pdf_items(content, copies=copies))
+    return pdf_items
 
 
 def component_ai_question_context(db: Session, component: Component, auth: AuthContext) -> dict:
@@ -2506,64 +2840,115 @@ def auth_config():
     return auth_public_config()
 
 
+@app.get("/api/auth/account/health")
+async def auth_account_health(request: Request):
+    enforce_auth_proxy_limit("captcha_ip", client_ip(request))
+    return await account_v1_proxy_request("GET", "/health")
+
+
+@app.get("/api/auth/account/captcha")
+async def auth_account_captcha(request: Request):
+    enforce_auth_proxy_limit("captcha_ip", client_ip(request))
+    return await account_v1_proxy_request("GET", "/captcha")
+
+
+@app.post("/api/auth/account/sms/send")
+async def auth_account_send_sms(payload: dict, request: Request, _: Protected):
+    ip = client_ip(request)
+    phone = auth_proxy_phone(payload)
+    purpose = str(payload.get("purpose") or "")[:40]
+    if purpose not in {"change_password", "change_phone"}:
+        legacy_login_retired()
+    enforce_auth_proxy_limit("sms_ip", ip)
+    enforce_auth_proxy_limit("sms_phone", phone)
+    clean_payload = {
+        "phone": phone,
+        "purpose": purpose,
+        "captchaId": str(payload.get("captchaId") or "")[:120],
+        "captchaAnswer": str(payload.get("captchaAnswer") or "")[:20],
+    }
+    return await account_v1_proxy_request("POST", "/sms/send", clean_payload)
+
+
+@app.post("/api/auth/account/login/sms")
+async def auth_account_login_sms():
+    legacy_login_retired()
+
+
+@app.post("/api/auth/account/login/password")
+async def auth_account_login_password():
+    legacy_login_retired()
+
+
+@app.post("/api/auth/account/sso/start")
+async def auth_account_sso_start(payload: dict, request: Request, response: Response):
+    enforce_auth_proxy_limit("login_ip", client_ip(request))
+    return account_sso_start(payload, request, response)
+
+
+@app.post("/api/auth/account/sso/token")
+async def auth_account_sso_token(payload: dict, request: Request, response: Response):
+    enforce_auth_proxy_limit("login_ip", client_ip(request))
+    try:
+        return await account_sso_token_request(payload, request)
+    finally:
+        if request.cookies.get(SSO_STATE_COOKIE):
+            clear_sso_cookie(response)
+
+
+@app.post("/api/auth/account/register")
+async def auth_account_register():
+    legacy_login_retired()
+
+
+@app.post("/api/auth/account/password/reset")
+async def auth_account_password_reset():
+    legacy_login_retired()
+
+
+@app.post("/api/auth/account/token/refresh")
+async def auth_account_token_refresh(payload: dict, request: Request):
+    enforce_auth_proxy_limit("login_ip", client_ip(request))
+    return await account_v1_proxy_request("POST", "/token/refresh", {
+        "refreshToken": str(payload.get("refreshToken") or ""),
+    })
+
+
+@app.post("/api/auth/account/logout")
+async def auth_account_logout(request: Request, authorization: str | None = Header(default=None)):
+    enforce_auth_proxy_limit("login_ip", client_ip(request))
+    token = authorization.split(" ", 1)[1].strip() if authorization and authorization.lower().startswith("bearer ") else ""
+    return await account_v1_proxy_request("POST", "/logout", token=token)
+
+
 @app.post("/api/auth/local/register")
-def auth_local_register(payload: AuthRegisterRequest, db: Session = Depends(get_db)):
-    return local_register(db, payload.phone, payload.password, payload.nickname)
+def auth_local_register():
+    legacy_login_retired()
 
 
 @app.post("/api/auth/local/login")
-def auth_local_login(payload: AuthLoginRequest, db: Session = Depends(get_db)):
-    username = payload.username or payload.phone or ""
-    return local_login(db, username, payload.password)
+def auth_local_login():
+    legacy_login_retired()
 
 
 @app.post("/api/auth/local/token/refresh")
-def auth_local_refresh(payload: dict, db: Session = Depends(get_db)):
-    return local_refresh(db, str(payload.get("refreshToken") or ""))
+def auth_local_refresh():
+    legacy_login_retired()
 
 
 @app.post("/api/auth/local/logout")
 def auth_local_logout():
-    return {"ok": True}
+    legacy_login_retired()
 
 
 @app.patch("/api/auth/local/me")
-def auth_local_update_profile(payload: dict, auth: Protected, db: Session = Depends(get_db)):
-    user = db.get(User, auth.user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    display_name = str(payload.get("displayName") or payload.get("nickname") or "").strip()
-    avatar_url = str(payload.get("avatarUrl") or "").strip()
-    if display_name:
-        user.nickname = display_name[:80]
-    user.avatar_url = avatar_url[:500] or None
-    db.commit()
-    return {
-        "ok": True,
-        "user": {
-            "accountId": user.account_id or f"local-{user.id}",
-            "phone": user.phone,
-            "displayName": user.nickname or user.phone,
-            "avatarUrl": user.avatar_url or "",
-            "isAdmin": bool(user.is_admin),
-        },
-    }
+def auth_local_update_profile():
+    legacy_login_retired()
 
 
 @app.post("/api/auth/local/password/change")
-def auth_local_change_password(payload: dict, auth: Protected, db: Session = Depends(get_db)):
-    user = db.get(User, auth.user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    old_password = str(payload.get("oldPassword") or "")
-    new_password = str(payload.get("newPassword") or "")
-    if not verify_password(old_password, user.password_hash):
-        raise HTTPException(status_code=401, detail="当前密码错误")
-    if len(new_password) < 8 or len(new_password) > 128:
-        raise HTTPException(status_code=400, detail="新密码长度需为 8-128 位")
-    user.password_hash = password_hash(new_password)
-    db.commit()
-    return {"ok": True}
+def auth_local_change_password():
+    legacy_login_retired()
 
 
 @app.get("/api/auth/me")
@@ -2797,6 +3182,27 @@ def brand_logo_data_uri() -> str:
         return ""
 
 
+@app.api_route("/api/assets/{asset_name}", methods=["GET", "HEAD"])
+def public_brand_asset(asset_name: str):
+    allowed_assets = {
+        "brand-logo.png": "brand-logo.png",
+        "brand-logo-label.png": "brand-logo-label.png",
+    }
+    filename = allowed_assets.get(asset_name)
+    if not filename:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if not APP_SHOW_BRAND_LOGO:
+        raise HTTPException(status_code=404, detail="Brand logo is disabled")
+    path = os.path.join(os.path.dirname(__file__), "assets", filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Brand logo not found")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"},
+    )
+
+
 @lru_cache(maxsize=1)
 def nfc_icon_data_uri() -> str:
     path = os.path.join(os.path.dirname(__file__), "assets", "nfc.svg")
@@ -3020,7 +3426,28 @@ def export_component_label_sheet(payload: ComponentExportRequest, request: Reque
     )
     records = [component_out(component, 0) for component in components]
     printed_at = print_timestamp()
-    appended_cards = [] if payload.calibration else component_export_custom_label_cards(db, auth, payload.custom_labels, printed_at)
+    output_format = (payload.output_format or "html").lower()
+    if output_format == "pdf":
+        appended_pdf_items = [] if payload.calibration else component_export_custom_label_pdf_items(db, auth, payload.custom_labels, records)
+        pdf_doc = render_component_label_pdf(
+            records,
+            PUBLIC_PERSONAL_BASE_URL,
+            start_slot=payload.start_slot,
+            copies=payload.copies,
+            offset_x_mm=payload.offset_x_mm,
+            offset_y_mm=payload.offset_y_mm,
+            calibration=payload.calibration,
+            printed_at=printed_at,
+            safe_margin=payload.safe_margin,
+            appended_items=appended_pdf_items,
+        )
+        return Response(
+            content=pdf_doc,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="component-labels.pdf"'},
+        )
+    appended_cards = [] if payload.calibration else component_export_custom_label_cards(db, auth, payload.custom_labels, printed_at, records)
+    appended_font_keys = set() if payload.calibration else component_export_custom_label_font_keys(db, auth, payload.custom_labels)
     html_doc = render_component_label_sheet(
         records,
         PUBLIC_PERSONAL_BASE_URL,
@@ -3031,6 +3458,8 @@ def export_component_label_sheet(payload: ComponentExportRequest, request: Reque
         calibration=payload.calibration,
         appended_cards=appended_cards,
         printed_at=printed_at,
+        safe_margin=payload.safe_margin,
+        font_keys=appended_font_keys,
     )
     return Response(
         content=html_doc,
@@ -3047,6 +3476,17 @@ def list_custom_labels(auth: Protected, db: Session = Depends(get_db)):
         .all()
     )
     return [custom_label_template_out(row, db) for row in rows]
+
+
+@app.get("/api/custom-labels/category-summary")
+def custom_label_category_summary(auth: Protected, db: Session = Depends(get_db)):
+    rows = (
+        filter_owner(db.query(Component).options(joinedload(Component.category)), Component, auth)
+        .order_by(Component.category_id.asc(), Component.id.asc())
+        .all()
+    )
+    summary = category_package_summary_from_records([component_to_dict(row) for row in rows])
+    return [{"category": category, "summary": value} for category, value in summary.items()]
 
 
 @app.post("/api/custom-labels", response_model=CustomLabelTemplateOut)
@@ -3143,6 +3583,7 @@ def export_custom_label_sheet(payload: CustomLabelExportRequest, auth: Protected
         offset_x_mm=payload.offset_x_mm,
         offset_y_mm=payload.offset_y_mm,
         calibration=payload.calibration,
+        safe_margin=payload.safe_margin,
     )
     return Response(
         content=html_doc,

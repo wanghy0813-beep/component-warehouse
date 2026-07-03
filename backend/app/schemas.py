@@ -131,8 +131,10 @@ class ComponentExportRequest(BaseModel):
     copies: int = Field(default=1, ge=1, le=20)
     offset_x_mm: float = Field(default=0, ge=-5, le=5)
     offset_y_mm: float = Field(default=0, ge=-5, le=5)
+    safe_margin: bool = True
     calibration: bool = False
     custom_labels: list[ComponentExportCustomLabel] = Field(default_factory=list)
+    output_format: str = "html"
 
 
 class CustomLabelAssetOut(BaseModel):
@@ -180,6 +182,7 @@ class CustomLabelExportRequest(BaseModel):
     copies: int = Field(default=1, ge=1, le=40)
     offset_x_mm: float = Field(default=0, ge=-5, le=5)
     offset_y_mm: float = Field(default=0, ge=-5, le=5)
+    safe_margin: bool = True
     calibration: bool = False
 
 

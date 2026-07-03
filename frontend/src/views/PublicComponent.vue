@@ -3,6 +3,7 @@
     <section v-if="component" class="public-shell">
       <header class="public-brand">
         <div class="brand-lockup">
+          <img class="brand-icon" :src="appIcon" alt="" />
           <img v-if="BRAND_SHOW_LOGO" :src="brandLogo" :alt="BRAND_SHORT" />
           <div>
             <span>{{ BRAND_NAME }} · 个人版</span>
@@ -95,6 +96,7 @@ import { getAuthToken } from '../api/authSessionApi'
 import { componentDisplaySubtitle, componentDisplayTitle, uniqueDisplayParts } from '../shared/componentDisplay'
 import { PERSONAL_BASE, TEAM_BASE } from '../shared/appPaths'
 import brandLogo from '../assets/brand-logo.png'
+import appIcon from '../assets/generated/cw-app-icon.png'
 import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
 
 const route = useRoute()
@@ -203,6 +205,12 @@ onMounted(load)
   height: 58px;
   object-fit: contain;
   object-position: center;
+}
+
+.brand-lockup .brand-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
 }
 
 .footer-brand img {

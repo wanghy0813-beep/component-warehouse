@@ -1,7 +1,7 @@
 <template>
   <el-dialog v-model="visible" title="A4 直角 40 格标签" width="560px">
     <el-alert type="info" :closable="false" show-icon>
-      纸张规格固定为 52.5 × 29.7 mm，4列×10行。打印时选择 A4、实际大小 100%、无页边距、关闭页眉页脚。
+      纸张规格固定为 52.5 × 29.7 mm，4列×10行。打印时选择 A4、实际大小 100%、关闭页眉页脚，打印机支持时可选无页边距。
     </el-alert>
     <el-form label-width="110px" class="label-form">
       <el-form-item v-if="showScope" label="导出范围">
@@ -26,7 +26,7 @@
           clearable
           collapse-tags
           collapse-tags-tooltip
-          placeholder="例如：开发板、连接件"
+          placeholder="默认排除：开发板、连接件"
         >
           <el-option
             v-for="item in excludedCategoryOptions"
@@ -40,6 +40,18 @@
       <el-form-item label="每项份数"><el-input-number v-model="form.copies" :min="1" :max="20" /></el-form-item>
       <el-form-item label="横向偏移"><el-input-number v-model="form.offset_x_mm" :min="-5" :max="5" :step="0.1" :precision="1" /><span>mm</span></el-form-item>
       <el-form-item label="纵向偏移"><el-input-number v-model="form.offset_y_mm" :min="-5" :max="5" :step="0.1" :precision="1" /><span>mm</span></el-form-item>
+      <el-form-item label="安全边距">
+        <el-switch
+          v-model="form.safe_margin"
+          inline-prompt
+          active-text="标准"
+          inactive-text="紧凑"
+        />
+        <span>紧凑模式也会保留最小裁切空间</span>
+      </el-form-item>
+      <el-alert v-if="showScope" class="template-relation" type="info" :closable="false" show-icon>
+        器件标签固定使用系统默认版式；附加标签会在器件标签后追加固定标签，不会影响前面的器件标签样式。选择一个自定义标签模板时，会按顺序打印该模板里的全部样式。
+      </el-alert>
       <el-form-item v-if="showScope && customLabelOptions.length" label="附加标签">
         <div class="append-labels">
           <el-select
@@ -65,7 +77,7 @@
         </div>
       </el-form-item>
     </el-form>
-    <p class="calibration-note">首次使用建议先打印校准页，检查第 1、4、37、40 格边界，再调整偏移。设置只保存在当前浏览器。</p>
+    <p class="calibration-note">首次使用建议先打印校准页，检查第 1、4、37、40 格边界，再调整偏移。无边框打印若边缘被裁切，优先使用标准安全边距。</p>
     <template #footer>
       <el-button :loading="loading" @click="submit(true)">打印校准页</el-button>
       <el-button @click="visible = false">取消</el-button>
@@ -91,14 +103,15 @@ const storageKey = 'cw_label_40_settings'
 const defaults = {
   scope: 'imported',
   imported_range: [],
-  excluded_categories: ['开发板'],
+  excluded_categories: ['开发板', '连接件'],
   start_slot: 1,
   copies: 1,
   offset_x_mm: 0,
   offset_y_mm: 0,
+  safe_margin: true,
   custom_label_ids: [],
   custom_label_copies: {},
-  exclusion_default_version: 1
+  exclusion_default_version: 2
 }
 const defaultScopeOptions = [
   { label: '指定日期', value: 'imported' },
@@ -108,8 +121,12 @@ let stored = {}
 try { stored = JSON.parse(localStorage.getItem(storageKey) || '{}') } catch {}
 const form = reactive({ ...defaults, ...stored })
 if (!Array.isArray(form.excluded_categories)) form.excluded_categories = []
-if (stored.exclusion_default_version !== 1 && !form.excluded_categories.includes('开发板')) form.excluded_categories.push('开发板')
-form.exclusion_default_version = 1
+if (stored.exclusion_default_version !== 2) {
+  for (const name of ['开发板', '连接件']) {
+    if (!form.excluded_categories.includes(name)) form.excluded_categories.push(name)
+  }
+}
+form.exclusion_default_version = 2
 if (!Array.isArray(form.custom_label_ids)) form.custom_label_ids = []
 if (!form.custom_label_copies || typeof form.custom_label_copies !== 'object' || Array.isArray(form.custom_label_copies)) form.custom_label_copies = {}
 const scopeChoices = computed(() => props.scopeOptions?.length ? props.scopeOptions : defaultScopeOptions)
@@ -160,6 +177,7 @@ function submit(calibration) {
       copies: Math.max(1, Math.min(40, Number(form.custom_label_copies?.[id] || 1)))
     }))
     : []
+  payload.safe_margin = form.safe_margin !== false
   if (effectiveScope === 'imported') {
     const range = Array.isArray(form.imported_range) ? form.imported_range : []
     if (!range[0] || !range[1]) {
@@ -180,6 +198,11 @@ function submit(calibration) {
 <style scoped>
 .label-form { margin-top: 16px; }
 .label-form span { margin-left: 8px; color: #667085; }
+.template-relation {
+  margin: 2px 0 14px;
+  border-radius: var(--cw-radius-control);
+  line-height: 1.55;
+}
 .calibration-note { padding: 10px 12px; border-radius: var(--cw-radius-control); background: #fff7ed; color: #9a3412; line-height: 1.55; }
 .append-labels {
   width: 100%;

@@ -1,11 +1,15 @@
 <template>
   <el-config-provider>
-    <div v-if="checking" class="team-boot">正在连接 {{ BRAND_NAME }}…</div>
-    <div v-else-if="route.meta.publicJoin && !token" class="team-standalone-shell">
+    <div v-if="checking" class="team-boot notranslate" lang="zh-CN" translate="no">正在连接 {{ BRAND_NAME }}…</div>
+    <div v-else-if="route.meta.authCallback" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
+      <router-view />
+      <app-footer />
+    </div>
+    <div v-else-if="route.meta.publicJoin && !token" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
       <router-view @authenticated="handleAuthenticated" />
       <app-footer />
     </div>
-    <div v-else-if="!token" class="team-standalone-shell">
+    <div v-else-if="!token" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
       <auth-panel
         :eyebrow="BRAND_NAME"
         title="团队版"
@@ -14,9 +18,10 @@
       />
       <app-footer />
     </div>
-    <div v-else class="team-app">
+    <div v-else class="team-app notranslate" lang="zh-CN" translate="no">
       <header class="team-header">
         <router-link class="team-brand" to="/">
+          <img class="brand-icon" :src="appIcon" alt="" />
           <img v-if="BRAND_SHOW_LOGO" :src="logo" :alt="BRAND_SHORT" />
           <span><strong>{{ BRAND_NAME }}</strong><small>团队版</small></span>
         </router-link>
@@ -65,14 +70,16 @@ import { ElMessage } from '../shared/elementApi'
 import { useRoute, useRouter } from 'vue-router'
 import { Box, Cpu, Files, UserFilled, WarningFilled } from '@element-plus/icons-vue'
 import logo from '../assets/brand-logo.png'
+import appIcon from '../assets/generated/cw-app-icon.png'
 import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
 import AuthPanel from '../components/AuthPanel.vue'
 import AccountPopover from '../shared/components/AccountPopover.vue'
 import AppFooter from '../shared/components/AppFooter.vue'
 import BackToTop from '../shared/components/BackToTop.vue'
+import { setupPwaInstallPrompt } from '../shared/pwaInstall'
 import { authConfig } from '../api/client'
-import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth } from '../api/authSessionApi'
+import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth, setupAuthActivityTracking } from '../api/authSessionApi'
 import { clearAccountSnapshots } from './cache'
 import { recordTeamUsageEvent, teamSession } from './api'
 import { teamState, setNetworkOnline, setSession } from './store'
@@ -161,6 +168,8 @@ async function handleNativeAuthSession(event) {
 }
 
 onMounted(async () => {
+  setupPwaInstallPrompt()
+  setupAuthActivityTracking()
   window.addEventListener('online', () => setNetworkOnline(true))
   window.addEventListener('offline', () => setNetworkOnline(false))
   window.addEventListener('cw-auth-cleared', handleAuthCleared)

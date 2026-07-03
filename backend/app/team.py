@@ -40,6 +40,7 @@ from .team_schemas import (
 )
 from .schemas import ComponentAiAskRequest, ComponentAiAskOut, ComponentConsumeRequest, ComponentExportRequest, CustomLabelExportRequest, CustomLabelTemplateCreate, CustomLabelTemplateOut, CustomLabelTemplateUpdate, InventoryLotCreate, InventoryLotOut, UsageEventRequest
 from .database import get_db
+from .branding import APP_BRAND_NAME
 from .models import (
     CompetitionActivityLog,
     CompetitionAiResult,
@@ -70,10 +71,18 @@ from .services.mimo_ai import (
     contest_library_assist,
 )
 from .labels import (
+    custom_label_font_keys,
+    category_package_summary_from_records,
     data_uri_from_bytes,
+    is_standard_category_label_group,
+    label_document,
     print_timestamp,
+    render_component_label_pdf,
     render_component_label_sheet,
+    render_basic_custom_label_pdf_items,
     render_custom_label_cards,
+    render_standard_category_label_pdf_items,
+    render_standard_category_label_cards,
     render_custom_label_sheet,
     sanitize_svg_markup,
 )
@@ -424,6 +433,9 @@ def cw_component_out(
         "normalized_spec": component.normalized_spec,
         "location": component.location,
         "remark": component.remark,
+        "first_stocked_at": component.first_stocked_at,
+        "last_stocked_at": component.last_stocked_at,
+        "created_at": component.created_at,
     }
 
 
@@ -607,8 +619,10 @@ def clean_custom_label_content(content: dict | None) -> dict:
             if not isinstance(item, dict):
                 continue
             element_type = str(item.get("type") or "text").strip()
-            if element_type not in {"text", "image", "svg"}:
+            if element_type not in {"text", "image", "svg", "field", "qr", "shape", "category_badge"}:
                 element_type = "text"
+            if element_type in {"field", "category_badge"} and str(item.get("field") or "").strip() == "print_date":
+                continue
             row = {
                 "id": str(item.get("id") or f"el-{index + 1}")[:80],
                 "type": element_type,
@@ -616,21 +630,59 @@ def clean_custom_label_content(content: dict | None) -> dict:
                 "y": item.get("y", 34),
                 "width": item.get("width", 56),
                 "height": item.get("height", 30),
+                "x_mm": item.get("x_mm"),
+                "y_mm": item.get("y_mm"),
+                "width_mm": item.get("width_mm"),
+                "height_mm": item.get("height_mm"),
                 "rotate": item.get("rotate", 0),
                 "font_size": item.get("font_size", 13),
+                "font_weight": item.get("font_weight", 400),
+                "font_family": str(item.get("font_family") or "system")[:40],
                 "color": str(item.get("color") or "#111827")[:40],
                 "align": str(item.get("align") or "center")[:16],
             }
+            if item.get("role"):
+                row["role"] = str(item.get("role") or "")[:80]
             if element_type == "text":
                 row["text"] = str(item.get("text") or "自定义标签")[:1000]
-            else:
+            elif element_type in {"image", "svg"}:
                 row["asset_id"] = str(item.get("asset_id") or "")[:80]
                 if element_type == "svg" and item.get("svg"):
                     row["svg"] = sanitize_svg_markup(str(item.get("svg") or ""))
+            elif element_type in {"field", "qr", "category_badge"}:
+                row["field"] = str(item.get("field") or ("scan_url" if element_type == "qr" else "name"))[:80]
+                row["prefix"] = str(item.get("prefix") or "")[:80]
+            elif element_type == "shape":
+                row["fill"] = str(item.get("fill") or "#eff6ff")[:40]
+                row["stroke"] = str(item.get("stroke") or "#93c5fd")[:40]
+                row["radius"] = item.get("radius", 1)
+            for mm_key in ("x_mm", "y_mm", "width_mm", "height_mm"):
+                if row.get(mm_key) is None:
+                    row.pop(mm_key, None)
             cleaned.append(row)
     if not cleaned:
-        cleaned = [{"id": "text-1", "type": "text", "text": str(raw.get("text") or "自定义标签")[:1000], "x": 18, "y": 33, "width": 64, "height": 30, "font_size": 16, "color": "#111827", "align": "center"}]
-    return {"elements": cleaned}
+        cleaned = [{"id": "text-1", "type": "text", "text": str(raw.get("text") or "自定义标签")[:1000], "x": 18, "y": 33, "width": 64, "height": 30, "font_size": 16, "font_family": "system", "color": "#111827", "align": "center"}]
+    result = {"elements": cleaned, "show_logo": raw.get("show_logo") is not False}
+    if raw.get("kind"):
+        result["kind"] = str(raw.get("kind") or "")[:80]
+    styles = raw.get("styles")
+    cleaned_styles: list[dict] = []
+    if isinstance(styles, list):
+        for index, style in enumerate(styles[:20]):
+            if not isinstance(style, dict):
+                continue
+            style_content = clean_custom_label_content({"elements": style.get("elements")})
+            cleaned_styles.append({
+                "id": str(style.get("id") or f"style-{index + 1}")[:80],
+                "name": str(style.get("name") or f"样式 {index + 1}")[:80],
+                "category_name": str(style.get("category_name") or "")[:80],
+                "elements": style_content["elements"],
+            })
+    if cleaned_styles:
+        result["styles"] = cleaned_styles
+        active_style_id = str(raw.get("active_style_id") or cleaned_styles[0]["id"])[:80]
+        result["active_style_id"] = active_style_id
+    return result
 
 
 def custom_label_template_out(template: CustomLabelTemplate, db: Session) -> dict:
@@ -742,23 +794,64 @@ def custom_label_asset_resolver(db: Session, template: CustomLabelTemplate):
     return resolve
 
 
-def team_component_export_custom_label_cards(db: Session, library_id: str, items: list, printed_at: str) -> list[str]:
+def team_component_export_custom_label_cards(db: Session, library_id: str, items: list, printed_at: str, records: list[dict] | None = None) -> list[str]:
     cards: list[str] = []
+    package_summary = category_package_summary_from_records(records)
     for item in items or []:
         template_id = str(getattr(item, "template_id", "") or "").strip()
         if not template_id:
             continue
         template = require_team_custom_label_template(db, library_id, template_id)
         content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        if is_standard_category_label_group(content):
+            cards.extend(
+                render_standard_category_label_cards(
+                    content,
+                    package_summary,
+                    copies=int(getattr(item, "copies", 1) or 1),
+                    printed_at=printed_at,
+                )
+            )
+            continue
         cards.extend(
             render_custom_label_cards(
                 content,
                 asset_resolver=custom_label_asset_resolver(db, template),
                 copies=int(getattr(item, "copies", 1) or 1),
                 printed_at=printed_at,
+                include_all_styles=True,
             )
         )
     return cards
+
+
+def team_component_export_custom_label_font_keys(db: Session, library_id: str, items: list) -> set[str]:
+    keys: set[str] = set()
+    for item in items or []:
+        template_id = str(getattr(item, "template_id", "") or "").strip()
+        if not template_id:
+            continue
+        template = require_team_custom_label_template(db, library_id, template_id)
+        content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        keys.update(custom_label_font_keys(content))
+    return keys
+
+
+def team_component_export_custom_label_pdf_items(db: Session, library_id: str, items: list, records: list[dict] | None = None) -> list[dict]:
+    pdf_items: list[dict] = []
+    package_summary = category_package_summary_from_records(records)
+    for item in items or []:
+        template_id = str(getattr(item, "template_id", "") or "").strip()
+        if not template_id:
+            continue
+        template = require_team_custom_label_template(db, library_id, template_id)
+        content = clean_custom_label_content(parse_custom_label_content(template.content_json))
+        copies = int(getattr(item, "copies", 1) or 1)
+        if is_standard_category_label_group(content):
+            pdf_items.extend(render_standard_category_label_pdf_items(content, package_summary, copies=copies))
+        else:
+            pdf_items.extend(render_basic_custom_label_pdf_items(content, copies=copies))
+    return pdf_items
 
 
 def require_team_source_component(
@@ -1641,9 +1734,10 @@ def export_library_component_labels(
         options.excluded_categories,
     )
     printed_at = print_timestamp()
-    appended_cards = [] if options.calibration else team_component_export_custom_label_cards(db, library_id, options.custom_labels, printed_at)
-    return Response(
-        content=render_component_label_sheet(
+    output_format = (options.output_format or "html").lower()
+    if output_format == "pdf":
+        appended_pdf_items = [] if options.calibration else team_component_export_custom_label_pdf_items(db, library_id, options.custom_labels, records)
+        pdf_doc = render_component_label_pdf(
             records,
             PUBLIC_PERSONAL_BASE_URL,
             start_slot=options.start_slot,
@@ -1651,9 +1745,32 @@ def export_library_component_labels(
             offset_x_mm=options.offset_x_mm,
             offset_y_mm=options.offset_y_mm,
             calibration=options.calibration,
-            appended_cards=appended_cards,
             printed_at=printed_at,
-        ),
+            safe_margin=options.safe_margin,
+            appended_items=appended_pdf_items,
+        )
+        return Response(
+            content=pdf_doc,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="team-component-labels.pdf"'},
+        )
+    appended_cards = [] if options.calibration else team_component_export_custom_label_cards(db, library_id, options.custom_labels, printed_at, records)
+    appended_font_keys = set() if options.calibration else team_component_export_custom_label_font_keys(db, library_id, options.custom_labels)
+    html_doc = render_component_label_sheet(
+        records,
+        PUBLIC_PERSONAL_BASE_URL,
+        start_slot=options.start_slot,
+        copies=options.copies,
+        offset_x_mm=options.offset_x_mm,
+        offset_y_mm=options.offset_y_mm,
+        calibration=options.calibration,
+        appended_cards=appended_cards,
+        printed_at=printed_at,
+        safe_margin=options.safe_margin,
+        font_keys=appended_font_keys,
+    )
+    return Response(
+        content=html_doc,
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": 'inline; filename="team-component-labels.html"'},
     )
@@ -1677,6 +1794,24 @@ def list_team_custom_labels(
         .all()
     )
     return [custom_label_template_out(row, db) for row in rows]
+
+
+@router.get("/libraries/{library_id}/custom-labels/category-summary")
+def team_custom_label_category_summary(
+    library_id: str,
+    auth: AuthContext = Depends(require_access),
+    db: Session = Depends(get_db),
+):
+    _library, member = require_library_member(db, library_id, auth)
+    items = (
+        db.query(CompetitionLibraryComponent)
+        .filter(CompetitionLibraryComponent.library_id == library_id)
+        .order_by(CompetitionLibraryComponent.created_at.asc())
+        .all()
+    )
+    records = team_components_out(db, items, auth, member)
+    summary = category_package_summary_from_records(records)
+    return [{"category": category, "summary": value} for category, value in summary.items()]
 
 
 @router.post("/libraries/{library_id}/custom-labels", response_model=CustomLabelTemplateOut)
@@ -1796,6 +1931,7 @@ def export_team_custom_label_sheet(
             offset_x_mm=payload.offset_x_mm,
             offset_y_mm=payload.offset_y_mm,
             calibration=payload.calibration,
+            safe_margin=payload.safe_margin,
         ),
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": 'inline; filename="team-custom-labels.html"'},

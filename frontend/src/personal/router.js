@@ -3,10 +3,12 @@ import { FEATURE_EDA_ENABLED } from '../shared/features'
 
 const routes = [
   { path: '/', name: 'dashboard', component: () => import('../views/Dashboard.vue') },
+  { path: '/auth/callback', name: 'auth-callback', component: () => import('../shared/views/AuthCallback.vue') },
   { path: '/public/components/:code', name: 'public-component', component: () => import('../views/PublicComponent.vue') },
   { path: '/scan/:code', name: 'personal-scan', component: () => import('../views/PublicComponent.vue') },
   { path: '/public/projects/:code', name: 'public-project', component: () => import('../views/PublicProject.vue') },
   { path: '/components', name: 'components', component: () => import('../views/Components.vue') },
+  { path: '/labels', name: 'custom-labels', component: () => import('../views/CustomLabels.vue') },
   { path: '/coverage', name: 'coverage', component: () => import('../views/Coverage.vue') },
   { path: '/projects', name: 'projects', component: () => import('../views/Projects.vue') },
   { path: '/manual', name: 'manual', component: () => import('../shared/views/UserManual.vue') },

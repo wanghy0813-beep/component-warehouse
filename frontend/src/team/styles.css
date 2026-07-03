@@ -32,13 +32,14 @@ a { color: inherit; text-decoration: none; }
 
 .team-standalone-shell {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   background: #f8fafc;
 }
 
 .team-standalone-shell > :first-child {
-  flex: 1 0 auto;
+  min-height: 0;
 }
 
 .team-header {
@@ -58,6 +59,7 @@ a { color: inherit; text-decoration: none; }
 
 .team-brand { display: flex; align-items: center; gap: 10px; }
 .team-brand img { width: 104px; height: 44px; object-fit: contain; object-position: center; }
+.team-brand .brand-icon { width: 36px; height: 36px; border-radius: 9px; }
 .team-brand span { display: flex; flex-direction: column; }
 .team-brand strong { letter-spacing: .04em; color: #9a3412; }
 .team-brand small { color: #6b7f7d; }
@@ -121,6 +123,7 @@ a { color: inherit; text-decoration: none; }
   .team-header { height: 58px; grid-template-columns: 1fr auto; }
   .team-brand span, .header-actions > span, .desktop-nav { display: none; }
   .team-brand img { width: 88px; height: 38px; }
+  .team-brand .brand-icon { width: 34px; height: 34px; }
   .team-main { width: min(100% - 20px, 1280px); padding: 14px 0 86px; }
   .team-page-head { align-items: stretch; flex-direction: column; }
   .team-page-head > .team-toolbar { width: 100%; }
