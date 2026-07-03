@@ -4,7 +4,7 @@
   "short_name": "器件管理团队",
   "description": "WXY LAB 器件管理团队版",
   "start_url": "/component-warehouse/team/",
-  "scope": "/component-warehouse/team/",
+  "scope": "/",
   "display": "standalone",
   "lang": "zh-CN",
   "categories": ["productivity", "utilities"],

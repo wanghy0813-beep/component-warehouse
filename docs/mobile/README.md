@@ -22,7 +22,7 @@ https://example.com/component-warehouse/team/?embed=1
 - `receiveScan({ value })` 或 `receiveScan({ values })`：回传一个或多个扫码结果。
 - `receiveNfc(payload)`：回传 NFC 内容。
 - `navigate(path)`：切换个人版或团队版内部页面。
-- `openAccountSettings()`：打开账号设置抽屉。
+- `openAccountSettings()`：跳转到 WXY LAB 统一账号中心 `/account/profile`。
 
 网页端会发送：
 

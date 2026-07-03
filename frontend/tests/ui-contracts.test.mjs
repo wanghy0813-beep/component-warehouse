@@ -43,7 +43,7 @@ test('PCB empty state is separate from request failure handling', () => {
   assert.match(text, /const pcbData = await listPcbs/)
 })
 
-test('login panel only exposes unified SSO while account settings keep security codes', () => {
+test('login panel and account menu route account management to unified SSO center', () => {
   const auth = source('../src/components/AuthPanel.vue')
   assert.match(auth, /使用 WXY LAB 统一登录/)
   assert.match(auth, /sso-button/)
@@ -70,15 +70,21 @@ test('login panel only exposes unified SSO while account settings keep security 
   assert.doesNotMatch(auth, /errorMessage\(error, '操作失败'\)/)
 
   const account = source('../src/shared/components/AccountPopover.vue')
-  assert.match(account, /name="password" lazy/)
-  assert.match(account, /name="phone" lazy/)
-  assert.match(account, /captchaError/)
+  const sessionApi = source('../src/api/authSessionApi.js')
+  assert.match(account, /统一账号中心/)
+  assert.match(account, /账号管理/)
   assert.match(account, /v-model:visible="popoverVisible"/)
-  assert.match(account, /await nextTick\(\)/)
-  assert.match(account, /append-to-body/)
   assert.match(account, /cw-open-account-settings/)
+  assert.match(account, /openAccountProfile/)
   assert.match(account, /fetchAccountProfile/)
   assert.match(account, /cw-account-popover/)
+  assert.match(sessionApi, /ACCOUNT_PROFILE_PATH = '\/account\/profile'/)
+  assert.match(sessionApi, /accountProfileUrl/)
+  assert.doesNotMatch(account, /security-code/)
+  assert.doesNotMatch(account, /更换手机号/)
+  assert.doesNotMatch(account, /修改密码/)
+  assert.doesNotMatch(account, /刷新会话/)
+  assert.doesNotMatch(account, /captchaError/)
 })
 
 test('app shell is marked as Chinese and opts out of browser translation', () => {
@@ -105,9 +111,11 @@ test('app shell is marked as Chinese and opts out of browser translation', () =>
   assert.match(html, /<body class="notranslate" translate="no">/)
   assert.match(manifest, /"name": "WXY LAB 器件管理"/)
   assert.match(manifest, /"short_name": "器件管理"/)
+  assert.match(manifest, /"scope": "\/"/)
   assert.doesNotMatch(manifest, /"short_name": "CW"/)
   assert.match(teamManifest, /"name": "WXY LAB 器件管理团队版"/)
   assert.match(teamManifest, /"short_name": "器件管理团队"/)
+  assert.match(teamManifest, /"scope": "\/"/)
   assert.doesNotMatch(teamManifest, /CW Team/)
   assert.match(vite, /VITE_PWA_PERSONAL_NAME/)
   assert.match(vite, /apple-mobile-web-app-title/)

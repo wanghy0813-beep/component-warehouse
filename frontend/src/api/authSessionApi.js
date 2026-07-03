@@ -7,6 +7,7 @@ export const ACCOUNT_BASE =
   import.meta.env.VITE_ACCOUNT_BASE || ''
 export const ACCOUNT_WEB_CLIENT_ID =
   import.meta.env.VITE_ACCOUNT_WEB_CLIENT_ID || 'componentwarehouse-web'
+export const ACCOUNT_PROFILE_PATH = '/account/profile'
 
 const ACCESS_KEY = 'cw_auth_access_token'
 const REFRESH_KEY = 'cw_auth_refresh_token'
@@ -83,6 +84,16 @@ export function getAuthRuntimeConfig() {
 
 export function isLocalPasswordAuth() {
   return authRuntime.accountMode === 'local-password'
+}
+
+export function accountProfileUrl() {
+  if (typeof window === 'undefined') return ACCOUNT_PROFILE_PATH
+  return new URL(ACCOUNT_PROFILE_PATH, window.location.origin).href
+}
+
+export function openAccountProfile() {
+  if (typeof window === 'undefined') return
+  window.location.assign(accountProfileUrl())
 }
 
 async function ensureAuthRuntimeReady() {
@@ -243,24 +254,9 @@ export async function getValidAuthToken() {
   return getAuthToken()
 }
 
-export async function fetchCaptcha() {
-  await ensureAuthRuntimeReady()
-  const { data } = await localAuthApi.get('/auth/account/captcha')
-  return data
-}
-
 export async function checkAccountHealth() {
   await ensureAuthRuntimeReady()
   const { data } = await localAuthApi.get('/auth/account/health', { timeout: 8000 })
-  return data
-}
-
-export async function sendSmsCode(payload) {
-  await ensureAuthRuntimeReady()
-  const token = await getValidAuthToken()
-  const { data } = await localAuthApi.post('/auth/account/sms/send', payload, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
-  })
   return data
 }
 
@@ -344,27 +340,6 @@ async function accountRequest(method, url, data) {
 export async function fetchAccountProfile() {
   const data = await accountRequest('get', '/me')
   return rememberUser(data.user)
-}
-
-export async function updateAccountProfile(payload) {
-  const data = await accountRequest('patch', '/me', {
-    displayName: payload.displayName,
-    avatarUrl: payload.avatarUrl || ''
-  })
-  return rememberUser(data.user)
-}
-
-export async function changeAccountPassword(payload) {
-  return accountRequest('post', '/password/change', payload)
-}
-
-export async function changeAccountPhone(payload) {
-  const data = await accountRequest('post', '/phone/change', payload)
-  return rememberUser(data.user)
-}
-
-export async function listAccountSessions() {
-  return accountRequest('get', '/sessions')
 }
 
 export async function logoutAuthSession() {

@@ -4,7 +4,7 @@
   "short_name": "器件管理",
   "description": "WXY LAB 器件管理个人版",
   "start_url": "/component-warehouse/personal/",
-  "scope": "/component-warehouse/personal/",
+  "scope": "/",
   "display": "standalone",
   "lang": "zh-CN",
   "categories": ["productivity", "utilities"],
