@@ -198,47 +198,47 @@ async function submitSsoLogin() {
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  opacity: .86;
+  opacity: .82;
   background:
     linear-gradient(90deg, rgba(249, 115, 22, .10) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(37, 99, 235, .08) 1px, transparent 1px),
-    linear-gradient(116deg, transparent 0 42%, rgba(251, 146, 60, .18) 43% 44%, transparent 45%),
-    linear-gradient(296deg, transparent 0 54%, rgba(59, 130, 246, .14) 55% 56%, transparent 57%);
-  background-size: 64px 64px, 64px 64px, 460px 460px, 560px 560px;
-  animation: auth-grid-drift 18s linear infinite;
+    linear-gradient(0deg, rgba(37, 99, 235, .08) 1px, transparent 1px);
+  background-size: 64px 64px;
 }
 
 .auth-ambient::before,
 .auth-ambient::after {
   content: "";
   position: absolute;
-  inset: -18% -10%;
+  top: -28%;
+  left: -12%;
+  width: 124%;
+  height: 156%;
   background:
-    linear-gradient(118deg, transparent 0 45%, rgba(249, 115, 22, .18) 46% 47%, transparent 48%),
-    linear-gradient(296deg, transparent 0 50%, rgba(37, 99, 235, .14) 51% 52%, transparent 53%);
-  background-size: 680px 680px, 760px 760px;
-  filter: blur(1px);
-  opacity: .72;
+    repeating-linear-gradient(118deg, transparent 0 220px, rgba(249, 115, 22, .16) 228px 240px, transparent 250px 520px),
+    repeating-linear-gradient(296deg, transparent 0 260px, rgba(37, 99, 235, .13) 268px 282px, transparent 292px 620px);
+  opacity: .58;
   transform: translate3d(0, 0, 0);
-  animation: auth-band-drift 24s linear infinite;
+  will-change: transform;
+  animation: auth-band-slide 42s linear infinite;
 }
 
 .auth-ambient::after {
-  inset: -22% -14%;
-  opacity: .42;
-  background-size: 840px 840px, 920px 920px;
-  animation-duration: 32s;
+  opacity: .34;
+  transform: translate3d(-6%, -4%, 0);
+  animation-duration: 64s;
   animation-direction: reverse;
 }
 
-@keyframes auth-grid-drift {
-  from { background-position: 0 0, 0 0, 0 0, 0 0; }
-  to { background-position: 64px 64px, -64px 64px, 460px 0, -560px 0; }
+@keyframes auth-band-slide {
+  from { transform: translate3d(-5%, -3%, 0); }
+  to { transform: translate3d(5%, 3%, 0); }
 }
 
-@keyframes auth-band-drift {
-  from { background-position: -260px -220px, 280px 180px; }
-  to { background-position: 420px 460px, -480px -420px; }
+@media (prefers-reduced-motion: reduce) {
+  .auth-ambient::before,
+  .auth-ambient::after {
+    animation: none;
+  }
 }
 
 .auth-brand,
