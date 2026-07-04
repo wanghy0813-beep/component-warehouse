@@ -174,19 +174,21 @@ async function submitSsoLogin() {
 <style scoped>
 .auth-panel-page {
   position: relative;
-  width: min(100%, 980px);
+  width: 100%;
   max-width: 100%;
   box-sizing: border-box;
   margin: 0 auto;
-  min-height: auto;
+  min-height: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
-  place-content: center;
+  grid-template-columns: minmax(0, 560px) minmax(0, 510px);
+  justify-content: center;
+  align-content: center;
   gap: 18px;
-  padding: clamp(14px, 2.4vh, 24px) 24px;
+  padding: clamp(22px, 4vh, 54px) max(24px, calc((100vw - 1180px) / 2));
   overflow: hidden;
+  isolation: isolate;
   background:
-    linear-gradient(115deg, rgba(255, 247, 237, .92) 0%, rgba(255, 255, 255, .96) 46%, rgba(239, 246, 255, .94) 100%),
+    linear-gradient(115deg, rgba(255, 247, 237, .90) 0%, rgba(255, 255, 255, .96) 44%, rgba(239, 246, 255, .92) 100%),
     #f8fafc;
 }
 
@@ -195,19 +197,48 @@ async function submitSsoLogin() {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: .72;
+  overflow: hidden;
+  opacity: .86;
   background:
-    linear-gradient(90deg, rgba(249, 115, 22, .13) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(37, 99, 235, .10) 1px, transparent 1px),
-    linear-gradient(120deg, transparent 0 44%, rgba(251, 146, 60, .16) 45% 46%, transparent 47%),
-    linear-gradient(300deg, transparent 0 54%, rgba(59, 130, 246, .12) 55% 56%, transparent 57%);
-  background-size: 58px 58px, 58px 58px, 420px 420px, 520px 520px;
+    linear-gradient(90deg, rgba(249, 115, 22, .10) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(37, 99, 235, .08) 1px, transparent 1px),
+    linear-gradient(116deg, transparent 0 42%, rgba(251, 146, 60, .18) 43% 44%, transparent 45%),
+    linear-gradient(296deg, transparent 0 54%, rgba(59, 130, 246, .14) 55% 56%, transparent 57%);
+  background-size: 64px 64px, 64px 64px, 460px 460px, 560px 560px;
   animation: auth-grid-drift 18s linear infinite;
+}
+
+.auth-ambient::before,
+.auth-ambient::after {
+  content: "";
+  position: absolute;
+  inset: -18% -10%;
+  background:
+    linear-gradient(118deg, transparent 0 45%, rgba(249, 115, 22, .18) 46% 47%, transparent 48%),
+    linear-gradient(296deg, transparent 0 50%, rgba(37, 99, 235, .14) 51% 52%, transparent 53%);
+  background-size: 680px 680px, 760px 760px;
+  filter: blur(1px);
+  opacity: .72;
+  transform: translate3d(0, 0, 0);
+  animation: auth-band-drift 24s linear infinite;
+}
+
+.auth-ambient::after {
+  inset: -22% -14%;
+  opacity: .42;
+  background-size: 840px 840px, 920px 920px;
+  animation-duration: 32s;
+  animation-direction: reverse;
 }
 
 @keyframes auth-grid-drift {
   from { background-position: 0 0, 0 0, 0 0, 0 0; }
-  to { background-position: 58px 58px, -58px 58px, 420px 0, -520px 0; }
+  to { background-position: 64px 64px, -64px 64px, 460px 0, -560px 0; }
+}
+
+@keyframes auth-band-drift {
+  from { background-position: -260px -220px, 280px 180px; }
+  to { background-position: 420px 460px, -480px -420px; }
 }
 
 .auth-brand,
