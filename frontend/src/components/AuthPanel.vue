@@ -232,6 +232,23 @@ async function submitSsoLogin() {
   min-width: 0;
   border-radius: var(--cw-radius-card);
   box-shadow: 0 18px 48px rgba(15, 23, 42, .08);
+  animation: auth-card-enter .42s ease-out both;
+  animation-iteration-count: 1;
+}
+
+.auth-card {
+  animation-delay: .08s;
+}
+
+@keyframes auth-card-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 .auth-brand {
@@ -329,6 +346,12 @@ async function submitSsoLogin() {
   display: grid;
   gap: 3px;
   padding: 10px;
+  transition: transform .18s ease, border-color .18s ease;
+}
+
+.workbench-grid article:hover {
+  border-color: #bfdbfe;
+  transform: translateY(-1px);
 }
 
 .workbench-grid small,
@@ -362,6 +385,8 @@ async function submitSsoLogin() {
 }
 
 .qr-mark {
+  position: relative;
+  overflow: hidden;
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
@@ -372,6 +397,41 @@ async function submitSsoLogin() {
     linear-gradient(0deg, #0f172a 20%, transparent 0 40%, #0f172a 0 60%, transparent 0),
     #fff;
   background-size: 12px 12px;
+}
+
+.qr-mark::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(251, 146, 60, .85);
+  opacity: 0;
+  animation: qr-scan-blip 4.8s ease-in-out infinite;
+}
+
+@keyframes qr-scan-blip {
+  0%, 72%, 100% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  78% {
+    opacity: .9;
+  }
+  92% {
+    opacity: .9;
+    transform: translateY(18px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-brand,
+  .auth-card,
+  .qr-mark::after {
+    animation: none;
+  }
 }
 
 .label-strip > div:last-child {
