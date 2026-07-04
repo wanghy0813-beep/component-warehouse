@@ -198,47 +198,31 @@ async function submitSsoLogin() {
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  opacity: .82;
+  opacity: .78;
   background:
-    linear-gradient(90deg, rgba(249, 115, 22, .10) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(37, 99, 235, .08) 1px, transparent 1px);
-  background-size: 64px 64px;
+    linear-gradient(90deg, rgba(249, 115, 22, .08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(37, 99, 235, .07) 1px, transparent 1px),
+    linear-gradient(116deg, transparent 0 46%, rgba(249, 115, 22, .08) 47% 48%, transparent 49%),
+    linear-gradient(296deg, transparent 0 54%, rgba(37, 99, 235, .07) 55% 56%, transparent 57%);
+  background-size: 64px 64px, 64px 64px, 420px 420px, 520px 520px;
 }
 
 .auth-ambient::before,
 .auth-ambient::after {
   content: "";
   position: absolute;
-  top: -28%;
-  left: -12%;
-  width: 124%;
-  height: 156%;
+  inset: 0;
   background:
-    repeating-linear-gradient(118deg, transparent 0 220px, rgba(249, 115, 22, .16) 228px 240px, transparent 250px 520px),
-    repeating-linear-gradient(296deg, transparent 0 260px, rgba(37, 99, 235, .13) 268px 282px, transparent 292px 620px);
-  opacity: .58;
-  transform: translate3d(0, 0, 0);
-  will-change: transform;
-  animation: auth-band-slide 42s linear infinite;
+    linear-gradient(118deg, transparent 0 15%, rgba(249, 115, 22, .09) 15.4% 16.2%, transparent 16.8% 52%, rgba(37, 99, 235, .07) 52.4% 53.2%, transparent 54%),
+    linear-gradient(118deg, transparent 0 66%, rgba(249, 115, 22, .07) 66.4% 67.1%, transparent 68%);
+  opacity: .74;
 }
 
 .auth-ambient::after {
-  opacity: .34;
-  transform: translate3d(-6%, -4%, 0);
-  animation-duration: 64s;
-  animation-direction: reverse;
-}
-
-@keyframes auth-band-slide {
-  from { transform: translate3d(-5%, -3%, 0); }
-  to { transform: translate3d(5%, 3%, 0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .auth-ambient::before,
-  .auth-ambient::after {
-    animation: none;
-  }
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .45), transparent 18%, transparent 82%, rgba(255, 255, 255, .50)),
+    linear-gradient(90deg, rgba(255, 255, 255, .52), transparent 20%, transparent 80%, rgba(255, 255, 255, .58));
+  opacity: 1;
 }
 
 .auth-brand,
