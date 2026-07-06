@@ -156,6 +156,23 @@ test('app shell is marked as Chinese and opts out of browser translation', () =>
   assert.match(team, /class="team-app notranslate" lang="zh-CN" translate="no"/)
 })
 
+test('mobile bottom navigation distributes visible items evenly', () => {
+  const personal = source('../src/personal/App.vue')
+  const team = source('../src/team/styles.css')
+
+  for (const text of [personal, team]) {
+    assert.match(text, /display: flex/)
+    assert.match(text, /justify-content: space-between/)
+    assert.match(text, /flex: 1 1 0/)
+    assert.match(text, /width: min\(100% - 20px, 520px\)/)
+    assert.match(text, /border-radius: 22px/)
+    assert.match(text, /border-radius: 16px/)
+    assert.match(text, /linear-gradient\(180deg, #fff7ed, #ffedd5\)/)
+    assert.match(text, /transition: color \.18s ease, background-color \.18s ease, transform \.18s ease/)
+    assert.doesNotMatch(text, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/)
+  }
+})
+
 test('team library cache failures do not turn successful API data into load errors', () => {
   const libraries = source('../src/team/views/Libraries.vue')
   assert.match(libraries, /const onlineLibraries = await listLibraries\(\)/)
@@ -349,7 +366,9 @@ test('personal and team expose the same engineering workflow pages', () => {
 test('mobile navigation and EDA records stay in one responsive row', () => {
   const teamStyles = source('../src/team/styles.css')
   const eda = source('../src/shared/views/EdaLibrary.vue')
-  assert.match(teamStyles, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/)
+  assert.match(teamStyles, /display: flex/)
+  assert.match(teamStyles, /flex: 1 1 0/)
+  assert.doesNotMatch(teamStyles, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/)
   assert.match(eda, /class="eda-mobile-list"/)
   assert.match(eda, /class="eda-desktop-table"/)
   assert.match(eda, /@media \(max-width: 680px\)/)

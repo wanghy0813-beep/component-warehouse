@@ -540,7 +540,7 @@ async function handleLogout() {
 
   .personal-main {
     width: min(100% - 20px, 1280px);
-    padding: 14px 0 86px;
+    padding: 14px 0 104px;
   }
 
   .personal-context {
@@ -549,23 +549,34 @@ async function handleLogout() {
 
   .personal-mobile-nav {
     position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom));
     z-index: 30;
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    padding: 7px max(6px, env(safe-area-inset-left)) calc(7px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--cw-border);
-    background: rgba(255, 255, 255, .96);
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    width: min(100% - 20px, 520px);
+    margin: 0 auto;
+    padding: 6px;
+    border: 1px solid rgba(226, 232, 240, .92);
+    border-radius: 22px;
+    background: rgba(255, 255, 255, .94);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, .14);
+    backdrop-filter: blur(14px);
   }
 
   .personal-mobile-nav a {
     min-width: 0;
+    flex: 1 1 0;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 3px;
+    min-height: 52px;
+    padding: 6px 2px;
+    border-radius: 16px;
     overflow: hidden;
     color: #71817f;
     font-size: 11px;
@@ -573,6 +584,7 @@ async function handleLogout() {
     text-decoration: none;
     text-overflow: ellipsis;
     white-space: nowrap;
+    transition: color .18s ease, background-color .18s ease, transform .18s ease;
   }
 
   .personal-mobile-nav svg {
@@ -581,8 +593,14 @@ async function handleLogout() {
   }
 
   .personal-mobile-nav a.router-link-exact-active {
+    background: linear-gradient(180deg, #fff7ed, #ffedd5);
     color: #c2410c;
     font-weight: 700;
+    box-shadow: inset 0 0 0 1px rgba(251, 146, 60, .22);
+  }
+
+  .personal-mobile-nav a:active {
+    transform: translateY(1px) scale(.98);
   }
 }
 
