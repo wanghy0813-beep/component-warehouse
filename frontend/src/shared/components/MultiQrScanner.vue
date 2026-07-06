@@ -4,6 +4,7 @@
     :model-value="modelValue"
     :title="title"
     width="min(760px, 96vw)"
+    modal-class="scanner-overlay"
     append-to-body
     destroy-on-close
     @open="handleOpen"
@@ -165,9 +166,7 @@ let matchedExpectedCode = ''
 const detectionBoxes = ref([])
 
 watch(expectedCode, () => {
-  matchedExpectedCode = ''
-  detectionBoxes.value = []
-  if (codes.value.length) scheduleResolve()
+  clearCodes()
 })
 
 watch(
@@ -566,16 +565,22 @@ onBeforeUnmount(() => {
 
 <style scoped>
 :deep(.scanner-dialog) {
+  width: min(760px, calc(100vw - 28px)) !important;
+  height: min(760px, calc(100dvh - 28px));
   max-height: calc(100dvh - 28px);
   display: flex;
   flex-direction: column;
+  margin: 0 !important;
 }
 :deep(.scanner-dialog .el-dialog__body) {
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   padding-top: 10px;
 }
-.scanner-layout { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.1fr); gap: 14px; }
-.scanner-camera, .scanner-results { min-width: 0; display: grid; align-content: start; gap: 10px; }
+.scanner-layout { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.1fr); gap: 14px; overflow: hidden; }
+.scanner-camera, .scanner-results { min-width: 0; min-height: 0; display: grid; align-content: start; gap: 10px; }
+.scanner-results { grid-template-rows: auto auto minmax(0, 1fr); align-content: stretch; }
 .video-shell { position: relative; overflow: hidden; border-radius: var(--cw-radius-card); background: #111827; aspect-ratio: 4 / 3; }
 .scanner-camera video { width: 100%; height: 100%; background: #111827; object-fit: contain; display: block; }
 .scan-overlay { position: absolute; inset: 0; pointer-events: none; }
@@ -593,7 +598,7 @@ onBeforeUnmount(() => {
 .scanner-tip { margin: 0; padding: 8px 10px; border-radius: var(--cw-radius-control); background: #f8fafc; color: #667085; font-size: 13px; }
 .scanner-summary { display: flex; justify-content: space-between; gap: 10px; color: #667085; }
 .scanner-summary strong { color: #17202a; }
-.scanner-code-list { max-height: min(420px, 45dvh); display: grid; gap: 8px; overflow: auto; }
+.scanner-code-list { max-height: none; min-height: 0; display: grid; align-content: start; gap: 8px; overflow: auto; overscroll-behavior: contain; }
 .scanner-code-list article { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border: 1px solid #e5e7eb; border-radius: var(--cw-radius-control); background: #fff; }
 .scanner-code-list article.status-matched { border-color: #86efac; cursor: pointer; }
 .scanner-code-list article.status-not_found, .scanner-code-list article.status-ambiguous, .scanner-code-list article.status-error { border-color: #fed7aa; background: #fffaf5; }
@@ -604,8 +609,7 @@ onBeforeUnmount(() => {
 .scanner-error { margin: 0; color: #dc2626; }
 @media (max-width: 680px) {
   :deep(.scanner-dialog) {
-    width: min(94vw, 520px) !important;
-    margin: 8px auto !important;
+    width: min(520px, calc(100vw - 16px)) !important;
     height: calc(100dvh - 16px);
     max-height: calc(100dvh - 16px);
   }
@@ -633,7 +637,9 @@ onBeforeUnmount(() => {
   }
   .scanner-camera, .scanner-results { min-height: 0; gap: 8px; }
   .video-shell {
-    width: min(100%, calc(42dvh * 3 / 4), 330px);
+    --scanner-mobile-viewfinder-height: clamp(190px, 34dvh, 320px);
+    width: min(100%, calc(var(--scanner-mobile-viewfinder-height) * 3 / 4), 300px);
+    height: var(--scanner-mobile-viewfinder-height);
     margin-inline: auto;
     aspect-ratio: 3 / 4;
   }
@@ -646,11 +652,20 @@ onBeforeUnmount(() => {
     align-content: stretch;
     grid-template-rows: auto auto minmax(0, 1fr);
   }
-  .scanner-code-list { max-height: none; min-height: 0; }
+  .scanner-code-list { max-height: none; min-height: 0; overflow: auto; }
 }
 </style>
 
 <style>
+.scanner-overlay .el-overlay-dialog {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 14px;
+}
+
 .scanner-candidate-popper {
   max-width: min(92vw, 520px);
 }
@@ -658,5 +673,11 @@ onBeforeUnmount(() => {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 680px) {
+  .scanner-overlay .el-overlay-dialog {
+    padding: 8px;
+  }
 }
 </style>

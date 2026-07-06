@@ -22,6 +22,7 @@ export function uniqueDisplayParts(values, primary = '') {
 }
 
 const PASSIVE_VALUE_CATEGORIES = new Set(['电阻', '电容', '电感'])
+const SEMICONDUCTOR_MODEL_CATEGORIES = ['二极管', '三极管', '晶体管', '场效应管', 'MOS', 'MOSFET', 'BJT', 'IGBT']
 const PASSIVE_SPEC_NAMES = {
   电阻: ['阻值', '电阻值', '标称阻值'],
   电容: ['容值', '容量', '标称容值', '标称容量', '电容值'],
@@ -61,6 +62,78 @@ function hasPassiveUnit(value, category) {
   return false
 }
 
+function isSemiconductorCategory(category) {
+  const text = String(category || '').toLocaleUpperCase()
+  return SEMICONDUCTOR_MODEL_CATEGORIES.some((name) => text.includes(name.toLocaleUpperCase()))
+}
+
+function isRatingToken(value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  return /^[-+]?\d+(?:\.\d+)?(?:V|KV|MV|A|MA|UA|µA|Ω|OHM|W|MW|PF|NF|UF|µF|H|NH|UH|MH|HZ|KHZ|MHZ|GHZ|%)$/iu.test(text)
+}
+
+function isRatingPhrase(value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  const parts = text.split(/\s+/).filter(Boolean)
+  if (parts.length > 1 && parts.every(isRatingToken)) return true
+  return /^(?:[-+]?\d+(?:\.\d+)?(?:V|KV|MV|A|MA|UA|µA|Ω|OHM|W|MW|PF|NF|UF|µF|H|NH|UH|MH|HZ|KHZ|MHZ|GHZ|%))+$/iu.test(text.replace(/\s+/g, ''))
+}
+
+function isPackageToken(value) {
+  const text = String(value || '').trim().toLocaleUpperCase()
+  return /^(?:SOT|SOP|SOIC|DIP|TO|DO|SMA|SMB|SMC|DFN|QFN|LQFP|TSSOP|SSOP|0603|0805|1206)(?:[-_/]?[A-Z0-9.]+)*$/u.test(text)
+}
+
+function isUsableModelText(value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  if (/[\p{Script=Han}:：]/u.test(text)) return false
+  const compact = text.replace(/\s+/g, '')
+  if (isRatingPhrase(text)) return false
+  if (!/[A-Za-z]/.test(compact) || !/\d/.test(compact)) return false
+  const tokens = compact.split(/[,+，;；、]+/).filter(Boolean)
+  if (tokens.length && tokens.every(isRatingToken)) return false
+  if (isPackageToken(compact)) return false
+  return true
+}
+
+function cleanModelToken(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^(?:型号|规格型号|丝印|料号|part\s*number|model)[:：=]/iu, '')
+    .replace(/[()（）\[\]【】]/g, '')
+    .trim()
+}
+
+function modelCandidateFromText(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  for (const raw of text.split(/[\s,，;；、|]+/u)) {
+    const token = cleanModelToken(raw)
+    if (isUsableModelText(token)) return token
+  }
+  const leading = cleanModelToken(text.match(/^[A-Za-z0-9][A-Za-z0-9._+/:-]{1,}/u)?.[0] || '')
+  return isUsableModelText(leading) ? leading : ''
+}
+
+function semiconductorDisplayModel(item) {
+  const directModel = cleanModelToken(item?.model)
+  if (isUsableModelText(directModel)) return directModel
+  for (const spec of keySpecsFor(item)) {
+    const name = normalizeKey(spec?.name)
+    if (!['型号', '规格型号', 'model', 'partnumber', 'partno', '料号'].includes(name)) continue
+    const value = modelCandidateFromText(spec?.value)
+    if (value) return value
+  }
+  for (const value of [item?.name, item?.source_title, item?.normalized_spec, item?.parameters]) {
+    const candidate = modelCandidateFromText(value)
+    if (candidate) return candidate
+  }
+  return ''
+}
+
 function firstPassiveValueFromText(text, category) {
   const raw = String(text || '').replace('μ', 'µ')
   const patterns = {
@@ -94,6 +167,11 @@ export function componentDisplayTitle(item) {
   if (PASSIVE_VALUE_CATEGORIES.has(category)) {
     const passive = passiveDisplayValue(item, category)
     if (passive) return passive
+  }
+  if (isSemiconductorCategory(category)) {
+    const model = semiconductorDisplayModel(item)
+    if (model) return model
+    return String(item?.warehouse_code || item?.name || '未命名器件').trim()
   }
   return String(
     item?.model

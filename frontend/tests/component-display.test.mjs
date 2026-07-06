@@ -51,3 +51,33 @@ test('engineering IC module and sensor categories prefer model over parameters',
   assert.equal(componentDisplayTitle(sensor), 'INA226')
   assert.match(componentDisplaySubtitle(sensor), /36V 16bit/)
 })
+
+test('semiconductor titles prefer real model names over electrical ratings', () => {
+  const diode = {
+    category: { name: '二极管' },
+    model: '40V 1A',
+    name: 'SS14 肖特基二极管',
+    normalized_spec: '40V 1A',
+    source_title: '电压:40V 电流:1A 编带',
+    warehouse_code: 'DIO-00000048'
+  }
+  assert.equal(componentDisplayTitle(diode), 'SS14')
+  assert.match(componentDisplaySubtitle(diode), /^40V 1A/)
+
+  const transistor = {
+    category: '三极管',
+    name: '0.5A 25V 编带',
+    model: '',
+    source_title: 'PNP 电流:0.5A 电压:25V 编带',
+    warehouse_code: 'BJT-00000050'
+  }
+  assert.equal(componentDisplayTitle(transistor), 'BJT-00000050')
+
+  const mosfet = {
+    category: { name: 'MOS管' },
+    model: '',
+    name: 'AO3401A P-MOS 30V 4.2A',
+    normalized_spec: '30V 4.2A'
+  }
+  assert.equal(componentDisplayTitle(mosfet), 'AO3401A')
+})
