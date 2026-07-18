@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import stat
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -106,6 +107,50 @@ def test_configuration_uses_hidden_token_and_enforces_mode(mock_service, monkeyp
     destination.chmod(0o644)
     with pytest.raises(client_module.ClientError, match="0600"):
         client_module._read_config(destination)
+
+
+def test_windows_config_uses_current_user_acl_instead_of_unix_mode(monkeypatch, tmp_path):
+    destination = tmp_path / "component-warehouse" / "codex.json"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "whoami.exe":
+            return subprocess.CompletedProcess(command, 0, '"DESKTOP\\HaoyuWang","S-1-5-21-123"\n', "")
+        return subprocess.CompletedProcess(command, 0, "processed 1 file", "")
+
+    monkeypatch.setattr(client_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    client_module._write_config("https://warehouse.example.test", "cw_codex_test-secret", destination)
+
+    assert client_module._read_config(destination) == {
+        "service_url": "https://warehouse.example.test",
+        "token": "cw_codex_test-secret",
+    }
+    acl_commands = [command for command, _kwargs in calls if command[0] == "icacls.exe"]
+    assert ["/inheritance:r", "/grant:r"] == [acl_commands[0][2], acl_commands[0][3]]
+    assert any(command[-1] == "*S-1-5-21-123:(OI)(CI)(F)" for command in acl_commands)
+    assert any(command[-1] == "*S-1-5-21-123:(F)" for command in acl_commands)
+
+
+def test_windows_config_fails_closed_when_acl_cannot_be_applied(monkeypatch, tmp_path):
+    destination = tmp_path / "codex.json"
+    destination.write_text('{"service_url":"https://example.test","token":"cw_codex_test"}')
+    monkeypatch.setattr(client_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(client_module, "_windows_user_sid", lambda: "S-1-5-21-123")
+
+    def fail_acl(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(5, "icacls.exe")
+
+    monkeypatch.setattr(client_module.subprocess, "run", fail_acl)
+    with pytest.raises(client_module.ClientError, match="Windows 配置 ACL"):
+        client_module._read_config(destination)
+
+
+def test_missing_windows_config_keeps_configuration_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(client_module, "_is_windows", lambda: True)
+    with pytest.raises(client_module.ClientError, match="尚未配置"):
+        client_module._read_config(tmp_path / "missing" / "codex.json")
 
 
 def test_plain_http_is_allowed_only_for_loopback():

@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import getpass
 import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -49,16 +51,64 @@ def _api_url(root: str, path: str) -> str:
     return f"{root}/api/integrations/codex/{path.lstrip('/')}"
 
 
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _windows_user_sid() -> str:
+    try:
+        result = subprocess.run(
+            ["whoami.exe", "/user", "/fo", "csv", "/nh"],
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ClientError("无法读取当前 Windows 用户 SID，不能安全保存 Codex 令牌") from exc
+    for row in csv.reader(result.stdout.splitlines()):
+        for value in row:
+            candidate = value.strip()
+            if candidate.startswith("S-"):
+                return candidate
+    raise ClientError("无法识别当前 Windows 用户 SID，不能安全保存 Codex 令牌")
+
+
+def _secure_windows_acl(path: Path, *, directory: bool = False) -> None:
+    sid = _windows_user_sid()
+    grant = f"*{sid}:(OI)(CI)(F)" if directory else f"*{sid}:(F)"
+    try:
+        subprocess.run(
+            ["icacls.exe", str(path), "/inheritance:r", "/grant:r", grant],
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ClientError(f"无法收紧 Windows 配置 ACL：{path}") from exc
+
+
+def _secure_config_permissions(path: Path) -> None:
+    if _is_windows():
+        _secure_windows_acl(path.parent, directory=True)
+        _secure_windows_acl(path)
+        return
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise ClientError(f"配置权限不安全：{path} 必须为 0600")
+
+
 def _read_config(path: Path = DEFAULT_CONFIG) -> dict[str, str]:
     try:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        _secure_config_permissions(path)
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ClientError("尚未配置。先运行 cw_client.py configure --url <服务地址>") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise ClientError(f"配置文件不可读：{path}") from exc
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
-        raise ClientError(f"配置权限不安全：{path} 必须为 0600")
     root = _service_root(str(data.get("service_url") or ""))
     token = str(data.get("token") or "")
     if not token.startswith("cw_codex_"):
@@ -68,15 +118,22 @@ def _read_config(path: Path = DEFAULT_CONFIG) -> dict[str, str]:
 
 def _write_config(service_url: str, token: str, path: Path = DEFAULT_CONFIG) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
+    if _is_windows():
+        _secure_windows_acl(path.parent, directory=True)
+    else:
+        os.chmod(path.parent, 0o700)
     descriptor, temporary = tempfile.mkstemp(prefix=".codex-", suffix=".json", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        if not _is_windows():
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump({"service_url": service_url, "token": token}, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
         os.replace(temporary, path)
-        os.chmod(path, 0o600)
+        if _is_windows():
+            _secure_windows_acl(path)
+        else:
+            os.chmod(path, 0o600)
     except Exception:
         try:
             os.unlink(temporary)

@@ -59,7 +59,7 @@ If configuration is missing, ask the user for the Component Warehouse service ro
 python3 scripts/cw_client.py configure --url https://example.com/component-warehouse
 ```
 
-The command reads the token through hidden input and writes `~/.config/component-warehouse/codex.json` with mode `0600`. Do not collect the token in chat.
+The command reads the token through hidden input and writes `~/.config/component-warehouse/codex.json`. It enforces mode `0600` on Unix-like systems; on Windows it removes inherited ACLs and grants access only to the current Windows user. Do not collect the token in chat.
 
 ## Write proposal workflow
 
