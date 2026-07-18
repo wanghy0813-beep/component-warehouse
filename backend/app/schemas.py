@@ -70,6 +70,14 @@ class LcscPreviewResponse(BaseModel):
     sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class SearchUnitConversion(BaseModel):
+    query_value: str
+    matched_value: str
+    dimension: Literal["capacitance", "inductance", "resistance"]
+    dimension_label: str
+    label: str
+
+
 class ComponentOut(ComponentBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -94,6 +102,7 @@ class ComponentOut(ComponentBase):
     last_outbound_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    search_unit_conversion: SearchUnitConversion | None = None
 
 
 class ComponentList(BaseModel):

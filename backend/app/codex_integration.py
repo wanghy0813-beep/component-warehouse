@@ -41,6 +41,7 @@ from .models import (
 )
 from .services.bom_match import BomRow, match_bom_rows
 from .services.inventory import reserved_quantities
+from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import record_stock_delta
 from .risks import RiskScope, list_risks_impl
 
@@ -287,7 +288,12 @@ def _component_query(db: Session, owner_user_id: int):
     )
 
 
-def _component_out(db: Session, component: Component, reserved: dict[int, int] | None = None) -> dict[str, Any]:
+def _component_out(
+    db: Session,
+    component: Component,
+    reserved: dict[int, int] | None = None,
+    search_keyword: str | None = None,
+) -> dict[str, Any]:
     reserved = reserved if reserved is not None else reserved_quantities(db, [component.id])
     held = int(reserved.get(component.id, 0))
     quantity = int(component.quantity or 0)
@@ -319,6 +325,20 @@ def _component_out(db: Session, component: Component, reserved: dict[int, int] |
         "ai_risk_notes": _load(component.ai_risk_notes, component.ai_risk_notes),
         "ai_substitutes": _load(component.ai_substitutes, component.ai_substitutes),
         "updated_at": component.updated_at,
+        "search_unit_conversion": find_unit_conversion_match(
+            search_keyword,
+            (
+                component.warehouse_code,
+                component.name,
+                component.model,
+                component.manufacturer,
+                component.parameters,
+                component.normalized_spec,
+                component.package,
+                component.lcsc_number,
+                component.tags,
+            ),
+        ),
     }
 
 
@@ -346,27 +366,30 @@ def search_components(
 ):
     query = _component_query(db, principal.owner_user_id)
     if q and q.strip():
-        pattern = f"%{q.strip()}%"
-        query = query.filter(
-            or_(
-                Component.warehouse_code.ilike(pattern),
-                Component.name.ilike(pattern),
-                Component.model.ilike(pattern),
-                Component.manufacturer.ilike(pattern),
-                Component.parameters.ilike(pattern),
-                Component.normalized_spec.ilike(pattern),
-                Component.package.ilike(pattern),
-                Component.lcsc_number.ilike(pattern),
-                Component.tags.ilike(pattern),
+        filters = []
+        for variant in keyword_unit_variants(q):
+            pattern = f"%{variant}%"
+            filters.extend(
+                [
+                    Component.warehouse_code.ilike(pattern),
+                    Component.name.ilike(pattern),
+                    Component.model.ilike(pattern),
+                    Component.manufacturer.ilike(pattern),
+                    Component.parameters.ilike(pattern),
+                    Component.normalized_spec.ilike(pattern),
+                    Component.package.ilike(pattern),
+                    Component.lcsc_number.ilike(pattern),
+                    Component.tags.ilike(pattern),
+                ]
             )
-        )
+        query = query.filter(or_(*filters))
     if category:
         query = query.join(Category).filter(Category.name == category)
     if package:
         query = query.filter(Component.package.ilike(f"%{package.strip()}%"))
     rows = query.order_by(Component.updated_at.desc(), Component.id.asc()).limit(200).all()
     reserved = reserved_quantities(db, [row.id for row in rows])
-    result = [_component_out(db, row, reserved) for row in rows]
+    result = [_component_out(db, row, reserved, q) for row in rows]
     if stock == "available":
         result = [row for row in result if row["available_quantity"] > 0]
     elif stock == "shortage":

@@ -209,6 +209,7 @@ from .services.inventory import (
     reserved_quantities as inventory_reserved_quantities,
     sort_components_by_value,
 )
+from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.substitutions import substitution_suggestions_for_bom_items
 from .services.stock_ledger import ensure_component_lot, migrate_legacy_inventory_lots, reconcile_component_lots, record_stock_delta
 from .services.eda_storage import storage_root as eda_storage_root
@@ -1862,7 +1863,7 @@ def reserved_quantities(db: Session, component_ids: list[int] | None = None) -> 
     return inventory_reserved_quantities(db, component_ids)
 
 
-def component_out(component: Component, reserved: int = 0) -> dict:
+def component_out(component: Component, reserved: int = 0, search_keyword: str | None = None) -> dict:
     quantity = component.quantity or 0
     available = max(0, quantity - reserved)
     safety_quantity = max(0, int(component.safety_quantity or 0))
@@ -1923,6 +1924,24 @@ def component_out(component: Component, reserved: int = 0) -> dict:
         "last_outbound_at": component.last_outbound_at,
         "created_at": component.created_at,
         "updated_at": component.updated_at,
+        "search_unit_conversion": find_unit_conversion_match(
+            search_keyword,
+            (
+                component.name,
+                component.warehouse_code,
+                component.model,
+                component.parameters,
+                component.package,
+                component.lcsc_number,
+                component.location,
+                component.remark,
+                component.ai_summary,
+                component.ai_tags,
+                component.tags,
+                component.normalized_spec,
+                component.source_title,
+            ),
+        ),
     }
 
 
@@ -2390,18 +2409,6 @@ def mark_stock_change(component: Component, quantity_delta: int, at: datetime | 
         component.last_stocked_at = changed_at
     elif quantity_delta < 0:
         component.last_outbound_at = changed_at
-
-
-def keyword_unit_variants(keyword: str | None) -> list[str]:
-    text_value = str(keyword or "").strip()
-    if not text_value:
-        return []
-    variants = {text_value, text_value.replace("µ", "u").replace("μ", "u")}
-    for value in list(variants):
-        if re.search("u", value, flags=re.IGNORECASE):
-            variants.add(re.sub("u", "µ", value, flags=re.IGNORECASE))
-            variants.add(re.sub("u", "μ", value, flags=re.IGNORECASE))
-    return [value for value in variants if value]
 
 
 def component_keyword_filters(keyword: str | None) -> list:
@@ -3322,12 +3329,19 @@ def list_components(
     total = len(all_items)
     items = all_items[(page - 1) * page_size : page * page_size]
     reserved = reserved_quantities(db, [item.id for item in items])
-    return {"items": [component_out(item, reserved.get(item.id, 0)) for item in items], "total": total}
+    return {"items": [component_out(item, reserved.get(item.id, 0), keyword) for item in items], "total": total}
 
 
-def group_component_page(db: Session, components: list[Component], total: int, page: int, page_size: int) -> dict:
+def group_component_page(
+    db: Session,
+    components: list[Component],
+    total: int,
+    page: int,
+    page_size: int,
+    search_keyword: str | None = None,
+) -> dict:
     reserved = reserved_quantities(db, [item.id for item in components])
-    items = [component_out(item, reserved.get(item.id, 0)) for item in components]
+    items = [component_out(item, reserved.get(item.id, 0), search_keyword) for item in components]
     by_category: dict[int | None, dict] = {}
     for item in items:
         category = item["category"]
@@ -3825,7 +3839,7 @@ def list_components_grouped_page(
         for group in category_groups[start : start + page_size]
         for component in group
     ]
-    result = group_component_page(db, components, total, page, page_size)
+    result = group_component_page(db, components, total, page, page_size, keyword)
     result["category_total"] = category_total
     result["has_more"] = start + page_size < category_total
     return result
@@ -3882,7 +3896,7 @@ def list_components_grouped(
             query = query.filter(or_(*filters))
     components = sort_components_by_value(query.limit(500).all())
     reserved = reserved_quantities(db, [item.id for item in components])
-    items = [component_out(item, reserved.get(item.id, 0)) for item in components]
+    items = [component_out(item, reserved.get(item.id, 0), keyword) for item in components]
     by_category: dict[int | None, dict] = {}
     for item in items:
         category = item["category"]
@@ -7973,7 +7987,7 @@ def integration_components(auth: Protected, db: Session = Depends(get_db), keywo
             query = query.filter(or_(*filters))
     items = query.order_by(Component.updated_at.desc(), Component.id.desc()).limit(limit).all()
     reserved = reserved_quantities(db, [item.id for item in items])
-    return {"items": [component_out(item, reserved.get(item.id, 0)) for item in items], "total": len(items)}
+    return {"items": [component_out(item, reserved.get(item.id, 0), keyword) for item in items], "total": len(items)}
 
 
 @app.get("/api/integrations/projects", response_model=list[ProjectOut])

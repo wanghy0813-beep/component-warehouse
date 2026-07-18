@@ -55,6 +55,7 @@ from .services.eda_storage import (
     stage_remote_download,
     used_bytes,
 )
+from .services.component_search import keyword_unit_variants
 from .team import require_library_editor, require_library_member
 
 
@@ -948,15 +949,20 @@ def component_options_impl(db: Session, scope: EngineeringScope, keyword: str, l
         )
     text = str(keyword or "").strip()
     if text:
-        like = f"%{text}%"
-        query = query.filter(
-            or_(
-                Component.warehouse_code.ilike(like),
-                Component.name.ilike(like),
-                Component.model.ilike(like),
-                Component.lcsc_number.ilike(like),
+        filters = []
+        for variant in keyword_unit_variants(text):
+            like = f"%{variant}%"
+            filters.extend(
+                [
+                    Component.warehouse_code.ilike(like),
+                    Component.name.ilike(like),
+                    Component.model.ilike(like),
+                    Component.lcsc_number.ilike(like),
+                    Component.parameters.ilike(like),
+                    Component.normalized_spec.ilike(like),
+                ]
             )
-        )
+        query = query.filter(or_(*filters))
     rows = query.order_by(Component.name.asc(), Component.id.asc()).limit(limit).all()
     return [
         {

@@ -61,6 +61,7 @@ from .models import (
     User,
 )
 from .services.inventory import category_sort_key, component_value_sort_key, reserved_quantities
+from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import ensure_component_lot, reconcile_component_lots, record_stock_delta
 from .services.lcsc_lookup import normalize_lcsc_number
 from .component_identity import allocate_component_identity
@@ -391,6 +392,7 @@ def library_out(
 def cw_component_out(
     component: Component | None,
     reserved: int = 0,
+    search_keyword: str | None = None,
 ) -> dict | None:
     if not component:
         return None
@@ -442,6 +444,24 @@ def cw_component_out(
         "first_stocked_at": component.first_stocked_at,
         "last_stocked_at": component.last_stocked_at,
         "created_at": component.created_at,
+        "search_unit_conversion": find_unit_conversion_match(
+            search_keyword,
+            (
+                component.name,
+                component.warehouse_code,
+                component.model,
+                component.parameters,
+                component.normalized_spec,
+                component.package,
+                component.lcsc_number,
+                component.location,
+                component.remark,
+                component.ai_summary,
+                component.ai_tags,
+                component.tags,
+                component.source_title,
+            ),
+        ),
     }
 
 
@@ -2693,19 +2713,24 @@ def search_cw_components(
 ):
     query = db.query(Component).filter(Component.owner_user_id == auth.user_id, Component.revoked_at.is_(None))
     if keyword:
-        like = f"%{keyword.strip()}%"
-        query = query.filter(
-            or_(
-                Component.name.ilike(like),
-                Component.model.ilike(like),
-                Component.lcsc_number.ilike(like),
-                Component.warehouse_code.ilike(like),
-                Component.parameters.ilike(like),
+        filters = []
+        for variant in keyword_unit_variants(keyword):
+            like = f"%{variant}%"
+            filters.extend(
+                [
+                    Component.name.ilike(like),
+                    Component.model.ilike(like),
+                    Component.lcsc_number.ilike(like),
+                    Component.warehouse_code.ilike(like),
+                    Component.parameters.ilike(like),
+                    Component.normalized_spec.ilike(like),
+                ]
             )
-        )
+        if filters:
+            query = query.filter(or_(*filters))
     items = query.order_by(Component.id.asc()).limit(limit).all()
     reserved = reserved_quantities(db, [item.id for item in items])
-    return [cw_component_out(item, reserved.get(item.id, 0)) for item in items]
+    return [cw_component_out(item, reserved.get(item.id, 0), keyword) for item in items]
 
 
 @router.get("/resolve-code")

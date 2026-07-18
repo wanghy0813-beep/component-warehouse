@@ -14,6 +14,10 @@
     </div>
     <h3>{{ primary }}</h3>
     <p class="model-line">{{ secondary }}</p>
+    <p v-if="item.search_unit_conversion" class="conversion-note">
+      <span>等值换算</span>
+      {{ item.search_unit_conversion.label }}
+    </p>
     <div class="chip-row">
       <span v-for="chip in chips" :key="`${chip.label}-${chip.value}`" class="mini-chip">
         <small>{{ chip.label }}</small>{{ chip.value }}
@@ -85,6 +89,20 @@ const syncLabel = computed(() => {
 h3 { margin: 0; color: #14213d; font-size: 18px; line-height: 1.18; overflow-wrap: anywhere; }
 p { margin: 0; }
 .model-line { min-height: 20px; color: #5d6b7e; font-weight: 600; }
+.conversion-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 8px;
+  border: 1px solid #b7e4d1;
+  border-radius: var(--cw-radius-chip);
+  background: #ecfdf5;
+  color: #067647;
+  font-size: 12px;
+  font-weight: 700;
+}
+.conversion-note span { color: #475467; font-weight: 600; }
 .usage { flex: 1; display: -webkit-box; overflow: hidden; color: #667085; line-height: 1.42; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .mini-chip, .meta-row span { padding: 3px 7px; border: 1px solid #dfe7f2; border-radius: var(--cw-radius-chip); color: #344054; font-size: 12px; }
 .mini-chip small { margin-right: 5px; color: #7a8699; }
