@@ -34,6 +34,54 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class IntegrationAccessToken(Base):
+    __tablename__ = "integration_access_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    token_prefix: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    scopes: Mapped[str] = mapped_column(String(200), default="inventory:read")
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class IntegrationOperation(Base):
+    __tablename__ = "integration_operations"
+    __table_args__ = (
+        UniqueConstraint("access_token_id", "idempotency_key", name="uq_integration_operation_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    access_token_id: Mapped[str | None] = mapped_column(ForeignKey("integration_access_tokens.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending_approval", index=True)
+    risk_level: Mapped[str] = mapped_column(String(20), default="normal", index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_json: Mapped[str] = mapped_column(Text, nullable=False)
+    before_json: Mapped[str | None] = mapped_column(Text)
+    after_json: Mapped[str | None] = mapped_column(Text)
+    inverse_json: Mapped[str | None] = mapped_column(Text)
+    precondition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    approval_expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    undo_expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    undo_of_operation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    undone_by_operation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    failure_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Component(Base):
     __tablename__ = "components"
 

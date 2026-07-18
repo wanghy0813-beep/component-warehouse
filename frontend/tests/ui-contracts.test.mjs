@@ -171,6 +171,27 @@ test('app shell is marked as Chinese and opts out of browser translation', () =>
   assert.doesNotMatch(personal, /personal-context/)
 })
 
+test('Codex integration exposes one-time read tokens and SSO-only operation approval', () => {
+  const integrations = source('../src/views/CodexIntegrations.vue')
+  const operation = source('../src/views/CodexOperation.vue')
+  const router = source('../src/personal/router.js')
+  const api = source('../src/api/client.js')
+  const management = source('../src/views/About.vue')
+
+  assert.match(router, /\/integrations\/codex\/operations\/:operationId/)
+  assert.match(integrations, /密钥只显示一次/)
+  assert.match(integrations, /读取个人库并提交无副作用草案/)
+  assert.match(integrations, /listCodexTokens/)
+  assert.match(integrations, /revokeCodexToken/)
+  assert.match(operation, /批准并执行/)
+  assert.match(operation, /必须输入：批准执行/)
+  assert.match(operation, /申请撤销/)
+  assert.match(operation, /目标状态变化后本单会拒绝执行/)
+  assert.match(api, /approveCodexOperation/)
+  assert.match(api, /requestCodexOperationUndo/)
+  assert.match(management, /管理 Codex 接入/)
+})
+
 test('mobile bottom navigation distributes visible items evenly', () => {
   const personal = source('../src/personal/App.vue')
   const team = source('../src/team/styles.css')

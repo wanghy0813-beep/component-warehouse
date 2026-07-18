@@ -454,6 +454,30 @@ export async function getActivityLogs(params = {}) {
   return data
 }
 
+export const listCodexTokens = () =>
+  api.get('/integrations/codex/tokens').then((response) => response.data)
+
+export const createCodexToken = (payload) =>
+  api.post('/integrations/codex/tokens', payload).then((response) => response.data)
+
+export const revokeCodexToken = (tokenId) =>
+  api.delete(`/integrations/codex/tokens/${encodeURIComponent(tokenId)}`).then((response) => response.data)
+
+export const listCodexOperations = () =>
+  api.get('/integrations/codex/operations').then((response) => response.data)
+
+export const getCodexOperation = (operationId) =>
+  api.get(`/integrations/codex/operations/${encodeURIComponent(operationId)}`).then((response) => response.data)
+
+export const approveCodexOperation = (operationId) =>
+  api.post(`/integrations/codex/operations/${encodeURIComponent(operationId)}/approve`).then((response) => response.data)
+
+export const rejectCodexOperation = (operationId) =>
+  api.post(`/integrations/codex/operations/${encodeURIComponent(operationId)}/reject`).then((response) => response.data)
+
+export const requestCodexOperationUndo = (operationId) =>
+  api.post(`/integrations/codex/operations/${encodeURIComponent(operationId)}/undo`).then((response) => response.data)
+
 export async function recordUsageEvent(payload) {
   const { data } = await api.post('/usage-events', payload)
   return data

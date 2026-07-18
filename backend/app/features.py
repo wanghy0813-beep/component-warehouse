@@ -12,6 +12,6 @@ def feature_config() -> dict:
     }
 
 
-def require_eda_enabled() -> None:
+async def require_eda_enabled() -> None:
     if not FEATURE_EDA_ENABLED:
         raise HTTPException(status_code=404, detail="EDA feature is disabled")

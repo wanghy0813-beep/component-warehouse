@@ -44,9 +44,11 @@ from .branding import APP_BACKUP_NAME, APP_BRAND_NAME, APP_SHOW_BRAND_LOGO
 from .team import clear_team_media, router as team_router
 from .mobile import router as mobile_router
 from .eda import purge_expired_assets, router as eda_router
+from .features import FEATURE_EDA_ENABLED
 from .purchases import router as purchases_router
 from .risks import router as risks_router
 from .team_projects import router as team_projects_router
+from .codex_integration import prune_expired_operation_snapshots, router as codex_integration_router
 from .database import Base, DATABASE_URL, SessionLocal, engine, get_db
 from .models import (
     ActivityLog,
@@ -274,6 +276,7 @@ app.include_router(eda_router)
 app.include_router(purchases_router)
 app.include_router(risks_router)
 app.include_router(team_projects_router)
+app.include_router(codex_integration_router)
 
 
 @app.api_route(
@@ -1164,7 +1167,9 @@ def startup_application():
         run_v070_eda_migration(db)
         run_v072_lcsc_source_normalization(db)
         run_v073_admin_defaults(db)
-        purge_expired_assets(db)
+        prune_expired_operation_snapshots(db)
+        if FEATURE_EDA_ENABLED:
+            purge_expired_assets(db)
         seed_categories(db)
         ensure_category(db, "连接件", "#e8fff8")
         ensure_category(db, "时钟源", "#eef2ff")

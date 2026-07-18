@@ -39,6 +39,7 @@ def lcsc_search_url(keyword: str | None) -> str | None:
 def component_to_dict(component: Component) -> dict[str, Any]:
     return {
         "id": component.id,
+        "warehouse_code": component.warehouse_code,
         "name": component.name,
         "model": component.model,
         "category": component.category.name if component.category else None,

@@ -1,0 +1,6 @@
+interface:
+  display_name: "查询元器件仓库"
+  short_description: "查询个人元器件库存、匹配板卡 BOM，并生成需网页审批的变更单"
+  default_prompt: "使用 $query-component-warehouse 分析这块板，优先采用我个人库里的器件；如需写入，只生成网页审批单。"
+policy:
+  allow_implicit_invocation: true

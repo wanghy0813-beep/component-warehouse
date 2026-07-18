@@ -12,6 +12,7 @@ import xlrd
 from ..models import Component, SupplierPart
 from .component_normalizer import clean_lcsc_keyword
 from .mimo_ai import component_to_dict, lcsc_search_url
+from .inventory import reserved_quantities
 
 
 HEADER_ALIASES = {
@@ -607,12 +608,20 @@ def _missing_suggestion(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _combination_suggestions(db: Session, row: dict[str, Any], limit: int = 3) -> list[dict[str, str]]:
+def _combination_suggestions(
+    db: Session,
+    row: dict[str, Any],
+    limit: int = 3,
+    component_ids: list[int] | None = None,
+) -> list[dict[str, str]]:
     kind = _passive_kind(row)
     target = _parse_passive_value(" ".join(str(row.get(key) or "") for key in ["value", "comment", "manufacturer_part"]), kind)
     if not kind or target is None:
         return []
-    components = db.query(Component).filter(Component.quantity > 0).order_by(Component.quantity.desc(), Component.id.asc()).limit(300).all()
+    query = db.query(Component).filter(Component.quantity > 0, Component.revoked_at.is_(None))
+    if component_ids is not None:
+        query = query.filter(Component.id.in_(component_ids or [0]))
+    components = query.order_by(Component.quantity.desc(), Component.id.asc()).limit(300).all()
     candidates = []
     for component in components:
         if _passive_kind(component=component) != kind:
@@ -661,6 +670,7 @@ def match_bom_rows(
     supplier_team_library_id: str | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    reserved_by_component = reserved_quantities(db, component_ids)
     for row in rows:
         matches = []
         seen = set()
@@ -699,7 +709,7 @@ def match_bom_rows(
                 flags = ["编号一致", *[flag for flag in flags if flag != "编号一致"]]
             if score < 18:
                 continue
-            available = component.quantity
+            available = max(0, int(component.quantity or 0) - int(reserved_by_component.get(component.id, 0)))
             required = row.data["required_quantity"]
             matches.append(
                 {
@@ -733,7 +743,11 @@ def match_bom_rows(
             else:
                 status = "missing"
         missing_suggestion = _missing_suggestion(row.data) if status in {"missing", "review", "supplier_missing"} else None
-        alternatives = _combination_suggestions(db, row.data) if status in {"missing", "review", "supplier_missing"} else []
+        alternatives = (
+            _combination_suggestions(db, row.data, component_ids=component_ids)
+            if status in {"missing", "review", "supplier_missing"}
+            else []
+        )
         if status == "supplier_missing" and missing_suggestion:
             missing_suggestion["reason"] = "BOM 指定立创 ID 未在库存中找到；如不替换，采购时优先购买 BOM 中的该立创 ID。"
             similar = []

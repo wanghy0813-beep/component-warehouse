@@ -188,7 +188,7 @@ def test_label_html_is_exact_a4_40_grid_with_calibration_and_offsets():
     assert "grid-template-rows: repeat(10, 29.7mm)" in html
     assert "translate(0.40mm, -0.30mm)" in html
     assert html.count("placeholder") >= 2
-    assert html.count("RES-00000001") == 2
+    assert html.count(">RES-00000001</strong>") == 2
 
     calibration = render_component_label_sheet([], "https://example.test", calibration=True)
     assert "校准格 1" in calibration

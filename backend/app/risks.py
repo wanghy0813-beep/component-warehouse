@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .auth import AuthContext, require_access
 from .database import get_db
 from .engineering_schemas import RiskIssueCreate, RiskUpdate
+from .features import FEATURE_EDA_ENABLED
 from .models import (
     CompetitionLibraryComponent,
     Component,
@@ -103,11 +104,13 @@ def risk_item(component: Component, risk_type: str, title: str, detail: str, sev
 def list_risks_impl(db: Session, scope: RiskScope) -> dict:
     components = components_for_scope(db, scope)
     component_ids = [item.id for item in components]
-    bindings = (
-        scope_bindings(db.query(EdaComponentBinding), scope)
-        .filter(EdaComponentBinding.component_id.in_(component_ids or [0]))
-        .all()
-    )
+    bindings = []
+    if FEATURE_EDA_ENABLED:
+        bindings = (
+            scope_bindings(db.query(EdaComponentBinding), scope)
+            .filter(EdaComponentBinding.component_id.in_(component_ids or [0]))
+            .all()
+        )
     bindings_by_component: dict[int, list[EdaComponentBinding]] = {}
     for binding in bindings:
         bindings_by_component.setdefault(binding.component_id, []).append(binding)
@@ -121,13 +124,7 @@ def list_risks_impl(db: Session, scope: RiskScope) -> dict:
     risks: list[dict] = []
     for component in components:
         component_bindings = bindings_by_component.get(component.id, [])
-        if not component_bindings:
-            risks.append(risk_item(component, "missing_footprint", "未绑定 AD 封装", "元器件没有 Symbol/Footprint 工程绑定。", "danger"))
-            risks.append(risk_item(component, "missing_symbol", "缺少原理图 Symbol", "元器件没有原理图 Symbol 工程绑定。"))
-            risks.append(risk_item(component, "unverified_footprint", "封装尚未 Verified", "当前验证状态：raw。", "danger"))
-            if not component.datasheet_url:
-                risks.append(risk_item(component, "missing_datasheet", "缺少数据手册", "未上传数据手册，也没有登记外部数据手册链接。"))
-        else:
+        if FEATURE_EDA_ENABLED and component_bindings:
             primary = next((item for item in component_bindings if item.is_primary), component_bindings[0])
             if not primary.footprint_id:
                 risks.append(risk_item(component, "missing_footprint", "缺少 PCB Footprint", "主 EDA 绑定没有 PCB Footprint。", "danger"))
@@ -148,6 +145,8 @@ def list_risks_impl(db: Session, scope: RiskScope) -> dict:
                 )
             if not primary.datasheet_asset_id and not component.datasheet_url:
                 risks.append(risk_item(component, "missing_datasheet", "缺少数据手册", "未上传数据手册，也没有登记外部数据手册链接。"))
+        elif not component.datasheet_url:
+            risks.append(risk_item(component, "missing_datasheet", "缺少数据手册", "没有登记外部数据手册链接。"))
         if not component.lcsc_number and component.id not in supplier_component_ids:
             risks.append(risk_item(component, "missing_supplier_part", "缺少供应商料号", "没有 LCSC 编号或其他供应商料号。"))
         if component.is_common and not component.low_stock_exempt and int(component.quantity or 0) < int(component.safety_quantity or 0):

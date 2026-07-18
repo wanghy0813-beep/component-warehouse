@@ -76,6 +76,18 @@
         </div>
       </section>
 
+      <section class="panel codex-panel">
+        <div class="section-head">
+          <h2>Codex 接入</h2>
+          <el-tag type="success" effect="plain">查询 + 审批草案</el-tag>
+        </div>
+        <p>让 ChatGPT 分析板卡和 BOM 时直接查询个人库存；写入只生成网页审批单。</p>
+        <div class="codex-points">
+          <span>个人库隔离</span><span>逐单审批</span><span>30 天可撤销</span>
+        </div>
+        <el-button type="primary" plain @click="$router.push('/integrations/codex')">管理 Codex 接入</el-button>
+      </section>
+
       <section class="panel danger-panel">
         <div class="section-head">
           <h2>清库重录</h2>
@@ -659,6 +671,33 @@ h3 {
 
 .backup-panel {
   border-color: #bbf7d0;
+}
+
+.codex-panel {
+  border-color: #bfdbfe;
+  background: linear-gradient(145deg, var(--cw-solid), #eff6ff);
+}
+
+.codex-panel p {
+  margin: 6px 0 14px;
+  color: var(--cw-muted);
+  line-height: 1.6;
+}
+
+.codex-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 16px;
+}
+
+.codex-points span {
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .backup-panel .backup-actions {

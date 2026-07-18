@@ -14,6 +14,8 @@ const routes = [
   { path: '/manual', name: 'manual', component: () => import('../shared/views/UserManual.vue') },
   { path: '/purchases', name: 'purchases', component: () => import('../shared/views/Purchases.vue') },
   { path: '/risks', name: 'risks', component: () => import('../shared/views/Risks.vue') },
+  { path: '/integrations/codex', name: 'codex-integrations', component: () => import('../views/CodexIntegrations.vue') },
+  { path: '/integrations/codex/operations/:operationId', name: 'codex-operation', component: () => import('../views/CodexOperation.vue') },
   { path: '/admin', redirect: '/about' },
   { path: '/about', name: 'about', component: () => import('../views/About.vue') }
 ]
