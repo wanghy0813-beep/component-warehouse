@@ -8,6 +8,7 @@ PUBLIC_PROXY_PORT="${PUBLIC_PROXY_PORT:-8080}"
 BACKEND_PORT="${BACKEND_PORT:-18080}"
 NGINX_AVAILABLE="/etc/nginx/sites-available/component-warehouse-direct-8080"
 NGINX_ENABLED="/etc/nginx/sites-enabled/component-warehouse-direct-8080"
+PUBLISH_ROOT="/var/www/component-warehouse"
 
 log() {
   printf '[switch-direct] %s\n' "$*"
@@ -33,9 +34,16 @@ wait_for_url() {
   return 1
 }
 
+ensure_frontend_permissions() {
+  if [[ -d "${PUBLISH_ROOT}" ]]; then
+    run sudo -n chmod -R a+rX "${PUBLISH_ROOT}"
+  fi
+}
+
 main() {
   run sudo -n true
   run sudo -n install -m 0644 "${REPO_DIR}/deploy/nginx-component-warehouse-8080.conf" "${NGINX_AVAILABLE}"
+  ensure_frontend_permissions
   run sudo -n systemctl enable --now "${SERVICE_NAME}"
   wait_for_url "http://127.0.0.1:${BACKEND_PORT}/health" "direct backend"
   log "Stopping Docker frontend/backend so direct nginx can bind 127.0.0.1:${PUBLIC_PROXY_PORT}"
@@ -45,6 +53,10 @@ main() {
   run sudo -n systemctl reload nginx
   wait_for_url "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health" "direct public port"
   run curl -fsS "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health"
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/personal/" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/team/" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/personal/sw.js" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/team/team-sw.js" >/dev/null
   run curl -kfsS https://wxylab.ltd/component-warehouse/health
   log "Direct-host runtime now serves the public Component Warehouse path"
 }

@@ -22,6 +22,7 @@ export function uniqueDisplayParts(values, primary = '') {
 }
 
 const PASSIVE_VALUE_CATEGORIES = new Set(['电阻', '电容', '电感'])
+const NAME_FIRST_CATEGORIES = new Set(['机电件'])
 const SEMICONDUCTOR_MODEL_CATEGORIES = ['二极管', '三极管', '晶体管', '场效应管', 'MOS', 'MOSFET', 'BJT', 'IGBT']
 const PASSIVE_SPEC_NAMES = {
   电阻: ['阻值', '电阻值', '标称阻值'],
@@ -168,6 +169,9 @@ export function componentDisplayTitle(item) {
     const passive = passiveDisplayValue(item, category)
     if (passive) return passive
   }
+  if (NAME_FIRST_CATEGORIES.has(category) && String(item?.name || '').trim()) {
+    return String(item.name).trim()
+  }
   if (isSemiconductorCategory(category)) {
     const model = semiconductorDisplayModel(item)
     if (model) return model
@@ -186,6 +190,8 @@ export function componentDisplaySubtitle(item, primary = componentDisplayTitle(i
   const category = categoryName(item)
   const values = PASSIVE_VALUE_CATEGORIES.has(category)
     ? [item?.model, item?.name, item?.package, item?.lcsc_number, item?.normalized_spec]
+    : NAME_FIRST_CATEGORIES.has(category)
+      ? [item?.model, item?.normalized_spec, item?.package, item?.lcsc_number]
     : [item?.normalized_spec, item?.name, item?.package, item?.lcsc_number]
   return uniqueDisplayParts(values, primary).slice(0, 3).join(' · ')
 }

@@ -62,6 +62,7 @@ from .models import (
 )
 from .services.inventory import category_sort_key, component_value_sort_key, reserved_quantities
 from .services.stock_ledger import ensure_component_lot, reconcile_component_lots, record_stock_delta
+from .services.lcsc_lookup import normalize_lcsc_number
 from .component_identity import allocate_component_identity
 from .services.mimo_ai import (
     MimoNotConfiguredError,
@@ -401,10 +402,15 @@ def cw_component_out(
         "warehouse_code": component.warehouse_code,
         "name": component.name,
         "model": component.model,
+        "manufacturer": component.manufacturer,
+        "description": component.description,
         "lcsc_number": component.lcsc_number,
         "parameters": component.parameters,
         "package": component.package,
         "datasheet_url": component.datasheet_url,
+        "buy_url": component.buy_url,
+        "source_title": component.source_title,
+        "tags": component.tags,
         "ai_summary": component.ai_summary,
         "ai_usage": component.ai_usage,
         "ai_risk_notes": component.ai_risk_notes,
@@ -522,11 +528,15 @@ def team_components_out(
             **record_dict(item),
             "name": source.get("name") or item.name,
             "model": source.get("model") or item.model,
+            "manufacturer": source.get("manufacturer"),
+            "description": source.get("description"),
             "lcsc_number": source.get("lcsc_number") or item.lcsc_number,
             "warehouse_code": source.get("warehouse_code") or item.warehouse_code_snapshot,
             "parameters": source.get("parameters"),
             "package": source.get("package"),
             "datasheet_url": source.get("datasheet_url"),
+            "buy_url": source.get("buy_url"),
+            "source_title": source.get("source_title"),
             "normalized_spec": source.get("normalized_spec"),
             "ai_summary": source.get("ai_summary"),
             "ai_usage": source.get("ai_usage"),
@@ -976,7 +986,7 @@ def find_cw_component(
             )
             .first()
         )
-    lcsc = str(lcsc_number or "").strip()
+    lcsc = normalize_lcsc_number(lcsc_number) or str(lcsc_number or "").strip()
     if lcsc:
         return (
             db.query(Component)
@@ -1029,10 +1039,11 @@ def create_personal_component(
     auth: AuthContext,
     values: dict,
 ) -> tuple[Component, bool]:
+    normalized_lcsc = normalize_lcsc_number(values.get("lcsc_number")) or str(values.get("lcsc_number") or "").strip()[:120] or None
     exact = find_cw_component(
         db,
         owner_user_id=auth.user_id,
-        lcsc_number=values.get("lcsc_number"),
+        lcsc_number=normalized_lcsc,
     )
     if exact:
         return exact, False
@@ -1046,16 +1057,20 @@ def create_personal_component(
         owner_user_id=auth.user_id,
         name=str(values.get("name") or values.get("model") or "未命名物料").strip()[:200],
         model=str(values.get("model") or "").strip()[:200] or None,
-        lcsc_number=str(values.get("lcsc_number") or "").strip()[:120] or None,
+        manufacturer=str(values.get("manufacturer") or "").strip()[:200] or None,
+        description=str(values.get("description") or "").strip()[:4000] or None,
+        lcsc_number=normalized_lcsc,
         quantity=max(0, int(values.get("quantity") or 0)),
         category_id=category.id if category else None,
         package=str(values.get("package") or "").strip()[:120] or None,
-        parameters=str(values.get("parameters") or "").strip()[:1000] or None,
+        parameters=str(values.get("parameters") or "").strip()[:4000] or None,
         datasheet_url=str(values.get("datasheet_url") or "").strip()[:1000] or None,
+        buy_url=str(values.get("buy_url") or "").strip()[:500] or None,
         tags=str(values.get("tags") or "").strip()[:300] or None,
+        source_title=str(values.get("source_title") or "").strip()[:4000] or None,
         location=str(values.get("location") or "").strip()[:200] or None,
         remark=str(values.get("remark") or "").strip() or None,
-        source="团队版新增",
+        source=str(values.get("source") or "团队版新增").strip()[:120],
         status="in_stock",
     )
     db.add(component)

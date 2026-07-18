@@ -85,9 +85,9 @@
           <small>管理资料</small>
           <strong>EDA 库</strong>
         </button>
-        <button class="quick-item" @click="go('/more')">
+        <button class="quick-item" @click="go('/about')">
           <small>备份 / 日志</small>
-          <strong>更多</strong>
+          <strong>管理</strong>
         </button>
       </div>
     </section>

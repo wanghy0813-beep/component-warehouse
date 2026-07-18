@@ -132,6 +132,8 @@ from .schemas import (
     InventoryLotCreate,
     InventoryLotOut,
     ComponentList,
+    LcscPreviewRequest,
+    LcscPreviewResponse,
     ComponentOut,
     ComponentUsageRecordOut,
     ComponentUpdate,
@@ -173,9 +175,11 @@ from .services.mimo_ai import (
     component_question,
     image_import_preview,
     lcsc_search_url,
+    lookup_lcsc_fallback,
     component_search,
     explain_component,
     organize_component,
+    organize_lcsc_draft,
     project_plan,
     project_consult,
     search_component_candidates,
@@ -186,6 +190,17 @@ from .services.component_normalizer import (
     clean_lcsc_keyword,
     normalize_component_values,
     normalize_tag_text,
+)
+from .services.lcsc_lookup import (
+    LcscLookupError,
+    exact_lcsc_source_present,
+    fetch_lcsc_product,
+    local_category_from_text,
+    normalize_lcsc_number,
+    official_product_draft,
+    parse_lcsc_copy_text,
+    parsed_copy_draft,
+    product_url as lcsc_product_url,
 )
 from .services.category_governance import ai_category_allowed
 from .services.inventory import (
@@ -214,6 +229,15 @@ from .labels import (
 
 
 ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "0") == "1"
+APP_VERSION = "0.7.1"
+PROCESS_STARTED_AT = time.monotonic()
+PUBLIC_STATUS_RANK = {
+    "operational": 0,
+    "maintenance": 1,
+    "unknown": 2,
+    "degraded": 3,
+    "outage": 4,
+}
 
 
 @asynccontextmanager
@@ -224,7 +248,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=APP_BRAND_NAME,
-    version="0.7.1",
+    version=APP_VERSION,
     docs_url="/docs" if ENABLE_API_DOCS else None,
     redoc_url="/redoc" if ENABLE_API_DOCS else None,
     openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
@@ -1447,9 +1471,11 @@ def clean_pending_purchase_tags(tags: str | None) -> str | None:
 def normalize_for_inventory(db: Session, values: dict, *, clean_name: bool = True) -> dict:
     normalized = normalize_component_values(values) if clean_name else dict(values)
     normalized = infer_small_part_fields(normalized)
+    if normalized.get("lcsc_number"):
+        normalized["lcsc_number"] = normalize_lcsc_number(normalized.get("lcsc_number")) or str(normalized.get("lcsc_number")).strip()[:120]
     if "warehouse_code" in normalized:
         normalized["warehouse_code"] = normalize_warehouse_code(normalized.get("warehouse_code"))
-    if not normalized.get("datasheet_url") and normalized.get("lcsc_number"):
+    if not normalized.get("datasheet_url") and normalized.get("lcsc_number") and not normalized.get("buy_url"):
         normalized["datasheet_url"] = f"https://www.lcsc.com/product-detail/{normalized['lcsc_number']}.html"
     return normalized
 
@@ -1846,6 +1872,8 @@ def component_out(component: Component, reserved: int = 0) -> dict:
         "warehouse_code": component.warehouse_code,
         "name": component.name,
         "model": component.model,
+        "manufacturer": component.manufacturer,
+        "description": component.description,
         "category_id": component.category_id,
         "parameters": component.parameters,
         "package": component.package,
@@ -1861,6 +1889,7 @@ def component_out(component: Component, reserved: int = 0) -> dict:
         "location": component.location,
         "remark": component.remark,
         "datasheet_url": component.datasheet_url,
+        "buy_url": component.buy_url,
         "is_hand_solder_friendly": bool(component.is_hand_solder_friendly),
         "is_power_component": bool(component.is_power_component),
         "is_signal_component": bool(component.is_signal_component),
@@ -2835,6 +2864,148 @@ def health():
     return {"status": "ok"}
 
 
+def public_status_checked_at(value: datetime | None = None) -> str:
+    current = value or datetime.utcnow()
+    return (current + timedelta(hours=8)).replace(microsecond=0).isoformat() + "+08:00"
+
+
+def public_status_datetime(value: datetime | None) -> str | None:
+    if not value:
+        return None
+    if value.tzinfo:
+        return value.replace(microsecond=0).isoformat()
+    local_now = datetime.utcnow() + timedelta(hours=8)
+    utc_shifted = value + timedelta(hours=8)
+    if utc_shifted <= local_now + timedelta(minutes=5):
+        value = utc_shifted
+    return value.replace(microsecond=0).isoformat() + "+08:00"
+
+
+def public_status_component(name: str, status: str, label: str, **extra) -> dict:
+    safe_status = status if status in PUBLIC_STATUS_RANK else "unknown"
+    payload = {
+        "name": name,
+        "status": safe_status,
+        "label": str(label or "").strip()[:80] or name,
+    }
+    for key in ("latencyMs", "lastSuccessAt"):
+        value = extra.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def public_status_overall(components: list[dict]) -> str:
+    if not components:
+        return "unknown"
+    return max(
+        (item.get("status", "unknown") for item in components),
+        key=lambda item: PUBLIC_STATUS_RANK.get(item, PUBLIC_STATUS_RANK["unknown"]),
+    )
+
+
+def account_center_public_health_component() -> dict:
+    if auth_module.AUTH_MODE != "account-v1":
+        return public_status_component("auth", "operational", "本地账号模式")
+    health_url = auth_module.account_public_url("/health")
+    if not health_url:
+        return public_status_component("auth", "degraded", "统一账号未配置")
+    start = time.monotonic()
+    try:
+        response = httpx.get(health_url, timeout=min(2.0, auth_module.AUTH_HTTP_TIMEOUT_SECONDS))
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if response.status_code >= 500:
+            return public_status_component("auth", "outage", "统一账号不可用", latencyMs=latency_ms)
+        if response.status_code >= 400:
+            return public_status_component("auth", "degraded", "统一账号状态异常", latencyMs=latency_ms)
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        ok = payload.get("ok") if isinstance(payload, dict) else None
+        status = payload.get("status") if isinstance(payload, dict) else ""
+        if ok is False or status in {"outage", "down"}:
+            return public_status_component("auth", "outage", "统一账号不可用", latencyMs=latency_ms)
+        if status in {"degraded", "maintenance"}:
+            return public_status_component("auth", "degraded", "统一账号状态降级", latencyMs=latency_ms)
+        return public_status_component("auth", "operational", "统一账号可响应", latencyMs=latency_ms)
+    except httpx.RequestError:
+        return public_status_component("auth", "degraded", "统一账号检查超时")
+
+
+@app.get("/health/status")
+def health_status(db: Session = Depends(get_db)):
+    components = [public_status_component("web", "operational", "Web/API 可响应")]
+    metrics: dict[str, int | str | None] = {
+        "uptimeSeconds": max(0, int(time.monotonic() - PROCESS_STARTED_AT)),
+        "p95LatencyMs": None,
+        "queuedJobs": None,
+        "lastJobSuccessAt": None,
+    }
+    try:
+        db.execute(text("SELECT 1")).scalar()
+        components.append(public_status_component("database", "operational", "数据库可查询"))
+
+        component_count = db.query(func.count(Component.id)).scalar() or 0
+        project_count = db.query(func.count(Project.id)).scalar() or 0
+        import_count = db.query(func.count(OrderImportBatch.id)).scalar() or 0
+        components.append(
+            public_status_component(
+                "warehouse",
+                "operational",
+                f"{component_count} 个器件，{project_count} 个项目，{import_count} 个导入批次",
+            )
+        )
+
+        queued_statuses = ("pending", "processing", "stale")
+        queued_jobs = db.query(func.count(AiTask.id)).filter(AiTask.status.in_(queued_statuses)).scalar() or 0
+        failed_jobs = db.query(func.count(AiTask.id)).filter(AiTask.status == "failed").scalar() or 0
+        last_success_at = (
+            db.query(AiTask.finished_at)
+            .filter(AiTask.status == "completed", AiTask.finished_at.isnot(None))
+            .order_by(AiTask.finished_at.desc())
+            .limit(1)
+            .scalar()
+        )
+        metrics["queuedJobs"] = int(queued_jobs)
+        metrics["lastJobSuccessAt"] = public_status_datetime(last_success_at)
+        ai_status = "degraded" if failed_jobs else "operational"
+        ai_label = f"AI 队列 {queued_jobs} 个，失败 {failed_jobs} 个" if queued_jobs or failed_jobs else "AI 队列空闲"
+        components.append(
+            public_status_component(
+                "ai",
+                ai_status,
+                ai_label,
+                lastSuccessAt=metrics["lastJobSuccessAt"],
+            )
+        )
+
+        last_activity_at = db.query(func.max(ActivityLog.created_at)).scalar()
+        components.append(
+            public_status_component(
+                "activity",
+                "operational",
+                "操作记录可查询",
+                lastSuccessAt=public_status_datetime(last_activity_at),
+            )
+        )
+    except Exception:
+        components.append(public_status_component("database", "outage", "数据库不可用"))
+        metrics["queuedJobs"] = 0
+
+    components.append(account_center_public_health_component())
+    status = public_status_overall(components)
+    return {
+        "ok": status not in {"outage", "unknown"},
+        "status": status,
+        "service": "component-warehouse",
+        "version": APP_VERSION,
+        "checkedAt": public_status_checked_at(),
+        "components": components[:12],
+        "metrics": metrics,
+    }
+
+
 @app.get("/api/auth/config")
 def auth_config():
     return auth_public_config()
@@ -2912,6 +3083,14 @@ async def auth_account_token_refresh(payload: dict, request: Request):
     return await account_v1_proxy_request("POST", "/token/refresh", {
         "refreshToken": str(payload.get("refreshToken") or ""),
     })
+
+
+@app.get("/api/auth/account/me")
+async def auth_account_me(authorization: str | None = Header(default=None)):
+    token = auth_module.extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return await account_v1_proxy_request("GET", "/me", token=token)
 
 
 @app.post("/api/auth/account/logout")
@@ -3791,14 +3970,198 @@ def components_coverage(
     return {"categories": result}
 
 
+def _lcsc_ai_parameter_text(value) -> str | None:
+    if isinstance(value, str):
+        return value.strip()[:4000] or None
+    if not isinstance(value, list):
+        return None
+    parts = []
+    for item in value:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            parameter_value = str(item.get("value") or "").strip()
+            text_value = " ".join(part for part in (name, parameter_value) if part)
+        else:
+            text_value = str(item or "").strip()
+        if text_value:
+            parts.append(text_value)
+    return "；".join(parts)[:4000] or None
+
+
+def _safe_external_url(value: str | None, *, lcsc_only: bool = False) -> str | None:
+    text_value = str(value or "").strip()
+    if not text_value or len(text_value) > 1000:
+        return None
+    parsed = urlsplit(text_value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    if lcsc_only and parsed.hostname.lower() not in {"lcsc.com", "www.lcsc.com", "szlcsc.com", "item.szlcsc.com"}:
+        return None
+    return text_value
+
+
+def _merge_lcsc_sources(*groups) -> list[dict]:
+    result = []
+    seen = set()
+    for group in groups:
+        for item in group or []:
+            if not isinstance(item, dict):
+                continue
+            url = _safe_external_url(item.get("url"))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            result.append({
+                "title": str(item.get("title") or item.get("site_name") or "资料来源")[:300],
+                "url": url,
+                "site_name": str(item.get("site_name") or "")[:120] or None,
+                "summary": str(item.get("summary") or "")[:800] or None,
+            })
+    return result[:8]
+
+
+def _apply_lcsc_local_fields(draft: dict, result: dict, category_names: set[str]) -> str | None:
+    suggested_name = str(result.get("name") or result.get("normalized_name") or "").strip()
+    if suggested_name:
+        draft["name"] = clean_component_name(suggested_name, draft.get("model"), draft.get("lcsc_number"))
+    category_name = str(result.get("category") or result.get("category_suggestion") or "").strip()
+    if category_name not in category_names:
+        category_name = ""
+    tags = result.get("tags") or result.get("ai_tags")
+    if tags:
+        tag_text = ",".join(str(item) for item in tags) if isinstance(tags, list) else str(tags)
+        draft["tags"] = ",".join(normalize_tag_text(tag_text, draft.get("package")))
+    return category_name or None
+
+
+@app.post("/api/components/lcsc/preview", response_model=LcscPreviewResponse)
+def preview_lcsc_component(payload: LcscPreviewRequest, auth: Protected, db: Session = Depends(get_db)):
+    parsed = parse_lcsc_copy_text(payload.raw_text)
+    lcsc_number = parsed.get("lcsc_number")
+    if not lcsc_number:
+        raise HTTPException(status_code=422, detail="未识别到立创编号，请粘贴包含 Cxxxx 的完整器件信息")
+
+    category_rows = db.query(Category).order_by(Category.id).all()
+    categories = [item.name for item in category_rows]
+    category_names = set(categories)
+    status_value = "parsed_only"
+    warnings: list[str] = []
+    sources: list[dict] = []
+    draft = parsed_copy_draft(parsed)
+    category_name: str | None = None
+
+    try:
+        product = fetch_lcsc_product(lcsc_number)
+        draft = official_product_draft(product, parsed)
+        status_value = "official"
+        sources = _merge_lcsc_sources([
+            {
+                "title": draft.get("source_title") or f"LCSC {lcsc_number}",
+                "url": draft.get("buy_url") or lcsc_product_url(lcsc_number),
+                "site_name": "LCSC",
+                "summary": draft.get("description"),
+            }
+        ])
+        try:
+            organized = organize_lcsc_draft(draft, categories)
+            category_name = _apply_lcsc_local_fields(draft, organized, category_names)
+        except Exception:
+            warnings.append("立创官方字段已取得，但 AI 命名与分类整理失败，已保留确定性生成的名称和分类。")
+    except LcscLookupError as exc:
+        warnings.append(str(exc))
+        warnings.append("立创官方商品页未完成核验，正在使用 AI 联网结果；保存前请重点核对核心字段。")
+        try:
+            fallback = lookup_lcsc_fallback(parsed, categories)
+            fallback_sources = fallback.get("sources") if isinstance(fallback.get("sources"), list) else []
+            sources = _merge_lcsc_sources(fallback_sources)
+            exact_match = bool(fallback.get("exact_lcsc_match"))
+            exact_match = exact_match and normalize_lcsc_number(fallback.get("lcsc_number")) == lcsc_number
+            exact_match = exact_match and exact_lcsc_source_present(sources, lcsc_number)
+            category_name = _apply_lcsc_local_fields(draft, fallback, category_names)
+            if exact_match:
+                status_value = "ai_fallback"
+                for key in ("model", "manufacturer", "package", "description"):
+                    value = str(fallback.get(key) or "").strip()
+                    if value and not draft.get(key):
+                        draft[key] = value[:4000 if key == "description" else 200]
+                parameter_text = _lcsc_ai_parameter_text(fallback.get("parameters"))
+                if parameter_text:
+                    draft["parameters"] = parameter_text
+                datasheet_url = _safe_external_url(fallback.get("datasheet_url"))
+                product_url = _safe_external_url(fallback.get("product_url"), lcsc_only=True)
+                if datasheet_url:
+                    draft["datasheet_url"] = datasheet_url
+                if product_url:
+                    draft["buy_url"] = product_url
+                warnings.append("核心字段来自 AI 联网精确编号匹配，不等同于直接读取立创商品页。")
+            else:
+                warnings.append("AI 未提供带精确立创编号证据的结果，仅保留复制文本和低风险整理建议。")
+        except Exception:
+            warnings.append("AI 联网补全失败。")
+            warnings.append("当前仅保留复制文本解析草稿。")
+
+    if not category_name:
+        category_name = local_category_from_text(
+            " ".join(
+                str(value or "")
+                for value in (
+                    draft.get("official_category"),
+                    draft.get("description"),
+                    draft.get("copied_name"),
+                    draft.get("name"),
+                )
+            )
+        )
+    if category_name not in category_names:
+        category_name = None
+    draft["category_name"] = category_name
+    draft["category_id"] = category_id_by_name(db, category_name)
+    draft["lcsc_number"] = lcsc_number
+    draft["quantity"] = 0
+    draft["source"] = "立创"
+    draft["buy_url"] = _safe_external_url(draft.get("buy_url"), lcsc_only=True) or lcsc_product_url(lcsc_number)
+    draft["datasheet_url"] = _safe_external_url(draft.get("datasheet_url"))
+    for internal_key in ("official_category", "official_properties", "copied_name"):
+        draft.pop(internal_key, None)
+
+    duplicate = (
+        filter_owner(db.query(Component), Component, auth)
+        .options(joinedload(Component.category))
+        .filter(func.upper(Component.lcsc_number) == lcsc_number)
+        .first()
+    )
+    existing_payload = None
+    if duplicate:
+        duplicate_reserved = reserved_quantities(db, [duplicate.id]).get(duplicate.id, 0)
+        existing_payload = component_out(duplicate, duplicate_reserved)
+        duplicate_category = existing_payload.get("category")
+        if duplicate_category:
+            existing_payload["category"] = {
+                "id": duplicate_category.id,
+                "name": duplicate_category.name,
+                "color": duplicate_category.color,
+                "code_prefix": duplicate_category.code_prefix,
+                "code_prefix_locked": bool(duplicate_category.code_prefix_locked),
+            }
+    return {
+        "status": status_value,
+        "draft": draft,
+        "existing_component": existing_payload,
+        "warnings": warnings,
+        "sources": sources,
+    }
+
+
 @app.post("/api/components", response_model=ComponentOut)
 def create_component(payload: ComponentCreate, auth: Protected, db: Session = Depends(get_db)):
-    if payload.lcsc_number:
-        duplicate = filter_owner(db.query(Component), Component, auth).filter(Component.lcsc_number == payload.lcsc_number).first()
-        if duplicate:
-            raise HTTPException(status_code=409, detail="LCSC number already exists")
-    assert_unique_warehouse_code(db, payload.warehouse_code)
     values = payload.model_dump()
+    normalized_lcsc = normalize_lcsc_number(payload.lcsc_number)
+    if normalized_lcsc:
+        values["lcsc_number"] = normalized_lcsc
+        duplicate = filter_owner(db.query(Component), Component, auth).filter(func.upper(Component.lcsc_number) == normalized_lcsc).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail=f"立创编号 {normalized_lcsc} 已存在，请打开现有器件 {duplicate.warehouse_code or duplicate.id}")
+    assert_unique_warehouse_code(db, payload.warehouse_code)
     values["source"] = values.get("source") or "手动新增"
     component = Component(**normalize_for_inventory(db, values, clean_name=True))
     set_owner(component, auth)
@@ -3842,6 +4205,16 @@ def update_component(component_id: int, payload: ComponentUpdate, auth: Protecte
     old_cache_key = component_ai_cache_key(component)
     values = normalize_for_inventory(db, {**component_out(component), **payload.model_dump(exclude_unset=True)}, clean_name=True)
     values = {key: value for key, value in values.items() if key in payload.model_fields or key in {"part_family", "count_mode", "normalized_spec", "category_id"}}
+    normalized_lcsc = normalize_lcsc_number(values.get("lcsc_number"))
+    if normalized_lcsc:
+        duplicate = (
+            filter_owner(db.query(Component), Component, auth)
+            .filter(func.upper(Component.lcsc_number) == normalized_lcsc, Component.id != component.id)
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail=f"立创编号 {normalized_lcsc} 已存在，请打开现有器件 {duplicate.warehouse_code or duplicate.id}")
+        values["lcsc_number"] = normalized_lcsc
     if "warehouse_code" in values:
         assert_unique_warehouse_code(db, values.get("warehouse_code"), component.id)
     for key, value in values.items():

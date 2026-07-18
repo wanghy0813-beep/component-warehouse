@@ -7,21 +7,12 @@
       </div>
       <div class="toolbar compact-toolbar">
         <el-button type="primary" :icon="Plus" @click="openCreate">新增元器件</el-button>
-        <el-upload :show-file-list="false" accept=".xlsx,.xls" :http-request="handleExcelUpload">
-          <el-button :icon="Upload">导入立创订单</el-button>
-        </el-upload>
         <el-button :icon="Camera" @click="openScanner()">扫码查找</el-button>
         <el-popover placement="bottom-end" trigger="click" width="220" popper-class="cw-more-popover">
           <template #reference>
             <el-button :icon="MoreFilled">更多操作</el-button>
           </template>
           <div class="more-action-list">
-            <el-upload :show-file-list="false" accept=".jpg,.jpeg,.png,.webp" multiple :http-request="handleImageUpload">
-              <el-button :icon="Picture" :loading="importingImages">图片识别导入</el-button>
-            </el-upload>
-            <el-upload :show-file-list="false" accept=".xlsx,.xls" :disabled="externalParsing" :http-request="handleExternalOrderUpload">
-              <el-button :icon="Upload" :loading="externalParsing" :disabled="externalParsing">导入外部订单</el-button>
-            </el-upload>
             <el-button @click="exportCurrentIdTable">导出 ID 表</el-button>
             <el-button @click="exportInventory">导出库存 XLSX</el-button>
             <el-button @click="exportCurrentLabels">导出标签/PDF</el-button>
@@ -131,7 +122,16 @@
       @export="runLabelExport"
     />
 
-    <el-drawer v-model="drawerVisible" :title="drawerTitle" size="700px">
+    <el-drawer
+      v-model="drawerVisible"
+      class="component-detail-drawer"
+      modal-class="component-detail-overlay"
+      append-to-body
+      destroy-on-close
+      :title="drawerTitle"
+      size="min(1040px, calc(100vw - 40px))"
+      @opened="resetDetailDrawerScroll"
+    >
       <template v-if="selected">
         <inventory-component-detail
           :item="selected"
@@ -157,7 +157,7 @@
               <el-button size="small" type="primary" plain :icon="CopyDocument" @click="copyComponentName(selected)">复制型号</el-button>
               <el-button size="small" type="primary" plain @click="openComponentLabel(selected)">二维码标签</el-button>
               <el-button size="small" type="primary" plain :icon="Camera" @click="openScannerForSelected">扫码定位此器件</el-button>
-              <el-button size="small" type="primary" plain @click="openLcsc(selected)">立创搜索</el-button>
+              <el-button size="small" type="primary" plain @click="openLcsc(selected)">{{ selected.buy_url ? '立创商品' : '立创搜索' }}</el-button>
               <el-button v-if="selected.datasheet_url" size="small" plain @click="windowOpen(selected.datasheet_url)">数据手册</el-button>
               <el-button size="small" type="danger" plain @click="removeSelectedComponent">移除记录</el-button>
             </div>
@@ -265,10 +265,34 @@
         </div>
       </template>
 
-        <el-form v-if="editing" label-position="top" :model="form" class="edit-form">
+        <component-create-workspace
+          v-if="editing && !selected"
+          ref="createWorkspace"
+          v-model:quick-prompt="quickAddPrompt"
+          :form="form"
+          :categories="categories"
+          :lookup="previewLcscComponent"
+          :ai-loading="aiCreateLoading"
+          :ai-suggestion="aiCreateSuggestion"
+          :saving="saving"
+          :importing="importing"
+          :importing-images="importingImages"
+          :external-parsing="externalParsing"
+          :lcsc-order-upload="handleExcelUpload"
+          :image-upload="handleImageUpload"
+          :external-order-upload="handleExternalOrderUpload"
+          :download-template="downloadExternalOrderTemplate"
+          @ai-complete="completeFormWithAi"
+          @lcsc-draft="applyLcscDraft"
+          @lcsc-existing="openExistingLcscComponent"
+          @cancel="drawerVisible = false"
+          @submit="submitForm"
+        />
+
+        <el-form v-else-if="editing" label-position="top" :model="form" class="edit-form">
           <section class="quick-create-card">
             <div>
-              <strong>{{ selected ? 'AI 辅助补齐' : 'AI 快速新增' }}</strong>
+              <strong>AI 辅助补齐</strong>
               <p>先输入大概信息，例如“AMS1117-3.3 SOT-223 10个”或“0805 10k 1% 电阻”，AI 只生成草稿，保存前可以手动修改。</p>
             </div>
             <el-input
@@ -309,6 +333,7 @@
             <el-form-item label="描述" class="wide-field"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
             <el-form-item label="标签"><el-input v-model="form.tags" /></el-form-item>
             <el-form-item label="数据手册"><el-input v-model="form.datasheet_url" /></el-form-item>
+            <el-form-item label="立创商品"><el-input v-model="form.buy_url" placeholder="立创商品页链接" /></el-form-item>
             <el-form-item label="备注" class="wide-field"><el-input v-model="form.remark" type="textarea" :rows="3" /></el-form-item>
           </div>
           <el-form-item label="AI 标签" class="flag-checks">
@@ -439,9 +464,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from '../shared/elementApi'
 import { useRoute, useRouter } from 'vue-router'
-import { Camera, CopyDocument, MoreFilled, Picture, Plus, Search, Upload } from '@element-plus/icons-vue'
+import { Camera, CopyDocument, MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import InventoryComponentCard from '../components/inventory/InventoryComponentCard.vue'
 import InventoryComponentDetail from '../components/inventory/InventoryComponentDetail.vue'
+import ComponentCreateWorkspace from '../components/inventory/ComponentCreateWorkspace.vue'
 import MultiQrScanner from '../shared/components/MultiQrScanner.vue'
 import LabelExportDialog from '../shared/components/LabelExportDialog.vue'
 import {
@@ -467,6 +493,7 @@ import {
   listCustomLabels,
   organizeComponent,
   previewImageImport,
+  previewLcscComponent,
   previewExcel,
   previewExternalOrder,
   recordUsageEvent,
@@ -525,6 +552,8 @@ const aiAnswer = ref(null)
 const aiCreateLoading = ref(false)
 const aiCreateSuggestion = ref(null)
 const quickAddPrompt = ref('')
+const createWorkspace = ref(null)
+const lastLcscDraft = ref({})
 const inventoryChannel = 'BroadcastChannel' in window ? new BroadcastChannel('cw-inventory-sync') : null
 const editing = ref(false)
 const collapsedGroups = ref(new Set())
@@ -555,6 +584,8 @@ const emptyForm = {
   location: '',
   remark: '',
   datasheet_url: '',
+  buy_url: '',
+  source_title: '',
   is_hand_solder_friendly: false,
   is_power_component: false,
   is_signal_component: false,
@@ -938,7 +969,7 @@ function openBlob(blob) {
 }
 
 function openLcsc(item) {
-  windowOpen(makeLcscSearchUrl(item?.lcsc_number || item?.model || item?.name))
+  windowOpen(item?.buy_url || makeLcscSearchUrl(item?.lcsc_number || item?.model || item?.name))
 }
 
 function componentCopyText(item) {
@@ -1230,7 +1261,10 @@ function openCreate() {
   aiAnswer.value = null
   aiCreateSuggestion.value = null
   quickAddPrompt.value = ''
+  lastLcscDraft.value = {}
   drawerVisible.value = true
+  resetDetailDrawerScroll()
+  nextTick(() => createWorkspace.value?.reset())
 }
 
 async function openDetail(row, edit = false) {
@@ -1239,6 +1273,7 @@ async function openDetail(row, edit = false) {
   fillForm(row)
   editing.value = edit
   drawerVisible.value = true
+  resetDetailDrawerScroll()
   edaBindings.value = []
   supplierParts.value = []
   inventoryLots.value = []
@@ -1272,6 +1307,13 @@ async function openDetail(row, edit = false) {
   usageRecords.value = []
 }
 
+function resetDetailDrawerScroll() {
+  nextTick(() => {
+    const body = document.querySelector('.component-detail-drawer .el-drawer__body')
+    body?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  })
+}
+
 function categoryIdFromSuggestion(name) {
   const text = String(name || '').trim()
   if (!text) return null
@@ -1279,6 +1321,47 @@ function categoryIdFromSuggestion(name) {
   if (exact) return exact.id
   const contained = categories.value.find((item) => text.includes(item.name) || item.name.includes(text))
   return contained?.id || null
+}
+
+const lcscAutoFields = [
+  'name',
+  'model',
+  'manufacturer',
+  'description',
+  'category_id',
+  'parameters',
+  'package',
+  'source',
+  'lcsc_number',
+  'tags',
+  'source_title',
+  'datasheet_url',
+  'buy_url'
+]
+
+function isBlankFormValue(value) {
+  return value === null || value === undefined || String(value).trim() === ''
+}
+
+function applyLcscDraft(draft) {
+  const previous = lastLcscDraft.value || {}
+  for (const field of lcscAutoFields) {
+    const nextValue = draft?.[field]
+    if (nextValue === undefined || nextValue === null || nextValue === '') continue
+    if (isBlankFormValue(form[field]) || form[field] === previous[field]) {
+      form[field] = nextValue
+    }
+  }
+  form.quantity = Number(form.quantity || 0)
+  lastLcscDraft.value = Object.fromEntries(lcscAutoFields.map((field) => [field, draft?.[field]]))
+  aiCreateSuggestion.value = null
+  ElMessage.success('立创器件草稿已填充，请核对数量和本地信息后保存')
+}
+
+function openExistingLcscComponent(component) {
+  if (!component?.id) return
+  lastLcscDraft.value = {}
+  openDetail(decorateComponent(component), false)
 }
 
 function aiKeySpecsToParameters(result) {
@@ -1488,6 +1571,9 @@ async function submitForm() {
   if (!form.name && quickAddPrompt.value.trim()) {
     form.name = quickAddPrompt.value.trim()
   }
+  if (!form.name && form.model) {
+    form.name = form.model
+  }
   if (!form.name) {
     ElMessage.warning('请填写名称或先输入大概信息')
     return
@@ -1589,6 +1675,8 @@ async function confirmExternalOrderImport() {
     const result = await commitExternalOrder(externalPreviewRows.value)
     ElMessage.success(`外部订单导入：新增 ${result.created}，合并 ${result.merged}，跳过 ${result.skipped}`)
     externalPreviewVisible.value = false
+    drawerVisible.value = false
+    editing.value = false
     load()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '外部订单导入失败')
@@ -1683,6 +1771,8 @@ async function confirmImageImport() {
     }
     ElMessage.success(`新增 ${created}，合并 ${merged}，跳过 ${skipped}`)
     imagePreviewVisible.value = false
+    drawerVisible.value = false
+    editing.value = false
     load()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '图片导入确认失败')
@@ -1697,6 +1787,8 @@ async function confirmImport() {
     const result = await commitExcel(previewRows.value)
     ElMessage.success(`新增 ${result.created}，合并 ${result.merged}，跳过 ${result.skipped}，抵消待采购 ${result.resolved_pending_purchase || 0}`)
     previewVisible.value = false
+    drawerVisible.value = false
+    editing.value = false
     await loadImportBatches()
     load()
   } catch {
@@ -1740,6 +1832,13 @@ watch(
     autoOpenComponentCode = ''
     filters.keyword = String(keyword || '')
     await reloadFromFirstPage()
+  }
+)
+
+watch(
+  () => [drawerVisible.value, selected.value?.id || 'create'],
+  ([visible]) => {
+    if (visible) resetDetailDrawerScroll()
   }
 )
 
@@ -2493,6 +2592,32 @@ pre {
   overflow-x: hidden;
 }
 
+:global(.component-detail-drawer.el-drawer) {
+  max-width: calc(100vw - 40px);
+  border-radius: var(--cw-radius-card) 0 0 var(--cw-radius-card);
+  box-shadow: -18px 0 48px rgba(15, 23, 42, 0.18);
+}
+
+:global(.component-detail-drawer.el-drawer .el-drawer__header) {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin: 0;
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid #edf1f7;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+:global(.component-detail-drawer.el-drawer .el-drawer__body) {
+  padding: 18px 28px 28px;
+  overflow-x: hidden;
+}
+
+:global(.component-detail-overlay.el-overlay) {
+  background-color: rgba(15, 23, 42, 0.48);
+}
+
 @media (max-width: 980px) {
   .component-skeleton-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2503,6 +2628,20 @@ pre {
 }
 
 @media (max-width: 620px) {
+  :global(.component-detail-drawer.el-drawer) {
+    width: 100vw !important;
+    max-width: 100vw;
+    border-radius: 0;
+  }
+
+  :global(.component-detail-drawer.el-drawer .el-drawer__header) {
+    padding: 16px 16px 12px;
+  }
+
+  :global(.component-detail-drawer.el-drawer .el-drawer__body) {
+    padding: 12px 12px 20px;
+  }
+
   .component-skeleton-grid {
     grid-template-columns: 1fr;
   }
@@ -2527,8 +2666,7 @@ pre {
     width: 100%;
   }
 
-  .compact-toolbar > :first-child,
-  .compact-toolbar > :last-child {
+  .compact-toolbar > :first-child {
     grid-column: 1 / -1;
   }
 

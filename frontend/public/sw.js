@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cw-personal-v0.7.1'
+const CACHE_NAME = 'cw-personal-v0.7.6'
 const APP_ROOT = '/component-warehouse'
 const PERSONAL_ROOT = `${APP_ROOT}/personal/`
 const APP_SHELL = [PERSONAL_ROOT, `${PERSONAL_ROOT}manifest.webmanifest`]

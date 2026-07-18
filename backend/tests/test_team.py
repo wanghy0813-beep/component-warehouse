@@ -86,6 +86,64 @@ def test_team_usage_event_writes_library_log(team_env, created_library):
         db.close()
 
 
+def test_team_lcsc_create_preserves_full_personal_component_and_reuses_duplicate(team_env, created_library):
+    client = team_env["client"]
+    Session = team_env["Session"]
+    library_id = created_library["id"]
+    db = Session()
+    db.add(Category(name="电源", code_prefix="PWR"))
+    db.commit()
+    db.close()
+
+    payload = {
+        "name": "LP5907MFX-3.3/NOPB 3.3V 250mA LDO",
+        "model": "LP5907MFX-3.3/NOPB",
+        "manufacturer": "TI",
+        "description": "250mA low-noise LDO",
+        "lcsc_number": "c80670",
+        "quantity": 0,
+        "category": "电源",
+        "package": "SOT-23-5",
+        "parameters": "Output Voltage 3.3V；Output Current 250mA",
+        "datasheet_url": "https://datasheet.lcsc.com/datasheet/pdf/example.pdf?productCode=C80670",
+        "buy_url": "https://www.lcsc.com/product-detail/C80670.html",
+        "source": "立创",
+        "source_title": "TI LP5907MFX-3.3/NOPB",
+        "tags": "低噪声,低静态电流",
+    }
+    first = client.post(
+        f"/api/team/libraries/{library_id}/components",
+        headers=headers(1),
+        json=payload,
+    )
+    assert first.status_code == 200, first.text
+    item = first.json()["item"]
+    assert item["manufacturer"] == "TI"
+    assert item["description"] == "250mA low-noise LDO"
+    assert item["buy_url"].endswith("/C80670.html")
+    assert item["datasheet_url"].endswith("productCode=C80670")
+
+    db = Session()
+    component = db.query(Component).filter_by(owner_user_id=1, lcsc_number="C80670").one()
+    assert component.category.name == "电源"
+    assert component.source == "立创"
+    assert component.source_title == "TI LP5907MFX-3.3/NOPB"
+    component_id = component.id
+    db.close()
+
+    duplicate = client.post(
+        f"/api/team/libraries/{library_id}/components",
+        headers=headers(1),
+        json={**payload, "name": "不应创建的新名称"},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["merged"] is True
+    assert duplicate.json()["item"]["cw_component_id"] == component_id
+    db = Session()
+    assert db.query(Component).filter_by(owner_user_id=1, lcsc_number="C80670").count() == 1
+    db.close()
+
+
 def test_member_edit_captain_permissions_link_merge_and_logs(team_env, created_library):
     client = team_env["client"]
     Session = team_env["Session"]

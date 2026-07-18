@@ -46,7 +46,7 @@ wait_for_url() {
   local url="$1"
   local label="$2"
   local attempt
-  for attempt in $(seq 1 30); do
+  for attempt in $(seq 1 90); do
     if curl -fsS "${url}" >/dev/null 2>&1; then
       log "${label} is ready"
       return 0
@@ -194,7 +194,8 @@ prepare_data_permissions() {
 
 start_preview() {
   run sudo -n ln -sfn "${NGINX_PREVIEW_AVAILABLE}" "${NGINX_PREVIEW_ENABLED}"
-  run sudo -n systemctl enable --now "${SERVICE_NAME}"
+  run sudo -n systemctl enable "${SERVICE_NAME}"
+  run sudo -n systemctl restart "${SERVICE_NAME}"
   run sudo -n nginx -t
   run sudo -n systemctl reload nginx
 }

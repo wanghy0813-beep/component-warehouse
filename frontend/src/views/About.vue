@@ -1,60 +1,51 @@
 <template>
-  <section class="page more-page">
-    <div class="page-header more-hero">
+  <section class="page management-page">
+    <div class="page-header management-hero">
       <div>
-        <h1 class="page-title">更多</h1>
-        <p class="page-subtitle">管理导入记录、AI 整理、数据备份、操作记录和危险操作</p>
+        <h1 class="page-title">管理</h1>
+        <p class="page-subtitle">导入、AI、备份、日志和危险操作</p>
       </div>
-      <div class="more-hero-actions">
+      <div class="management-actions">
         <install-app-button />
-        <el-button :icon="Refresh" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
       </div>
     </div>
 
-    <nav class="more-shortcuts" aria-label="更多功能入口">
-      <router-link to="/coverage"><strong>覆盖图</strong><span>查看仓储位置</span></router-link>
-      <router-link to="/purchases"><strong>采购</strong><span>计划、到货与入库</span></router-link>
-      <router-link to="/risks"><strong>风险</strong><span>缺料与封装检查</span></router-link>
-      <router-link v-if="FEATURE_EDA_ENABLED" to="/eda-guide"><strong>AD 说明</strong><span>Windows 同步和库使用文档</span></router-link>
-      <router-link to="/manual"><strong>使用说明书</strong><span>个人版、团队版和完整工作流</span></router-link>
-      <router-link v-if="isAdmin" to="/admin"><strong>管理</strong><span>用户与埋点统计</span></router-link>
-    </nav>
-
-    <div class="more-grid">
-      <section class="panel">
+    <div class="management-grid">
+      <section class="panel import-panel">
         <div class="section-head">
           <h2>导入批次</h2>
-          <span>订单导入、自动合并和回滚</span>
+          <span>最近 {{ importBatches.length }} 批</span>
         </div>
         <div class="batch-list">
           <article v-for="batch in importBatches" :key="batch.id" class="batch-card">
             <div>
               <strong>#{{ batch.id }} {{ batch.source_file || 'Excel 导入' }}</strong>
-              <span>{{ formatTime(batch.created_at) }} · 新增 {{ batch.created_count }} · 合并 {{ batch.merged_count }} · 跳过 {{ batch.skipped_count }} · 抵消待采购 {{ batch.resolved_pending_count }}</span>
+              <span>{{ formatTime(batch.created_at) }} · 新增 {{ batch.created_count }} · 合并 {{ batch.merged_count }} · 跳过 {{ batch.skipped_count }}</span>
               <small v-if="batch.rollback_summary">{{ batch.rollback_summary }}</small>
             </div>
-            <el-tag :type="batch.status === 'rolled_back' ? 'info' : 'success'">{{ batch.status === 'rolled_back' ? '已撤销' : '有效' }}</el-tag>
-            <el-button size="small" :disabled="batch.status === 'rolled_back'" @click="rollbackBatch(batch)">撤销</el-button>
+            <div class="row-actions">
+              <el-tag :type="batch.status === 'rolled_back' ? 'info' : 'success'" effect="plain">{{ batch.status === 'rolled_back' ? '已撤销' : '有效' }}</el-tag>
+              <el-button size="small" plain :disabled="batch.status === 'rolled_back'" @click="rollbackBatch(batch)">撤销</el-button>
+            </div>
           </article>
-          <el-empty v-if="!importBatches.length" description="暂无导入批次" :image-size="80" />
+          <el-empty v-if="!importBatches.length" description="暂无导入批次" :image-size="72" />
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel ai-panel">
         <div class="section-head">
           <h2>AI 维护</h2>
-          <span>后台静默队列</span>
+          <span>后台队列</span>
         </div>
-        <div class="maintenance-grid">
-          <button class="maintenance-card" @click="enqueueOrganize">
+        <div class="maintenance-actions">
+          <button class="maintenance-card" type="button" @click="enqueueOrganize">
             <small>分类整理</small>
-            <strong>重新整理分类</strong>
-            <span>把待整理/旧分类物料加入 AI 规范化队列</span>
+            <strong>重新整理</strong>
           </button>
-          <button class="maintenance-card" @click="resetAi">
+          <button class="maintenance-card" type="button" @click="resetAi">
             <small>AI 重置</small>
-            <strong>重置并重跑</strong>
-            <span>清除旧 AI 摘要和标签，重新建立规范字段</span>
+            <strong>重置重跑</strong>
           </button>
         </div>
         <div class="task-strip">
@@ -68,13 +59,12 @@
       <section class="panel backup-panel">
         <div class="section-head">
           <h2>数据备份</h2>
-          <el-tag type="success" effect="plain">ZIP</el-tag>
+          <span>{{ backups.length }} 个</span>
         </div>
-        <p>导出 SQLite 一致性快照和 data 目录全部文件，用于服务器异常、迁移或重装前留档。</p>
         <div class="backup-actions">
-          <el-button type="primary" plain :loading="backupLoading" @click="downloadBackup">导出数据备份</el-button>
+          <el-button type="primary" plain :loading="backupLoading" @click="downloadBackup">导出备份</el-button>
           <el-upload :show-file-list="false" accept=".zip" :http-request="inspectBackupUpload">
-            <el-button plain :loading="restoreInspecting">上传并预览恢复</el-button>
+            <el-button plain :loading="restoreInspecting">预览恢复</el-button>
           </el-upload>
         </div>
         <div class="backup-list">
@@ -82,46 +72,105 @@
             <strong>{{ backupTypeLabel(item.type) }}</strong>
             <span>{{ formatTime(item.created_at) }} · {{ formatBytes(item.bytes) }}</span>
           </div>
-          <small v-if="!backups.length">暂无本机自动备份</small>
-        </div>
-      </section>
-
-      <section class="panel category-code-panel">
-        <div class="section-head">
-          <h2>类别与器件编号</h2>
-          <span>由系统统一维护</span>
-        </div>
-        <p class="category-policy">订单中已有明确类别时优先采用订单类别；没有可靠类别时，只有高置信度 AI 建议才会自动分类。系统限制使用统一类别，并为每类自动分配唯一三字符前缀。</p>
-        <div class="category-code-list">
-          <div v-for="category in categories" :key="category.id">
-            <strong>{{ category.name }}</strong>
-            <code>{{ category.code_prefix || '自动生成中' }}</code>
-            <el-tag type="success" effect="plain">系统管理</el-tag>
-          </div>
+          <small v-if="!backups.length">暂无备份</small>
         </div>
       </section>
 
       <section class="panel danger-panel">
         <div class="section-head">
           <h2>清库重录</h2>
-          <el-tag type="danger" effect="plain">危险操作</el-tag>
+          <el-tag type="danger" effect="plain">危险</el-tag>
         </div>
-        <p>清空元器件、项目、BOM、导入批次、AI 任务和台账日志，只保留默认分类。适合你决定重新导入全部立创订单前使用。</p>
+        <p>清空元器件、项目、BOM、导入批次、AI 任务和台账日志。</p>
         <el-button type="danger" plain @click="clearAllData">三次确认后清空数据库</el-button>
       </section>
     </div>
 
+    <section v-if="isAdmin" class="panel admin-panel">
+      <div class="section-head">
+        <h2>用户统计</h2>
+        <span>近 30 天</span>
+      </div>
+      <div class="admin-metrics">
+        <article><span>注册用户</span><strong>{{ adminData.registered_users || 0 }}</strong></article>
+        <article><span>月活</span><strong>{{ adminData.monthly_active_users || 0 }}</strong></article>
+        <article><span>7 日活跃</span><strong>{{ adminData.weekly_active_users || 0 }}</strong></article>
+        <article><span>今日活跃</span><strong>{{ adminData.today_active_users || 0 }}</strong></article>
+        <article><span>30 天操作</span><strong>{{ adminData.ui_events_30d || 0 }}</strong></article>
+      </div>
+      <div class="admin-grid">
+        <section class="admin-card">
+          <div class="section-head compact">
+            <h3>常用功能</h3>
+            <span>排行</span>
+          </div>
+          <div class="feature-list">
+            <div v-for="item in adminData.top_features || []" :key="item.action">
+              <span><strong>{{ item.label }}</strong><small>{{ item.action }}</small></span>
+              <em>{{ item.count }}</em>
+              <i :style="{ width: featureWidth(item.count) }"></i>
+            </div>
+            <el-empty v-if="!(adminData.top_features || []).length" description="暂无数据" :image-size="72" />
+          </div>
+        </section>
+        <section class="admin-card">
+          <div class="section-head compact">
+            <h3>近期用户</h3>
+            <span>最后使用</span>
+          </div>
+          <div class="user-list">
+            <article v-for="user in adminData.recent_users || []" :key="user.user_id">
+              <span><strong>{{ user.nickname || `用户 ${user.user_id}` }}</strong><small>{{ maskPhone(user.phone) }} · {{ formatTime(user.last_seen_at) }}</small></span>
+              <em>{{ user.event_count_30d }} 次</em>
+            </article>
+            <el-empty v-if="!(adminData.recent_users || []).length" description="暂无数据" :image-size="72" />
+          </div>
+        </section>
+        <section class="admin-card admin-wide">
+          <div class="section-head compact">
+            <h3>趋势</h3>
+            <span>30 天</span>
+          </div>
+          <div class="spark-bars" aria-label="近 30 天操作量">
+            <span
+              v-for="day in adminData.daily || []"
+              :key="day.date"
+              :title="`${day.date} · ${day.events} 次 · ${day.users} 人`"
+              :style="{ height: dayHeight(day.events) }"
+            ></span>
+          </div>
+        </section>
+        <section class="admin-card admin-wide">
+          <div class="section-head compact">
+            <h3>最近界面操作</h3>
+            <span>{{ (adminData.recent_events || []).length }} 条</span>
+          </div>
+          <el-table :data="adminData.recent_events || []" row-key="id" stripe class="compact-table" max-height="360" empty-text="暂无记录">
+            <el-table-column label="时间" width="170">
+              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="用户" width="140">
+              <template #default="{ row }">{{ row.user || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="label" label="功能" min-width="150" />
+            <el-table-column prop="page" label="页面" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="entry" label="入口" min-width="120" show-overflow-tooltip />
+          </el-table>
+        </section>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="section-head">
         <h2>操作记录</h2>
-        <span>入库、出库、BOM、导入和维护记录，最多显示最近 {{ visibleLogs.length }} 条</span>
+        <span>最近 {{ visibleLogs.length }} 条</span>
       </div>
-      <el-table :data="visibleLogs" row-key="id" stripe class="ledger-table" max-height="560" empty-text="暂无操作记录">
+      <el-table :data="visibleLogs" row-key="id" stripe class="compact-table" max-height="520" empty-text="暂无操作记录">
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column prop="summary" label="操作" min-width="320" show-overflow-tooltip />
-        <el-table-column prop="action" label="类型" width="180" show-overflow-tooltip />
+        <el-table-column prop="action" label="类型" width="170" show-overflow-tooltip />
         <el-table-column label="数量" width="90" align="right">
           <template #default="{ row }">{{ row.quantity_delta || '-' }}</template>
         </el-table-column>
@@ -153,17 +202,15 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from '../shared/elementApi'
 import { Refresh } from '@element-plus/icons-vue'
-import { FEATURE_EDA_ENABLED } from '../shared/features'
 import InstallAppButton from '../shared/components/InstallAppButton.vue'
 import {
   clearDatabase,
-  dashboardSummary,
   enqueueOrganizeAiTasks,
   exportDataBackup,
-  getCategories,
-  getDataBackups,
   getActivityLogs,
+  getAdminUsageDashboard,
   getAiTaskSummary,
+  getDataBackups,
   getOrderImportBatches,
   inspectDataBackup,
   resetAndReorganize,
@@ -171,17 +218,17 @@ import {
   rollbackOrderImportBatch,
 } from '../api/client'
 
-const summary = ref({})
 const storedUser = (() => {
   try { return JSON.parse(localStorage.getItem('cw_legacy_user') || '{}') }
   catch { return {} }
 })()
 const isAdmin = Boolean(storedUser.isAdmin || storedUser.is_admin)
+const loading = ref(false)
 const taskSummary = ref({ pending: 0, stale: 0, completed: 0, failed: 0 })
 const logs = ref([])
 const importBatches = ref([])
 const backups = ref([])
-const categories = ref([])
+const adminData = ref({})
 const backupLoading = ref(false)
 const restoreDialog = ref(false)
 const restoreFile = ref(null)
@@ -190,37 +237,69 @@ const restoreConfirm = ref('')
 const restoreInspecting = ref(false)
 const restoreLoading = ref(false)
 const visibleLogs = computed(() => logs.value.slice(0, 120))
+const maxFeatureCount = computed(() => Math.max(1, ...(adminData.value.top_features || []).map((item) => Number(item.count || 0))))
+const maxDailyEvents = computed(() => Math.max(1, ...(adminData.value.daily || []).map((item) => Number(item.events || 0))))
 
 function formatTime(value) {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
-async function loadImportBatches() {
-  importBatches.value = await getOrderImportBatches({ limit: 20 })
+function formatBytes(value) {
+  const bytes = Number(value || 0)
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
 }
 
-async function loadBackups() {
-  const result = await getDataBackups()
-  backups.value = result.items || []
+function backupTypeLabel(value) {
+  return { auto: '自动备份', pre_restore: '恢复前', pre_clear: '清库前', manual: '手动' }[value] || value || '备份'
+}
+
+function maskPhone(value) {
+  const phone = String(value || '')
+  if (phone.length < 7) return phone || '-'
+  return `${phone.slice(0, 3)}****${phone.slice(-4)}`
+}
+
+function featureWidth(value) {
+  return `${Math.max(8, Math.round((Number(value || 0) / maxFeatureCount.value) * 100))}%`
+}
+
+function dayHeight(value) {
+  return `${Math.max(8, Math.round((Number(value || 0) / maxDailyEvents.value) * 100))}%`
+}
+
+async function loadMaintenance() {
+  const [tasks, activity, batches, backupResult] = await Promise.all([
+    getAiTaskSummary(),
+    getActivityLogs({ limit: 160 }),
+    getOrderImportBatches({ limit: 20 }),
+    getDataBackups(),
+  ])
+  taskSummary.value = tasks
+  logs.value = activity
+  importBatches.value = batches
+  backups.value = backupResult.items || []
+}
+
+async function loadAdmin() {
+  if (!isAdmin) return
+  try {
+    adminData.value = await getAdminUsageDashboard()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '读取用户统计失败')
+  }
 }
 
 async function load() {
+  loading.value = true
   try {
-    const [dashboard, tasks, activity, categoryRows] = await Promise.all([
-      dashboardSummary(),
-      getAiTaskSummary(),
-      getActivityLogs({ limit: 160 }),
-      getCategories(),
-      loadImportBatches(),
-      loadBackups(),
-    ])
-    summary.value = dashboard
-    taskSummary.value = tasks
-    logs.value = activity
-    categories.value = categoryRows
+    await Promise.all([loadMaintenance(), loadAdmin()])
   } catch (error) {
-    ElMessage.error('读取维护信息失败')
+    ElMessage.error(error.response?.data?.detail || '读取管理信息失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -261,17 +340,6 @@ function downloadBlob(blob, filename) {
   link.click()
   document.body.removeChild(link)
   setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-function formatBytes(value) {
-  const bytes = Number(value || 0)
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
-}
-
-function backupTypeLabel(value) {
-  return { auto: '自动备份', pre_restore: '恢复前', pre_clear: '清库前', manual: '手动' }[value] || value || '备份'
 }
 
 async function downloadBackup() {
@@ -321,8 +389,8 @@ async function submitRestore() {
 }
 
 async function clearAllData() {
-  await ElMessageBox.confirm('第一次确认：这会清空所有业务数据，只保留默认分类。', '清空数据库', { type: 'error' })
-  await ElMessageBox.confirm('第二次确认：请确认你已经准备好重新导入所有立创订单和项目。', '再次确认', { type: 'error' })
+  await ElMessageBox.confirm('第一次确认：这会清空所有业务数据。', '清空数据库', { type: 'error' })
+  await ElMessageBox.confirm('第二次确认：请确认你已经准备好重新导入订单和项目。', '再次确认', { type: 'error' })
   const { value } = await ElMessageBox.prompt('第三次确认：输入“清空数据库”继续。', '最终确认', {
     confirmButtonText: '清空',
     cancelButtonText: '取消',
@@ -337,83 +405,210 @@ onMounted(load)
 </script>
 
 <style scoped>
-.more-hero {
-  padding: 22px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: none;
+.management-hero {
+  padding: 18px;
+  border: 1px solid var(--cw-border);
+  border-radius: var(--cw-radius-card);
+  background: var(--cw-solid);
 }
 
-.more-hero-actions {
+.management-page :deep(.el-button) {
+  width: 116px;
+  min-width: 116px;
+  height: 40px;
+  padding: 0 14px;
+  justify-content: center;
+  border-radius: var(--cw-radius-control);
+  margin-left: 0;
+  white-space: nowrap;
+}
+
+.management-page :deep(.el-button > span) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.management-page :deep(.el-tag) {
+  min-width: 56px;
+  max-width: 100%;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.management-page :deep(.el-tag__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+}
+
+.management-actions,
+.backup-actions,
+.row-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
-.more-shortcuts {
-  display: none;
+.backup-actions :deep(.el-upload) {
+  width: 116px;
 }
 
-.more-grid {
+.backup-actions :deep(.el-upload .el-button) {
+  width: 100%;
+}
+
+.management-grid {
   display: grid;
-  grid-template-columns: 1.35fr 1fr 0.9fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+  align-items: stretch;
 }
 
-.section-head,
-.batch-card {
+.management-grid > .panel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.management-grid > .panel:not(.danger-panel) {
+  min-height: 420px;
+}
+
+.danger-panel {
+  grid-column: 1 / -1;
+  min-height: 0;
+  border-color: #fecdd3;
+}
+
+.section-head {
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-head.compact {
+  margin-bottom: 10px;
+}
+
+h2,
+h3 {
+  margin: 0;
+  color: var(--cw-text);
+  line-height: 1.25;
 }
 
 h2 {
-  margin: 0;
-  font-size: 17px;
+  font-size: 18px;
 }
 
-.batch-list {
+h3 {
+  font-size: 16px;
+}
+
+.section-head span {
+  min-width: 0;
+  color: var(--cw-muted);
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.batch-list,
+.backup-list,
+.feature-list,
+.user-list {
   display: grid;
   gap: 10px;
 }
 
 .batch-card,
-.maintenance-card {
+.maintenance-card,
+.backup-list div,
+.admin-card,
+.feature-list > div,
+.user-list article {
+  border: 1px solid var(--cw-border);
+  border-radius: var(--cw-radius-control);
+  background: var(--cw-solid);
+}
+
+.batch-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 12px;
+  align-items: center;
   padding: 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  background: #fff;
 }
 
 .batch-card strong,
 .batch-card span,
-.batch-card small {
+.batch-card small,
+.backup-list strong,
+.backup-list span,
+.backup-list small {
   display: block;
+  min-width: 0;
+}
+
+.backup-list div {
+  min-width: 0;
+}
+
+.batch-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .batch-card span,
-.batch-card small {
+.batch-card small,
+.backup-list strong,
+.backup-list span,
+.backup-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-card span,
+.batch-card small,
+.backup-list span,
+.backup-list small {
   margin-top: 4px;
   color: var(--cw-muted);
   font-size: 12px;
 }
 
-.maintenance-grid {
+.maintenance-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
 
 .maintenance-card {
+  width: 100%;
+  min-height: 82px;
+  padding: 12px;
   text-align: left;
   cursor: pointer;
 }
 
 .maintenance-card small,
-.maintenance-card strong,
-.maintenance-card span {
+.maintenance-card strong {
   display: block;
 }
 
@@ -422,80 +617,188 @@ h2 {
   font-weight: 700;
 }
 
-.maintenance-card span {
-  margin-top: 6px;
-  color: var(--cw-muted);
-  font-size: 12px;
-  line-height: 1.5;
+.maintenance-card strong {
+  margin-top: 8px;
+  font-size: 18px;
 }
 
-.task-strip {
+.task-strip,
+.admin-metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
-.task-strip div {
+.task-strip div,
+.admin-metrics article {
   padding: 10px;
   border-radius: var(--cw-radius-control);
-  background: #f8fafc;
+  background: var(--cw-soft);
 }
 
 .task-strip span,
-.task-strip strong {
+.task-strip strong,
+.admin-metrics span,
+.admin-metrics strong {
   display: block;
 }
 
-.task-strip span {
+.task-strip span,
+.admin-metrics span {
   color: var(--cw-muted);
   font-size: 12px;
 }
 
-.task-strip strong {
+.task-strip strong,
+.admin-metrics strong {
   margin-top: 4px;
-  font-size: 22px;
+  font-size: 24px;
+  line-height: 1;
 }
 
 .backup-panel {
   border-color: #bbf7d0;
-  background: linear-gradient(135deg, #f0fdf4, #fff);
 }
 
-.backup-panel p {
-  color: #166534;
-  line-height: 1.65;
-}
-
-.backup-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+.backup-panel .backup-actions {
+  justify-content: flex-end;
 }
 
 .backup-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  flex: 1;
+  margin-top: 12px;
 }
 
 .backup-list div {
+  padding: 10px;
+}
+
+.danger-panel p {
+  margin: 0 0 14px;
+  color: #7f1d1d;
+  line-height: 1.6;
+}
+
+.danger-panel :deep(.el-button) {
+  width: 220px;
+  min-width: 220px;
+}
+
+.row-actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.row-actions :deep(.el-button) {
+  width: 64px;
+  min-width: 64px;
+  height: 32px;
+  padding: 0 10px;
+}
+
+.row-actions :deep(.el-tag) {
+  width: 56px;
+  min-width: 56px;
+}
+
+.section-head :deep(.el-tag) {
+  width: 56px;
+  min-width: 56px;
+}
+
+.admin-panel {
   display: grid;
-  gap: 3px;
-  padding: 9px;
-  border: 1px solid #bbf7d0;
-  border-radius: var(--cw-radius-control);
-  background: rgba(255, 255, 255, 0.72);
+  gap: 12px;
 }
 
-.backup-list strong {
-  color: #14532d;
+.admin-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 0;
 }
 
-.backup-list span,
-.backup-list small {
+.admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.admin-card {
+  padding: 12px;
+}
+
+.admin-wide {
+  grid-column: 1 / -1;
+}
+
+.feature-list > div {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+}
+
+.feature-list i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa, #f97316);
+}
+
+.feature-list strong,
+.feature-list small,
+.user-list strong,
+.user-list small {
+  display: block;
+}
+
+.feature-list small,
+.user-list small {
+  margin-top: 3px;
   color: var(--cw-muted);
   font-size: 12px;
+}
+
+.feature-list em,
+.user-list em {
+  color: #0f172a;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.user-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.spark-bars {
+  height: 132px;
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--cw-border);
+  border-radius: var(--cw-radius-control);
+  background: var(--cw-soft);
+}
+
+.spark-bars span {
+  flex: 1;
+  min-width: 4px;
+  border-radius: 999px 999px 4px 4px;
+  background: linear-gradient(180deg, #3b82f6, #93c5fd);
+}
+
+.compact-table {
+  border-radius: var(--cw-radius-card);
+  overflow: hidden;
 }
 
 .restore-preview {
@@ -526,84 +829,60 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.category-code-list {
-  display: grid;
-  gap: 8px;
-}
-
-.category-policy {
-  color: var(--cw-muted);
-  line-height: 1.65;
-}
-
-.category-code-list > div {
-  display: grid;
-  grid-template-columns: minmax(100px, 1fr) 108px 96px;
-  gap: 8px;
-  align-items: center;
-}
-
-.category-code-list code {
-  padding: 8px 10px;
-  border: 1px solid var(--cw-border);
-  border-radius: var(--cw-radius-control);
-  background: var(--cw-soft);
-  text-align: center;
-}
-
-.danger-panel {
-  border-color: #fecdd3;
-  background: linear-gradient(135deg, #fff1f2, #fff);
-}
-
-.danger-panel p {
-  color: #7f1d1d;
-  line-height: 1.65;
-}
-
-.ledger-table {
-  border-radius: 16px;
-  overflow: hidden;
-}
-
-@media (max-width: 1100px) {
-  .more-grid {
+@media (max-width: 1180px) {
+  .management-grid,
+  .admin-grid {
     grid-template-columns: 1fr;
   }
+
+  .management-grid > .panel:not(.danger-panel) {
+    min-height: 0;
+  }
+
+  .danger-panel,
+  .admin-wide {
+    grid-column: auto;
+  }
+
+  .admin-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
-@media (max-width: 620px) {
-  .more-shortcuts {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 12px;
+@media (max-width: 680px) {
+  .management-hero,
+  .batch-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
-  .more-shortcuts a {
+  .management-actions,
+  .backup-actions,
+  .row-actions {
+    justify-content: flex-start;
+  }
+
+  .management-actions,
+  .backup-actions {
+    flex-wrap: wrap;
+  }
+
+  .management-page :deep(.el-button),
+  .backup-actions :deep(.el-upload),
+  .danger-panel :deep(.el-button) {
+    width: 100%;
     min-width: 0;
+  }
+
+  .row-actions {
     display: grid;
-    gap: 4px;
-    padding: 12px 8px;
-    border: 1px solid var(--cw-border);
-    border-radius: var(--cw-radius-control);
-    background: var(--cw-solid);
-    color: var(--cw-text);
-    text-align: center;
-    text-decoration: none;
+    grid-template-columns: 56px 64px;
+    justify-content: start;
   }
 
-  .more-shortcuts span {
-    overflow: hidden;
-    color: var(--cw-muted);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .maintenance-grid,
+  .maintenance-actions,
   .task-strip,
-  .category-code-list > div {
+  .admin-metrics {
     grid-template-columns: 1fr;
   }
 }

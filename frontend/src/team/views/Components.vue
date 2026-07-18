@@ -82,7 +82,16 @@
       <div v-if="!loading && !filteredItems.length" class="team-panel empty-state">没有符合条件的物料</div>
     </div>
 
-    <el-drawer v-model="detailVisible" :title="selected?.warehouse_code || '元器件详情'" size="min(760px, 96vw)">
+    <el-drawer
+      v-model="detailVisible"
+      class="component-detail-drawer"
+      modal-class="component-detail-overlay"
+      append-to-body
+      destroy-on-close
+      :title="selected?.warehouse_code || '元器件详情'"
+      size="min(1040px, calc(100vw - 40px))"
+      @opened="resetDetailDrawerScroll"
+    >
       <inventory-component-detail
         v-if="selected"
         :item="selected"
@@ -110,6 +119,7 @@
             <el-button v-if="selected.warehouse_code" plain @click="copyText(selected.warehouse_code, '器件 ID')">复制器件 ID</el-button>
             <el-button v-if="selected.lcsc_number" plain @click="copyText(selected.lcsc_number, '立创 ID')">复制立创 ID</el-button>
             <el-button plain :icon="Camera" @click="openScannerForSelected">扫码定位此器件</el-button>
+            <el-button v-if="selected.buy_url" @click="openUrl(selected.buy_url)">立创商品</el-button>
             <el-button v-if="selected.datasheet_url" @click="openUrl(selected.datasheet_url)">数据手册</el-button>
             <el-dropdown trigger="click" @command="handleDetailCommand">
               <el-button circle :icon="MoreFilled" aria-label="更多操作" />
@@ -235,6 +245,13 @@
 
         <el-tab-pane label="手动新增到个人版" name="manual">
           <el-form label-position="top">
+            <lcsc-paste-import
+              ref="lcscImporter"
+              :lookup="previewLcscComponent"
+              existing-action-label="复用并加入团队库"
+              @draft="applyTeamLcscDraft"
+              @existing="reuseExistingLcscComponent"
+            />
             <section class="quick-create-card">
               <strong>AI 快速新增</strong>
               <p>手机上可先输入一句大概信息，AI 自动整理名称、型号、分类、标签和备注。保存前仍可手动修改。</p>
@@ -255,13 +272,17 @@
             <div class="form-grid">
               <el-form-item label="名称" required><el-input v-model="manualForm.name" placeholder="例如 CH340C / 10kΩ 电阻" /></el-form-item>
               <el-form-item label="型号"><el-input v-model="manualForm.model" /></el-form-item>
+              <el-form-item label="厂商"><el-input v-model="manualForm.manufacturer" /></el-form-item>
               <el-form-item label="立创 ID"><el-input v-model="manualForm.lcsc_number" /></el-form-item>
               <el-form-item label="库存数量" required><el-input-number v-model="manualForm.quantity" :min="0" /></el-form-item>
               <el-form-item label="位置"><el-input v-model="manualForm.location" /></el-form-item>
               <el-form-item label="分类"><el-input v-model="manualForm.category" /></el-form-item>
               <el-form-item label="封装"><el-input v-model="manualForm.package" placeholder="0805 / SOT-223 / SOP-16" /></el-form-item>
               <el-form-item label="参数"><el-input v-model="manualForm.parameters" /></el-form-item>
+              <el-form-item label="描述"><el-input v-model="manualForm.description" type="textarea" :rows="2" /></el-form-item>
               <el-form-item label="标签"><el-input v-model="manualForm.tags" /></el-form-item>
+              <el-form-item label="数据手册"><el-input v-model="manualForm.datasheet_url" /></el-form-item>
+              <el-form-item label="立创商品"><el-input v-model="manualForm.buy_url" /></el-form-item>
               <el-form-item label="备注"><el-input v-model="manualForm.remark" type="textarea" :rows="3" /></el-form-item>
             </div>
           </el-form>
@@ -331,6 +352,7 @@ import InventoryComponentCard from '../../components/inventory/InventoryComponen
 import InventoryComponentDetail from '../../components/inventory/InventoryComponentDetail.vue'
 import MultiQrScanner from '../../shared/components/MultiQrScanner.vue'
 import LabelExportDialog from '../../shared/components/LabelExportDialog.vue'
+import LcscPasteImport from '../../shared/components/LcscPasteImport.vue'
 import {
   bulkAddComponents,
   askTeamComponentAi,
@@ -347,6 +369,7 @@ import {
   getLibrary,
   getTeamScannedComponent,
   importComponents,
+  previewLcscComponent,
   listTeamCustomLabels,
   listTeamComponentLots,
   listComponents,
@@ -374,7 +397,24 @@ import { listEdaBindings, listSupplierParts } from '../../shared/engineeringApi'
 import { trackUsage } from '../../shared/usageTracker'
 import { FEATURE_EDA_ENABLED } from '../../shared/features'
 
-const emptyForm = () => ({ name: '', model: '', lcsc_number: '', quantity: 0, location: '', category: '', package: '', parameters: '', tags: '', remark: '' })
+const emptyForm = () => ({
+  name: '',
+  model: '',
+  manufacturer: '',
+  description: '',
+  lcsc_number: '',
+  quantity: 0,
+  location: '',
+  category: '',
+  package: '',
+  parameters: '',
+  tags: '',
+  remark: '',
+  datasheet_url: '',
+  buy_url: '',
+  source: '',
+  source_title: ''
+})
 const teamLabelScopeOptions = [
   { label: '指定日期', value: 'imported' },
   { label: '全部库存', value: 'all' }
@@ -407,6 +447,8 @@ const manualForm = reactive(emptyForm())
 const manualQuickPrompt = ref('')
 const manualAiLoading = ref(false)
 const manualAiDraft = ref(null)
+const lcscImporter = ref(null)
+const lastTeamLcscDraft = ref({})
 const video = ref(null)
 const scanning = ref(false)
 const scanCode = ref('')
@@ -619,7 +661,12 @@ function openUrl(url) {
 }
 
 async function openAddDialog() {
+  Object.assign(manualForm, emptyForm())
+  manualQuickPrompt.value = ''
+  manualAiDraft.value = null
+  lastTeamLcscDraft.value = {}
   addDialog.value = true
+  nextTick(() => lcscImporter.value?.reset())
   await searchPersonal()
 }
 
@@ -689,8 +736,57 @@ async function submitManual() {
   Object.assign(manualForm, emptyForm())
   manualQuickPrompt.value = ''
   manualAiDraft.value = null
+  lastTeamLcscDraft.value = {}
+  lcscImporter.value?.reset()
   addDialog.value = false
   await load()
+}
+
+const teamLcscAutoFields = [
+  'name',
+  'model',
+  'manufacturer',
+  'description',
+  'lcsc_number',
+  'category',
+  'package',
+  'parameters',
+  'tags',
+  'datasheet_url',
+  'buy_url',
+  'source',
+  'source_title'
+]
+
+function applyTeamLcscDraft(draft) {
+  const normalizedDraft = { ...draft, category: draft?.category_name || '' }
+  const previous = lastTeamLcscDraft.value || {}
+  for (const field of teamLcscAutoFields) {
+    const nextValue = normalizedDraft[field]
+    if (nextValue === undefined || nextValue === null || nextValue === '') continue
+    const current = manualForm[field]
+    if (current === null || current === undefined || String(current).trim() === '' || current === previous[field]) {
+      manualForm[field] = nextValue
+    }
+  }
+  manualForm.quantity = Number(manualForm.quantity || 0)
+  lastTeamLcscDraft.value = Object.fromEntries(teamLcscAutoFields.map((field) => [field, normalizedDraft[field]]))
+  manualAiDraft.value = null
+  ElMessage.success('立创器件草稿已填充，请核对数量和本地信息后保存')
+}
+
+async function reuseExistingLcscComponent(component) {
+  if (!component?.id) return
+  try {
+    const result = await createComponent(libraryId, { cw_component_id: component.id, name: component.name, quantity: 0 })
+    addDialog.value = false
+    lastTeamLcscDraft.value = {}
+    await load()
+    ElMessage.success(result.merged ? '该器件已在团队库中，已直接打开' : '已复用个人版器件并加入团队库')
+    await openDetail(result.item)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '复用个人版器件失败')
+  }
 }
 
 function confidenceLabel(value) {
@@ -770,6 +866,7 @@ async function openDetail(row) {
   teamEditVisible.value = false
   usageRecords.value = []
   detailVisible.value = true
+  resetDetailDrawerScroll()
   edaBindings.value = []
   supplierParts.value = []
   inventoryLots.value = []
@@ -794,6 +891,13 @@ async function openDetail(row) {
       lotsLoading.value = false
     }
   }
+}
+
+function resetDetailDrawerScroll() {
+  nextTick(() => {
+    const body = document.querySelector('.component-detail-drawer .el-drawer__body')
+    body?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  })
 }
 
 function resolveCurrentTeamScanBatch(values) {
@@ -1071,6 +1175,13 @@ watch(
   }
 )
 
+watch(
+  () => [detailVisible.value, selected.value?.id || ''],
+  ([visible]) => {
+    if (visible) resetDetailDrawerScroll()
+  }
+)
+
 bootstrap()
 onBeforeRouteLeave(() => { loadController?.abort(); stopScanner(); stopAutoLoadObserver() })
 onBeforeUnmount(() => {
@@ -1097,6 +1208,28 @@ onBeforeUnmount(() => {
 .dialog-action { margin-top: 14px; }
 .import-actions, .detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
 .import-actions a { color: #0b7769; font-weight: 700; }
+:global(.component-detail-drawer.el-drawer) {
+  max-width: calc(100vw - 40px);
+  border-radius: var(--cw-radius-card) 0 0 var(--cw-radius-card);
+  box-shadow: -18px 0 48px rgba(15, 23, 42, 0.18);
+}
+:global(.component-detail-drawer.el-drawer .el-drawer__header) {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin: 0;
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid #edf1f7;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+:global(.component-detail-drawer.el-drawer .el-drawer__body) {
+  padding: 18px 28px 28px;
+  overflow-x: hidden;
+}
+:global(.component-detail-overlay.el-overlay) {
+  background-color: rgba(15, 23, 42, 0.48);
+}
 .scan-grid, .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .quick-create-card { display: grid; gap: 10px; margin-bottom: 14px; padding: 14px; border: 1px solid #bfdbfe; border-radius: var(--cw-radius-card); background: linear-gradient(135deg, #eff6ff, #ffffff 70%); }
 .quick-create-card p, .required-hint { margin: 2px 0 0; color: #667085; line-height: 1.55; }
@@ -1123,6 +1256,17 @@ onBeforeUnmount(() => {
 .marker-list article p { margin: 0; color: #475467; }
 @media (max-width: 980px) { .filter-panel { display: flex; } }
 @media (max-width: 680px) {
+  :global(.component-detail-drawer.el-drawer) {
+    width: 100vw !important;
+    max-width: 100vw;
+    border-radius: 0;
+  }
+  :global(.component-detail-drawer.el-drawer .el-drawer__header) {
+    padding: 16px 16px 12px;
+  }
+  :global(.component-detail-drawer.el-drawer .el-drawer__body) {
+    padding: 12px 12px 20px;
+  }
   .team-page-head { align-items: stretch; }
   .team-toolbar { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
   .team-toolbar > :first-child,

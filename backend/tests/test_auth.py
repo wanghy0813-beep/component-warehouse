@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import asyncio
@@ -256,3 +258,57 @@ def test_legacy_login_entrypoints_are_retired():
             func()
         assert error.value.status_code == 410
         assert "统一账号 SSO 登录" in error.value.detail
+
+
+def test_account_me_proxies_account_center_profile(monkeypatch):
+    captured = {}
+
+    async def fake_proxy(method, path, payload=None, token=None):
+        captured.update({"method": method, "path": path, "payload": payload, "token": token})
+        return {
+            "ok": True,
+            "user": {
+                "accountId": "account-1",
+                "phone": "16794901813",
+                "displayName": "浩宇",
+                "avatarUrl": "https://wxylab.ltd/account/avatar/default/account-1.svg",
+            },
+        }
+
+    monkeypatch.setattr(main_app, "account_v1_proxy_request", fake_proxy)
+    result = asyncio.run(main_app.auth_account_me("Bearer wxy_at_test"))
+
+    assert result["user"]["avatarUrl"].startswith("https://wxylab.ltd/account/avatar/default/")
+    assert captured == {"method": "GET", "path": "/me", "payload": None, "token": "wxy_at_test"}
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main_app.auth_account_me(None))
+    assert error.value.status_code == 401
+
+
+def test_health_status_exposes_public_status_contract(db, monkeypatch):
+    def fake_get(url, timeout):
+        assert url == "https://account.example.test/health"
+        assert timeout <= 2.0
+        return FakeResponse(200, {"ok": True, "status": "operational"})
+
+    monkeypatch.setattr(main_app.auth_module, "AUTH_MODE", "account-v1")
+    monkeypatch.setattr(main_app.auth_module, "ACCOUNT_BASE_URL", "https://account.example.test/api/account/v1")
+    monkeypatch.setattr(main_app.auth_module, "AUTH_HTTP_TIMEOUT_SECONDS", 8.0)
+    monkeypatch.setattr(main_app.httpx, "get", fake_get)
+
+    data = main_app.health_status(db)
+
+    assert data["service"] == "component-warehouse"
+    assert data["version"] == main_app.APP_VERSION
+    assert data["status"] in main_app.PUBLIC_STATUS_RANK
+    assert data["checkedAt"].endswith("+08:00")
+    assert isinstance(data["ok"], bool)
+    assert isinstance(data["components"], list)
+    assert {item["name"] for item in data["components"]} >= {"web", "database", "warehouse", "ai", "activity", "auth"}
+    assert data["metrics"]["uptimeSeconds"] >= 0
+    assert data["metrics"]["queuedJobs"] == 0
+
+    dumped = json.dumps(data, ensure_ascii=False)
+    for forbidden in ("sqlite", "DATABASE_URL", "ACCOUNT_CLIENT_SECRET", "test-secret", "13800138000", "/opt/", "Traceback"):
+        assert forbidden not in dumped

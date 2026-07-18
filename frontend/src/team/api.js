@@ -126,5 +126,7 @@ export const listLogs = (id, params = {}) => teamApi.get(`${base}/libraries/${id
 export const recordTeamUsageEvent = (id, payload) => teamApi.post(`${base}/libraries/${id}/usage-events`, payload).then((r) => r.data)
 export const runTeamAi = (id, payload) => teamApi.post(`${base}/libraries/${id}/ai`, payload, { timeout: 120000 }).then((r) => r.data)
 export const aiComponentInfo = (payload) => teamApi.post('/ai/component-info', payload, { timeout: 120000 }).then((r) => r.data)
+export const previewLcscComponent = (rawText, config = {}) =>
+  teamApi.post('/components/lcsc/preview', { raw_text: rawText }, { ...config, timeout: 150000 }).then((r) => r.data)
 
 export const teamImportTemplateUrl = `${teamApi.defaults.baseURL}${base}/import-template.csv`

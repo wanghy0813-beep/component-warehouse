@@ -28,8 +28,7 @@
           <router-link to="/coverage" @click="trackNav('coverage')"><Monitor />覆盖图</router-link>
           <router-link to="/projects" @click="trackNav('projects')"><Files />项目</router-link>
           <router-link v-if="FEATURE_EDA_ENABLED" to="/eda" @click="trackNav('eda')"><Cpu />EDA 库</router-link>
-          <router-link v-if="isAdmin" to="/admin" @click="trackNav('admin')"><DataAnalysis />管理</router-link>
-          <router-link to="/about" @click="trackNav('more')"><InfoFilled />更多</router-link>
+          <router-link to="/about" @click="trackNav('management')"><InfoFilled />管理</router-link>
         </nav>
         <div class="personal-header-actions">
           <account-popover
@@ -42,12 +41,6 @@
       </header>
 
       <main class="personal-main">
-        <div class="personal-context">
-          <div>
-            <strong>{{ routeTitle }}</strong>
-            <small>{{ currentUserLabel }}</small>
-          </div>
-        </div>
         <router-view />
         <app-footer />
       </main>
@@ -57,7 +50,7 @@
         <router-link to="/components" @click="trackNav('mobile_components')"><Box />元器件</router-link>
         <router-link to="/projects" @click="trackNav('mobile_projects')"><Files />项目</router-link>
         <router-link v-if="FEATURE_EDA_ENABLED" to="/eda" @click="trackNav('mobile_eda')"><Cpu />EDA</router-link>
-        <router-link to="/about" @click="trackNav('mobile_more')"><InfoFilled />更多</router-link>
+        <router-link to="/about" @click="trackNav('mobile_management')"><InfoFilled />管理</router-link>
       </nav>
       <back-to-top @click="trackBackToTop" />
     </div>
@@ -68,7 +61,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from '../shared/elementApi'
 import { useRoute, useRouter } from 'vue-router'
-import { Box, Cpu, DataAnalysis, DataBoard, Files, InfoFilled, Monitor } from '@element-plus/icons-vue'
+import { Box, Cpu, DataBoard, Files, InfoFilled, Monitor } from '@element-plus/icons-vue'
 import logo from '../assets/brand-logo.png'
 import appIcon from '../assets/generated/cw-app-icon.png'
 import { authConfig, getCurrentUser, recordUsageEvent } from '../api/client'
@@ -94,30 +87,6 @@ localStorage.removeItem('cw_sidebar_collapsed')
 
 const isPublicRoute = computed(() => route.path.startsWith('/public/') || route.name === 'personal-scan' || route.name === 'auth-callback')
 const needsLogin = computed(() => authRequired.value && (!accessToken.value || !sessionVerified.value))
-const isAdmin = computed(() => Boolean(currentUser.value?.isAdmin || currentUser.value?.is_admin))
-const currentUserLabel = computed(() => {
-  if (!authRequired.value) return '库存优先，AI 辅助选型'
-  const user = currentUser.value
-  if (user?.phone) return `${user.nickname || '用户'} · ${user.phone}`
-  return '已登录'
-})
-const routeTitle = computed(() => {
-  const titles = {
-    '/': 'Dashboard',
-    '/components': '元器件库',
-    '/coverage': '覆盖图',
-    '/projects': '项目',
-    '/eda': 'AD 库与工程资料',
-    '/eda-guide': 'AD 元件库使用说明',
-    '/manual': '使用说明书',
-    '/purchases': '采购与入库',
-    '/risks': '工程风险检查',
-    '/admin': '管理员看板',
-    '/about': '更多'
-  }
-  return titles[route.path] || BRAND_NAME
-})
-
 onMounted(async () => {
   setupPwaInstallPrompt()
   setupAuthActivityTracking()
@@ -422,8 +391,7 @@ async function handleLogout() {
   white-space: nowrap;
 }
 
-.personal-brand small,
-.personal-context small {
+.personal-brand small {
   color: var(--cw-muted);
   font-size: 12px;
   line-height: 1.25;
@@ -470,34 +438,6 @@ async function handleLogout() {
   padding: 18px 0 40px;
 }
 
-.personal-context {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  margin-bottom: 14px;
-  padding: 0 2px;
-}
-
-.personal-context > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.personal-context strong {
-  overflow: hidden;
-  font-size: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.personal-context small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .personal-mobile-nav {
   display: none;
 }
@@ -541,10 +481,6 @@ async function handleLogout() {
   .personal-main {
     width: min(100% - 20px, 1280px);
     padding: 14px 0 104px;
-  }
-
-  .personal-context {
-    margin-bottom: 10px;
   }
 
   .personal-mobile-nav {
@@ -605,8 +541,7 @@ async function handleLogout() {
 }
 
 :global(.cw-app-embedded) .personal-header,
-:global(.cw-app-embedded) .personal-mobile-nav,
-:global(.cw-app-embedded) .personal-context {
+:global(.cw-app-embedded) .personal-mobile-nav {
   display: none;
 }
 

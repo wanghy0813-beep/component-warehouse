@@ -96,6 +96,19 @@ export function openAccountProfile() {
   window.location.assign(accountProfileUrl())
 }
 
+export function resolveAccountAvatarUrl(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw
+  const fallbackBase = typeof window === 'undefined' ? 'https://wxylab.ltd' : window.location.origin
+  const accountBase = authRuntime.accountBase || ACCOUNT_BASE || fallbackBase
+  try {
+    return new URL(raw, accountBase.endsWith('/') ? accountBase : `${accountBase}/`).href
+  } catch {
+    return raw
+  }
+}
+
 async function ensureAuthRuntimeReady() {
   if (authRuntime.accountBase) return authRuntime
   const { data } = await localAuthApi.get('/auth/config', { timeout: 8000 })
@@ -161,11 +174,13 @@ export function setupAuthActivityTracking() {
 
 function normalizeUser(user) {
   if (!user) return null
+  const avatarUrl = resolveAccountAvatarUrl(user.avatarUrl || user.avatar_url || '')
   return {
     ...user,
     id: user.accountId,
     nickname: user.displayName || '',
-    avatar_url: user.avatarUrl || ''
+    avatarUrl,
+    avatar_url: avatarUrl
   }
 }
 
@@ -338,8 +353,21 @@ async function accountRequest(method, url, data) {
 }
 
 export async function fetchAccountProfile() {
-  const data = await accountRequest('get', '/me')
-  return rememberUser(data.user)
+  const token = await getValidAuthToken()
+  await ensureAuthRuntimeReady()
+  let data
+  try {
+    data = await localAuthApi.get('/auth/account/me', {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then((response) => response.data)
+  } catch (error) {
+    data = await accountRequest('get', '/me')
+  }
+  const user = data.user || data.account || data
+  return rememberUser({
+    ...user,
+    avatarUrl: user?.avatarUrl || data.avatarUrl || ''
+  })
 }
 
 export async function logoutAuthSession() {

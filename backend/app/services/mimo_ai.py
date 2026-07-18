@@ -387,6 +387,88 @@ def normalize_external_component(product_name: str, model_style: str, store_name
     )
 
 
+def organize_lcsc_draft(draft: dict[str, Any], categories: list[str]) -> dict[str, Any]:
+    return _chat_json(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "organize_verified_lcsc_inventory_draft",
+                        "verified_lcsc_data": draft,
+                        "categories": categories,
+                        "rules": [
+                            "立创编号、型号、厂商、封装、参数值、数据手册和商品链接均为已核验数据，禁止修改、猜测或替换。",
+                            "只负责生成适合中文库存的名称、选择现有分类并整理检索标签。",
+                            "name 使用“型号 + 一到两个关键规格 + 器件类型”，例如 LP5907MFX-3.3/NOPB 3.3V 250mA LDO。",
+                            "关键规格只能取自 verified_lcsc_data.official_properties，不能从型号数字推测。",
+                            "category 必须完全等于 categories 中的一个值；不得创建分类。",
+                            "tags 最多 6 个，不重复型号、封装和分类，不包含价格、库存或营销词。",
+                        ],
+                        "required_json_schema": {
+                            "name": "型号 + 关键规格 + 器件类型的中文库存名称",
+                            "category": "categories 中的一个分类名称",
+                            "tags": ["最多 6 个检索标签"],
+                            "confidence": "high/medium/low",
+                            "reason": "分类和命名依据，简短中文",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        max_tokens=600,
+        web_search="off",
+    )
+
+
+def lookup_lcsc_fallback(parsed: dict[str, Any], categories: list[str]) -> dict[str, Any]:
+    return _chat_json(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "lookup_exact_lcsc_component_after_official_page_failure",
+                        "pasted_lcsc_data": parsed,
+                        "categories": categories,
+                        "rules": [
+                            "必须按完整立创编号搜索，并用复制文本中的型号交叉核对。",
+                            "只有来源明确出现完全一致的立创编号时 exact_lcsc_match 才能为 true。",
+                            "禁止用相似型号、同系列型号或其他品牌兼容型号代替目标器件。",
+                            "无法核实时保留复制文本原值，不要猜测型号、厂商、封装、参数或数据手册。",
+                            "name 使用“型号 + 一到两个有来源的关键规格 + 器件类型”。",
+                            "category 必须完全等于 categories 中的一个分类名称，不得创建分类。",
+                            "product_url 必须是立创或 LCSC 的目标商品页；datasheet_url 必须是数据手册而不是商品页。",
+                        ],
+                        "required_json_schema": {
+                            "lcsc_number": "完全一致的立创编号",
+                            "exact_lcsc_match": False,
+                            "model": "有精确编号来源支持的厂商型号，否则留空",
+                            "manufacturer": "有精确编号来源支持的厂商，否则留空",
+                            "package": "有精确编号来源支持的封装，否则留空",
+                            "description": "有精确编号来源支持的器件描述，否则留空",
+                            "parameters": [{"name": "参数名", "value": "带单位的参数值"}],
+                            "datasheet_url": "数据手册 URL，否则留空",
+                            "product_url": "立创商品 URL，否则留空",
+                            "name": "中文库存名称",
+                            "category": "categories 中的一个分类名称",
+                            "tags": ["最多 6 个检索标签"],
+                            "confidence": "high/medium/low",
+                            "reason": "精确匹配依据或无法核验的原因",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        max_tokens=1000,
+        web_search="force",
+    )
+
+
 def analyze_external_order_table(headers: list[str], rows: list[dict[str, Any]], categories: list[str]) -> dict[str, Any]:
     max_tokens = max(1200, min(4200, 900 + len(rows) * 650))
     return _chat_json(

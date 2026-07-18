@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cw-team-v0.7.0'
+const CACHE_NAME = 'cw-team-v0.7.6'
 const APP_ROOT = '/component-warehouse'
 const TEAM_ROOT = `${APP_ROOT}/team/`
 const APP_SHELL = [TEAM_ROOT, `${TEAM_ROOT}team-manifest.webmanifest`]

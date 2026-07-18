@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +39,7 @@ class ComponentBase(BaseModel):
     location: str | None = None
     remark: str | None = None
     datasheet_url: str | None = None
+    buy_url: str | None = None
     is_hand_solder_friendly: bool = False
     is_power_component: bool = False
     is_signal_component: bool = False
@@ -55,6 +56,18 @@ class ComponentCreate(ComponentBase):
 
 class ComponentUpdate(ComponentBase):
     name: str | None = None
+
+
+class LcscPreviewRequest(BaseModel):
+    raw_text: str = Field(min_length=1, max_length=4000)
+
+
+class LcscPreviewResponse(BaseModel):
+    status: Literal["official", "ai_fallback", "parsed_only"]
+    draft: dict[str, Any]
+    existing_component: dict[str, Any] | None = None
+    warnings: list[str] = Field(default_factory=list)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ComponentOut(ComponentBase):

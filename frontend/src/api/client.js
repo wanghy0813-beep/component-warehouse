@@ -135,6 +135,11 @@ export async function getComponentCoverage(params = {}) {
   return data
 }
 
+export async function previewLcscComponent(rawText, config = {}) {
+  const { data } = await api.post('/components/lcsc/preview', { raw_text: rawText }, { ...config, timeout: 150000 })
+  return data
+}
+
 export async function getSearchSuggestions(params = {}) {
   const { data } = await api.get('/ai/search-suggestions', { params, timeout: 45000 })
   return data

@@ -14,7 +14,7 @@ const routes = [
   { path: '/manual', name: 'manual', component: () => import('../shared/views/UserManual.vue') },
   { path: '/purchases', name: 'purchases', component: () => import('../shared/views/Purchases.vue') },
   { path: '/risks', name: 'risks', component: () => import('../shared/views/Risks.vue') },
-  { path: '/admin', name: 'admin-dashboard', component: () => import('../views/AdminDashboard.vue') },
+  { path: '/admin', redirect: '/about' },
   { path: '/about', name: 'about', component: () => import('../views/About.vue') }
 ]
 

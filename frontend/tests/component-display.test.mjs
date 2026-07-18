@@ -52,6 +52,20 @@ test('engineering IC module and sensor categories prefer model over parameters',
   assert.match(componentDisplaySubtitle(sensor), /36V 16bit/)
 })
 
+test('electromechanical parts keep the functional name visible', () => {
+  const fan = {
+    category: { name: '机电件' },
+    name: '7038 12V 2.5A 散热风扇',
+    model: '7038',
+    normalized_spec: '12V 2.5A',
+    package: '70x70x38mm',
+    tags: '风扇,12V,2.5A,70mm'
+  }
+  assert.equal(componentDisplayTitle(fan), '7038 12V 2.5A 散热风扇')
+  assert.match(componentDisplaySubtitle(fan), /70x70x38mm/)
+  assert.notEqual(componentDisplayTitle(fan), '7038')
+})
+
 test('semiconductor titles prefer real model names over electrical ratings', () => {
   const diode = {
     category: { name: '二极管' },
