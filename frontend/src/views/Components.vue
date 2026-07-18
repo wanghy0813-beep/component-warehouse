@@ -69,6 +69,17 @@
                 <el-button size="small" plain @click.stop="openComponentLabel(item)">二维码</el-button>
                 <el-button size="small" plain @click.stop="openLcsc(item)">立创搜索</el-button>
               </template>
+              <template #stock-action>
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  title="按先进先出从可用库存扣减 1 个"
+                  :loading="quickConsumeIds.has(item.id)"
+                  :disabled="Number(item.available_quantity || 0) <= 0"
+                  @click.stop="quickConsume(item)"
+                >领用 1 个</el-button>
+              </template>
             </inventory-component-card>
           </div>
         </section>
@@ -549,6 +560,7 @@ const edaLoading = ref(false)
 const inventoryLots = ref([])
 const lotsLoading = ref(false)
 const lotSaving = ref(false)
+const quickConsumeIds = reactive(new Set())
 const aiAskLoading = ref(false)
 const aiAnswer = ref(null)
 const aiCreateLoading = ref(false)
@@ -1655,12 +1667,30 @@ async function removeSelectedComponent() {
 }
 
 async function quickConsume(row) {
+  if (!row?.id || quickConsumeIds.has(row.id) || Number(row.available_quantity || 0) <= 0) return
+  quickConsumeIds.add(row.id)
   try {
-    await decrementComponentQuantity(row.id, { quantity: 1, remark: '手动快捷扣库存' })
-    ElMessage.success(`${row.name} 已扣减 1`)
-    load()
+    const updated = await decrementComponentQuantity(row.id, { quantity: 1, remark: '器件卡片快捷领用 1 个' })
+    groups.value = groups.value.map((group) => ({
+      ...group,
+      items: (group.items || []).map((item) => item.id === updated.id ? decorateComponent({ ...item, ...updated }) : item)
+    }))
+    if (selected.value?.id === updated.id) {
+      selected.value = updated
+      fillForm(updated)
+    }
+    inventoryChannel?.postMessage({ type: 'quantity-updated', componentId: updated.id })
+    trackUsage(recordUsageEvent, 'ui.components.quick_consume', {
+      target_type: 'component',
+      target_id: updated.id,
+      entry: 'inventory-card',
+      detail: { quantity: 1 }
+    })
+    ElMessage.success(`${componentDisplayTitle(row)} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '扣减失败')
+    ElMessage.error(error.response?.data?.detail || '领用登记失败')
+  } finally {
+    quickConsumeIds.delete(row.id)
   }
 }
 

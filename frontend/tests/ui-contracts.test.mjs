@@ -679,6 +679,23 @@ test('component cards and list surfaces use shared rounded rectangle radii', () 
   assert.match(page, /border-radius: var\(--cw-radius-control\)/)
 })
 
+test('component cards keep one-item consumption visible beside stock totals', () => {
+  const card = source('../src/components/inventory/InventoryComponentCard.vue')
+  const personal = source('../src/views/Components.vue')
+  const team = source('../src/team/views/Components.vue')
+  assert.match(card, /<slot name="stock-action"/)
+  assert.match(card, /class="stock-summary"/)
+  assert.match(personal, /<template #stock-action>/)
+  assert.match(personal, />领用 1 个<\/el-button>/)
+  assert.match(personal, /quickConsumeIds\.has\(item\.id\)/)
+  assert.match(personal, /decrementComponentQuantity\(row\.id, \{ quantity: 1/)
+  assert.match(personal, /ui\.components\.quick_consume/)
+  assert.match(team, /<template #stock-action>/)
+  assert.match(team, /readonly \|\| !row\.can_edit_quantity/)
+  assert.match(team, /decrementTeamComponentQuantity\(libraryId, row\.id, \{ quantity: 1/)
+  assert.match(team, /ui\.team_components\.quick_consume/)
+})
+
 test('personal navigation is compact and usage tracking is wired', () => {
   const personal = source('../src/personal/App.vue')
   const client = source('../src/api/client.js')

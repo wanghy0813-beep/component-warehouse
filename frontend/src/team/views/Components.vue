@@ -70,6 +70,17 @@
               <el-button v-if="row.warehouse_code" size="small" text @click="copyText(row.warehouse_code, '器件 ID')">复制器件 ID</el-button>
               <el-button v-if="row.lcsc_number" size="small" text @click="copyText(row.lcsc_number, '立创 ID')">复制立创 ID</el-button>
             </template>
+            <template #stock-action>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                title="按先进先出从可用库存扣减 1 个"
+                :loading="quickConsumeIds.has(row.id)"
+                :disabled="readonly || !row.can_edit_quantity || Number(row.available_quantity || 0) <= 0"
+                @click.stop="quickConsume(row)"
+              >领用 1 个</el-button>
+            </template>
           </inventory-component-card>
         </div>
       </section>
@@ -465,6 +476,7 @@ const edaLoading = ref(false)
 const inventoryLots = ref([])
 const lotsLoading = ref(false)
 const lotSaving = ref(false)
+const quickConsumeIds = reactive(new Set())
 const componentAiAskLoading = ref(false)
 const componentAiAnswer = ref(null)
 const teamEditVisible = ref(false)
@@ -1026,6 +1038,29 @@ async function consumeInventoryLot(lot) {
     ElMessage.success('已从指定批次扣减 1')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+  }
+}
+
+async function quickConsume(row) {
+  if (!row?.id || readonly.value || !row.can_edit_quantity || quickConsumeIds.has(row.id) || Number(row.available_quantity || 0) <= 0) return
+  quickConsumeIds.add(row.id)
+  try {
+    const updated = await decrementTeamComponentQuantity(libraryId, row.id, { quantity: 1, remark: '团队器件卡片快捷领用 1 个' })
+    items.value = items.value.map((item) => item.id === updated.id ? updated : item)
+    totalQuantity.value = Math.max(0, Number(totalQuantity.value || 0) - 1)
+    if (selected.value?.id === updated.id) selected.value = updated
+    inventoryChannel?.postMessage({ type: 'quantity-updated', componentId: updated.cw_component_id })
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.quick_consume', {
+      target_type: 'team_component',
+      target_id: updated.id,
+      entry: 'inventory-card',
+      detail: { quantity: 1 }
+    })
+    ElMessage.success(`${row.name || row.model || row.warehouse_code || '器件'} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '领用登记失败')
+  } finally {
+    quickConsumeIds.delete(row.id)
   }
 }
 

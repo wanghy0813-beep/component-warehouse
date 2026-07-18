@@ -32,9 +32,12 @@
       <slot name="actions" />
     </div>
     <div class="stock-row">
-      <span>总量 {{ item.quantity || 0 }}</span>
-      <span v-if="item.reserved_quantity" class="reserved-note">预留 {{ item.reserved_quantity }}</span>
-      <strong>可用 {{ item.available_quantity || 0 }}</strong>
+      <div class="stock-summary">
+        <span>总量 {{ item.quantity || 0 }}</span>
+        <span v-if="item.reserved_quantity" class="reserved-note">预留 {{ item.reserved_quantity }}</span>
+        <strong>可用 {{ item.available_quantity || 0 }}</strong>
+      </div>
+      <div class="stock-action" @click.stop><slot name="stock-action" /></div>
     </div>
   </article>
 </template>
@@ -76,7 +79,7 @@ const syncLabel = computed(() => {
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
 .inventory-card:hover { transform: translateY(-2px); border-color: #b9c9ef; box-shadow: 0 12px 30px rgba(40, 65, 100, .08); }
-.card-top, .tag-row, .card-badges, .meta-row, .actions, .stock-row, .chip-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.card-top, .tag-row, .card-badges, .meta-row, .actions, .stock-row, .stock-summary, .chip-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .actions { gap: 8px; }
 .actions :deep(.el-button) {
   min-height: var(--cw-control-height-small);
@@ -109,6 +112,9 @@ p { margin: 0; }
 .meta-row span { background: #f8fafc; }
 .actions:empty { display: none; }
 .stock-row { padding-top: 7px; border-top: 1px solid #eef2f7; color: #667085; font-size: 13px; }
+.stock-summary { gap: 9px; }
 .stock-row strong { color: #172b4d; }
+.stock-action:empty { display: none; }
+.stock-action :deep(.el-button) { min-height: 32px; margin: 0; border-radius: var(--cw-radius-control); font-weight: 700; }
 .reserved-note { color: #98a2b3; }
 </style>

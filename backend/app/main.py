@@ -7714,6 +7714,7 @@ def ui_action_label(action: str | None) -> str:
         "ui.components.lot_create": "新增库存批次",
         "ui.components.lot_consume": "批次扣减",
         "ui.components.lot_delete": "删除误添加批次",
+        "ui.components.quick_consume": "卡片快捷领用",
         "ui.components.ai_ask": "元器件 AI 问答",
         "ui.components.remove": "移除元器件记录",
         "ui.team_components.auto_load": "团队元器件自动加载",
@@ -7722,6 +7723,7 @@ def ui_action_label(action: str | None) -> str:
         "ui.team_components.lot_create": "团队新增库存批次",
         "ui.team_components.lot_consume": "团队批次扣减",
         "ui.team_components.lot_delete": "团队删除误添加批次",
+        "ui.team_components.quick_consume": "团队卡片快捷领用",
         "ui.team_components.ai_ask": "团队元器件 AI 问答",
     }
     return mapping.get(action or "", action or "未知操作")
