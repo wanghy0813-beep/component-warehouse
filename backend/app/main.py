@@ -211,7 +211,14 @@ from .services.inventory import (
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.substitutions import substitution_suggestions_for_bom_items
-from .services.stock_ledger import ensure_component_lot, migrate_legacy_inventory_lots, reconcile_component_lots, record_stock_delta
+from .services.stock_ledger import (
+    delete_unused_manual_lot,
+    ensure_component_lot,
+    inventory_lot_delete_eligibility,
+    migrate_legacy_inventory_lots,
+    reconcile_component_lots,
+    record_stock_delta,
+)
 from .services.eda_storage import storage_root as eda_storage_root
 from .labels import (
     custom_label_font_keys,
@@ -1945,7 +1952,17 @@ def component_out(component: Component, reserved: int = 0, search_keyword: str |
     }
 
 
-def inventory_lot_out(lot: InventoryLot) -> dict:
+def inventory_lot_out(
+    lot: InventoryLot,
+    db: Session | None = None,
+    component: Component | None = None,
+) -> dict:
+    can_delete = False
+    delete_block_reason = None
+    if db is not None:
+        source_component = component or db.get(Component, lot.component_id)
+        if source_component:
+            can_delete, delete_block_reason = inventory_lot_delete_eligibility(db, source_component, lot)
     return {
         "id": lot.id,
         "component_id": lot.component_id,
@@ -1958,6 +1975,8 @@ def inventory_lot_out(lot: InventoryLot) -> dict:
         "status": lot.status,
         "received_at": lot.received_at,
         "created_at": lot.created_at,
+        "can_delete": can_delete,
+        "delete_block_reason": delete_block_reason,
     }
 
 
@@ -4385,11 +4404,11 @@ def list_component_lots(component_id: int, auth: Protected, db: Session = Depend
         db.commit()
     rows = (
         db.query(InventoryLot)
-        .filter(InventoryLot.component_id == component.id)
+        .filter(InventoryLot.component_id == component.id, InventoryLot.status != "deleted")
         .order_by(InventoryLot.status.asc(), InventoryLot.remaining_quantity.desc(), InventoryLot.received_at.desc(), InventoryLot.created_at.desc())
         .all()
     )
-    return [inventory_lot_out(row) for row in rows]
+    return [inventory_lot_out(row, db, component) for row in rows]
 
 
 @app.post("/api/components/{component_id}/lots", response_model=InventoryLotOut)
@@ -4434,7 +4453,51 @@ def create_component_lot(component_id: int, payload: InventoryLotCreate, auth: P
     lot = db.get(InventoryLot, lot_id) if lot_id else None
     if not lot:
         raise HTTPException(status_code=500, detail="库存批次创建失败")
-    return inventory_lot_out(lot)
+    return inventory_lot_out(lot, db, component)
+
+
+@app.delete("/api/components/{component_id}/lots/{lot_id}")
+def delete_component_lot(
+    component_id: int,
+    lot_id: str,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    component = db.get(Component, component_id)
+    assert_owned(component, auth, "Component not found")
+    lot = db.get(InventoryLot, lot_id)
+    if not lot or lot.component_id != component.id or lot.status == "deleted":
+        raise HTTPException(status_code=404, detail="库存批次不存在")
+    try:
+        removed_quantity = delete_unused_manual_lot(
+            db,
+            component,
+            lot,
+            actor_user_id=owner_id(auth),
+            movement_type="manual_lot_delete",
+            reason="删除误添加且未使用的库存批次",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    log_activity(
+        db,
+        "component.lot.delete",
+        "component",
+        f"删除误添加库存批次 {component.name} x {removed_quantity}",
+        owner_user_id=owner_id(auth),
+        entity_id=component.id,
+        component_id=component.id,
+        quantity_delta=-removed_quantity,
+        detail={"lot_id": lot.id, "source_type": lot.source_type, "source_reference": lot.source_reference},
+    )
+    db.commit()
+    db.refresh(component)
+    reserved = reserved_quantities(db, [component.id]).get(component.id, 0)
+    return {
+        "deleted": True,
+        "removed_quantity": removed_quantity,
+        "component": component_out(component, reserved),
+    }
 
 
 @app.get("/api/components/{component_id}/usage-records", response_model=list[ComponentUsageRecordOut])
@@ -7650,6 +7713,7 @@ def ui_action_label(action: str | None) -> str:
         "ui.components.ai_quick_create": "AI 补全元器件",
         "ui.components.lot_create": "新增库存批次",
         "ui.components.lot_consume": "批次扣减",
+        "ui.components.lot_delete": "删除误添加批次",
         "ui.components.ai_ask": "元器件 AI 问答",
         "ui.components.remove": "移除元器件记录",
         "ui.team_components.auto_load": "团队元器件自动加载",
@@ -7657,6 +7721,7 @@ def ui_action_label(action: str | None) -> str:
         "ui.team_components.detail_open": "团队元器件详情",
         "ui.team_components.lot_create": "团队新增库存批次",
         "ui.team_components.lot_consume": "团队批次扣减",
+        "ui.team_components.lot_delete": "团队删除误添加批次",
         "ui.team_components.ai_ask": "团队元器件 AI 问答",
     }
     return mapping.get(action or "", action or "未知操作")

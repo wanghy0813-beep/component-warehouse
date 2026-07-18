@@ -112,6 +112,7 @@
         @load-lots="loadLots"
         @add-lot="addInventoryLot"
         @consume-lot="consumeInventoryLot"
+        @delete-lot="deleteInventoryLot"
         @ask-ai="askSelectedComponentAi"
       >
         <template #actions>
@@ -359,6 +360,7 @@ import {
   aiComponentInfo,
   teamImportTemplateUrl,
   createTeamComponentLot,
+  deleteTeamComponentLot,
   createComponentMarker,
   createComponent,
   deleteComponent,
@@ -874,22 +876,24 @@ async function openDetail(row) {
   if (row.cw_component_id) {
     edaLoading.value = true
     lotsLoading.value = true
-    try {
-      const engineeringRequests = FEATURE_EDA_ENABLED
-        ? [listEdaBindings(row.cw_component_id, libraryId), listSupplierParts(row.cw_component_id, libraryId)]
-        : [Promise.resolve([]), Promise.resolve([])]
-      ;[edaBindings.value, supplierParts.value, inventoryLots.value] = await Promise.all([
-        ...engineeringRequests,
-        listTeamComponentLots(libraryId, row.id)
-      ])
-    } catch {
-      edaBindings.value = []
-      supplierParts.value = []
+    const engineeringRequests = FEATURE_EDA_ENABLED
+      ? [listEdaBindings(row.cw_component_id, libraryId), listSupplierParts(row.cw_component_id, libraryId)]
+      : [Promise.resolve([]), Promise.resolve([])]
+    const [bindingsResult, suppliersResult, lotsResult] = await Promise.allSettled([
+      ...engineeringRequests,
+      listTeamComponentLots(libraryId, row.id)
+    ])
+    if (selected.value?.id !== row.id) return
+    edaBindings.value = bindingsResult.status === 'fulfilled' ? bindingsResult.value : []
+    supplierParts.value = suppliersResult.status === 'fulfilled' ? suppliersResult.value : []
+    if (lotsResult.status === 'fulfilled') {
+      inventoryLots.value = lotsResult.value || []
+    } else {
       inventoryLots.value = []
-    } finally {
-      edaLoading.value = false
-      lotsLoading.value = false
+      ElMessage.error(lotsResult.reason?.response?.data?.detail || '库存批次加载失败')
     }
+    edaLoading.value = false
+    lotsLoading.value = false
   }
 }
 
@@ -1022,6 +1026,29 @@ async function consumeInventoryLot(lot) {
     ElMessage.success('已从指定批次扣减 1')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+  }
+}
+
+async function deleteInventoryLot(lot) {
+  if (!selected.value?.id || !lot?.id || readonly.value || !selected.value.can_edit_quantity) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除批次「${lot.source_reference || lot.source_type || '手工批次'}」？总库存将同步减少 ${lot.initial_quantity || 0}。`,
+      '删除误添加批次',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+    lotSaving.value = true
+    const result = await deleteTeamComponentLot(libraryId, selected.value.id, lot.id)
+    selected.value = result.component
+    await loadLots()
+    await load()
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.lot_delete', { target_type: 'team_component', target_id: selected.value.id, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success(`批次已删除，总库存已减少 ${result.removed_quantity || 0}`)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error.response?.data?.detail || '删除库存批次失败')
+  } finally {
+    lotSaving.value = false
   }
 }
 

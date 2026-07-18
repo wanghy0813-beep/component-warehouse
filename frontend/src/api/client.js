@@ -165,6 +165,11 @@ export async function createComponentLot(id, payload) {
   return data
 }
 
+export async function deleteComponentLot(id, lotId) {
+  const { data } = await api.delete(`/components/${id}/lots/${lotId}`)
+  return data
+}
+
 export async function askComponentAi(id, payload) {
   const { data } = await api.post(`/components/${id}/ai/ask`, payload, { timeout: 120000 })
   return data

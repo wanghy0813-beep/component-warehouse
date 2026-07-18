@@ -6,6 +6,9 @@ from sqlalchemy.orm import Session
 from ..models import Component, InventoryLot, StockMovement
 
 
+MANUAL_LOT_CREATE_MOVEMENT_TYPES = {"manual_lot_create", "team_lot_create"}
+
+
 def new_uuid() -> str:
     return str(uuid4())
 
@@ -173,6 +176,68 @@ def record_stock_delta(
             )
     db.add_all(movements)
     return movements
+
+
+def inventory_lot_delete_eligibility(
+    db: Session,
+    component: Component,
+    lot: InventoryLot,
+) -> tuple[bool, str | None]:
+    if lot.component_id != component.id:
+        return False, "库存批次不属于当前器件"
+    if lot.status != "active":
+        return False, "库存批次已删除或不可用"
+    initial_quantity = max(0, int(lot.initial_quantity or 0))
+    remaining_quantity = max(0, int(lot.remaining_quantity or 0))
+    if initial_quantity <= 0:
+        return False, "空批次不能删除"
+    if remaining_quantity != initial_quantity:
+        return False, "该批次已经发生扣减，需保留库存流水"
+    movements = (
+        db.query(StockMovement)
+        .filter(StockMovement.lot_id == lot.id)
+        .order_by(StockMovement.created_at.asc(), StockMovement.id.asc())
+        .all()
+    )
+    creation_movements = [
+        movement
+        for movement in movements
+        if movement.movement_type in MANUAL_LOT_CREATE_MOVEMENT_TYPES
+        and int(movement.quantity_delta or 0) == initial_quantity
+    ]
+    if len(creation_movements) != 1 or len(movements) != 1:
+        return False, "仅支持删除未使用过的手工新增批次"
+    if int(component.quantity or 0) < initial_quantity:
+        return False, "当前总库存不足，不能自动撤销该批次"
+    return True, None
+
+
+def delete_unused_manual_lot(
+    db: Session,
+    component: Component,
+    lot: InventoryLot,
+    *,
+    actor_user_id: int | None,
+    movement_type: str,
+    reason: str,
+) -> int:
+    can_delete, block_reason = inventory_lot_delete_eligibility(db, component, lot)
+    if not can_delete:
+        raise ValueError(block_reason or "库存批次不能删除")
+    quantity = int(lot.remaining_quantity or 0)
+    record_stock_delta(
+        db,
+        component,
+        -quantity,
+        movement_type=movement_type,
+        reason=reason,
+        actor_user_id=actor_user_id,
+        lot_id=lot.id,
+    )
+    component.quantity = max(0, int(component.quantity or 0) - quantity)
+    lot.status = "deleted"
+    db.flush()
+    return quantity
 
 
 def reconcile_component_lots(db: Session, component: Component) -> int:

@@ -545,6 +545,8 @@ class InventoryLotOut(BaseModel):
     status: str = "active"
     received_at: datetime | None = None
     created_at: datetime | None = None
+    can_delete: bool = False
+    delete_block_reason: str | None = None
 
 
 class BomItemStatusRequest(BaseModel):

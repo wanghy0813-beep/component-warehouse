@@ -13,7 +13,10 @@ from app.main import (
     apply_solder_inventory_change,
     component_usage_records,
     component_out,
+    create_component_lot,
     delete_bom_item,
+    delete_component_lot,
+    list_component_lots,
     record_usage_event,
     sync_bom_solder_points,
 )
@@ -26,10 +29,11 @@ from app.models import (
     ProjectBoard,
     ProjectBomItem,
     ProjectBomSolderPoint,
+    StockMovement,
     User,
 )
 from app.services.stock_ledger import record_stock_delta
-from app.schemas import UsageEventRequest
+from app.schemas import InventoryLotCreate, UsageEventRequest
 from app.services.inventory import (
     parse_passive_si_value,
     reserved_quantities,
@@ -274,6 +278,61 @@ def test_inventory_lots_track_channel_and_support_specific_lot_decrement(invento
 
     with pytest.raises(ValueError):
         record_stock_delta(db, component, -2, movement_type="manual_consume", lot_id=lot.id)
+
+
+def test_old_lots_refresh_immediately_and_unused_manual_lot_can_be_deleted(inventory_env):
+    db = inventory_env["db"]
+    component = inventory_env["component"]
+    auth = inventory_env["auth"]
+
+    initial_lots = list_component_lots(component.id, auth, db)
+    assert len(initial_lots) == 1
+    assert initial_lots[0]["source_type"] == "legacy"
+    assert initial_lots[0]["remaining_quantity"] == 5
+    assert initial_lots[0]["can_delete"] is False
+
+    created = create_component_lot(
+        component.id,
+        InventoryLotCreate(quantity=3, source_type="taobao", source_reference="WRONG-ORDER"),
+        auth,
+        db,
+    )
+    assert created["remaining_quantity"] == 3
+    assert created["can_delete"] is True
+    assert component.quantity == 8
+
+    result = delete_component_lot(component.id, created["id"], auth, db)
+    assert result["deleted"] is True
+    assert result["removed_quantity"] == 3
+    assert result["component"]["quantity"] == 5
+    assert db.get(InventoryLot, created["id"]).status == "deleted"
+    assert [row["source_type"] for row in list_component_lots(component.id, auth, db)] == ["legacy"]
+    assert [
+        (movement.movement_type, movement.quantity_delta)
+        for movement in db.query(StockMovement).filter(StockMovement.lot_id == created["id"]).order_by(StockMovement.created_at.asc()).all()
+    ] == [("manual_lot_create", 3), ("manual_lot_delete", -3)]
+
+
+def test_used_manual_lot_cannot_be_deleted(inventory_env):
+    db = inventory_env["db"]
+    component = inventory_env["component"]
+    auth = inventory_env["auth"]
+    created = create_component_lot(
+        component.id,
+        InventoryLotCreate(quantity=2, source_type="manual", source_reference="USED-LOT"),
+        auth,
+        db,
+    )
+    component.quantity -= 1
+    record_stock_delta(db, component, -1, movement_type="manual_consume", lot_id=created["id"])
+    db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        delete_component_lot(component.id, created["id"], auth, db)
+
+    assert error.value.status_code == 400
+    assert "已经发生扣减" in error.value.detail
+    assert db.get(InventoryLot, created["id"]).status == "active"
 
 
 def test_ai_package_only_fills_empty_package_and_never_overwrites_manual_value(inventory_env):

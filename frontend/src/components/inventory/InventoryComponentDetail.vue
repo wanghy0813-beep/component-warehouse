@@ -56,7 +56,18 @@
             <span>剩余 {{ lot.remaining_quantity }}</span>
             <small>原始 {{ lot.initial_quantity }}<template v-if="lot.unit_cost !== null && lot.unit_cost !== undefined"> · ¥{{ lot.unit_cost }}</template></small>
           </div>
-          <el-button size="small" :disabled="!lot.remaining_quantity || !canEditInventoryLots" @click="$emit('consume-lot', lot)">扣 1</el-button>
+          <div class="lot-actions">
+            <el-button size="small" :disabled="!lot.remaining_quantity || !canEditInventoryLots" @click="$emit('consume-lot', lot)">扣 1</el-button>
+            <el-button
+              v-if="lot.can_delete"
+              size="small"
+              type="danger"
+              text
+              :loading="lotSaving"
+              :disabled="!canEditInventoryLots"
+              @click="$emit('delete-lot', lot)"
+            >删除</el-button>
+          </div>
         </article>
         <el-empty v-if="!inventoryLots.length && !lotsLoading" description="暂无批次记录，旧库存会自动保留为 legacy 批次" :image-size="48" />
       </div>
@@ -154,7 +165,7 @@ const props = defineProps({
   usageLoading: Boolean,
   engineeringEnabled: { type: Boolean, default: true }
 })
-const emit = defineEmits(['load-usage', 'load-lots', 'add-lot', 'consume-lot', 'ask-ai'])
+const emit = defineEmits(['load-usage', 'load-lots', 'add-lot', 'consume-lot', 'delete-lot', 'ask-ai'])
 const usageExpanded = ref(false)
 const aiQuestion = ref('')
 const lotForm = reactive({ source_type: 'manual', source_reference: '', location: '', quantity: 1, unit_cost: null, note: '' })
@@ -255,6 +266,7 @@ p { color: #475467; line-height: 1.65; overflow-wrap: anywhere; }
 .lot-row span, .lot-row small { min-width: 0; color: #667085; overflow-wrap: anywhere; }
 .lot-row strong { color: #172b4d; }
 .lot-quantity { text-align: right; }
+.lot-actions { display: flex !important; grid-auto-flow: column; gap: 4px !important; justify-content: end; }
 .knowledge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
 .knowledge-grid article { padding: 13px; border-radius: var(--cw-radius-control); background: linear-gradient(145deg, #f5f9ff, #fff); border: 1px solid #e0e8f5; }
 .knowledge-grid ul { margin: 8px 0 0; padding-left: 18px; color: #475467; line-height: 1.55; }

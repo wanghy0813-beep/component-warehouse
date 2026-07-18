@@ -62,7 +62,13 @@ from .models import (
 )
 from .services.inventory import category_sort_key, component_value_sort_key, reserved_quantities
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
-from .services.stock_ledger import ensure_component_lot, reconcile_component_lots, record_stock_delta
+from .services.stock_ledger import (
+    delete_unused_manual_lot,
+    ensure_component_lot,
+    inventory_lot_delete_eligibility,
+    reconcile_component_lots,
+    record_stock_delta,
+)
 from .services.lcsc_lookup import normalize_lcsc_number
 from .component_identity import allocate_component_identity
 from .services.mimo_ai import (
@@ -597,7 +603,17 @@ def team_component_out(
     return team_components_out(db, [item], auth)[0]
 
 
-def inventory_lot_out(lot: InventoryLot) -> dict:
+def inventory_lot_out(
+    lot: InventoryLot,
+    db: Session | None = None,
+    component: Component | None = None,
+) -> dict:
+    can_delete = False
+    delete_block_reason = None
+    if db is not None:
+        source_component = component or db.get(Component, lot.component_id)
+        if source_component:
+            can_delete, delete_block_reason = inventory_lot_delete_eligibility(db, source_component, lot)
     return {
         "id": lot.id,
         "component_id": lot.component_id,
@@ -610,6 +626,8 @@ def inventory_lot_out(lot: InventoryLot) -> dict:
         "status": lot.status,
         "received_at": lot.received_at,
         "created_at": lot.created_at,
+        "can_delete": can_delete,
+        "delete_block_reason": delete_block_reason,
     }
 
 
@@ -2154,11 +2172,11 @@ def list_team_component_lots(
         db.commit()
     rows = (
         db.query(InventoryLot)
-        .filter(InventoryLot.component_id == component.id)
+        .filter(InventoryLot.component_id == component.id, InventoryLot.status != "deleted")
         .order_by(InventoryLot.status.asc(), InventoryLot.remaining_quantity.desc(), InventoryLot.received_at.desc(), InventoryLot.created_at.desc())
         .all()
     )
-    return [inventory_lot_out(row) for row in rows]
+    return [inventory_lot_out(row, db, component) for row in rows]
 
 
 @router.post("/libraries/{library_id}/components/{item_id}/lots", response_model=InventoryLotOut)
@@ -2207,7 +2225,55 @@ def create_team_component_lot(
     lot = db.get(InventoryLot, lot_id) if lot_id else None
     if not lot:
         raise HTTPException(status_code=500, detail="库存批次创建失败")
-    return inventory_lot_out(lot)
+    return inventory_lot_out(lot, db, component)
+
+
+@router.delete("/libraries/{library_id}/components/{item_id}/lots/{lot_id}")
+def delete_team_component_lot(
+    library_id: str,
+    item_id: str,
+    lot_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_access),
+    db: Session = Depends(get_db),
+):
+    item, component, _ = require_team_source_component(db, library_id, item_id, auth, mutate=True)
+    lot = db.get(InventoryLot, lot_id)
+    if not lot or lot.component_id != component.id or lot.status == "deleted":
+        raise HTTPException(status_code=404, detail="库存批次不存在")
+    old_quantity = int(component.quantity or 0)
+    try:
+        removed_quantity = delete_unused_manual_lot(
+            db,
+            component,
+            lot,
+            actor_user_id=auth.user_id,
+            movement_type="team_lot_delete",
+            reason=f"团队库 {library_id} 删除误添加且未使用的库存批次",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    item.quantity = int(component.quantity or 0)
+    item.frozen_snapshot_json = json.dumps(component_snapshot(db, component), ensure_ascii=False, default=str)
+    log_action(
+        db,
+        library_id,
+        auth,
+        request,
+        "component.lot.delete",
+        "component",
+        f"删除误添加库存批次 {component.name} x {removed_quantity}",
+        entity_id=item.id,
+        before={"quantity": old_quantity, "lot_id": lot.id},
+        after={"quantity": component.quantity, "lot_status": lot.status},
+    )
+    db.commit()
+    db.refresh(item)
+    return {
+        "deleted": True,
+        "removed_quantity": removed_quantity,
+        "component": team_component_out(db, item, auth),
+    }
 
 
 @router.post("/libraries/{library_id}/components/{item_id}/quantity/decrement")

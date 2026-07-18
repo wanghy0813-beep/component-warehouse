@@ -11,6 +11,8 @@ from app.models import (
     CompetitionComponentMarker,
     CompetitionLibraryComponent,
     Component,
+    InventoryLot,
+    StockMovement,
 )
 
 
@@ -353,6 +355,66 @@ def test_quantity_sync_permissions_and_shared_markers(team_env, created_library)
         action="component.quantity.update",
     ).count() == 1
     assert db.query(CompetitionComponentMarker).filter_by(id=marker_id).count() == 1
+    db.close()
+
+
+def test_team_lots_refresh_old_stock_and_delete_unused_manual_batch(team_env, created_library):
+    client = team_env["client"]
+    Session = team_env["Session"]
+    library_id = created_library["id"]
+    db = Session()
+    component = Component(
+        name="团队批次测试器件",
+        quantity=5,
+        warehouse_code="CW-LOT-0001",
+        owner_user_id=1,
+    )
+    db.add(component)
+    db.commit()
+    db.refresh(component)
+    component_id = component.id
+    component_name = component.name
+    db.close()
+
+    linked = client.post(
+        f"/api/team/libraries/{library_id}/components",
+        headers=headers(1),
+        json={"cw_component_id": component_id, "name": component_name, "quantity": 5},
+    )
+    assert linked.status_code == 200, linked.text
+    item_id = linked.json()["item"]["id"]
+
+    initial = client.get(
+        f"/api/team/libraries/{library_id}/components/{item_id}/lots",
+        headers=headers(1),
+    )
+    assert initial.status_code == 200, initial.text
+    assert [(row["source_type"], row["remaining_quantity"]) for row in initial.json()] == [("legacy", 5)]
+
+    created = client.post(
+        f"/api/team/libraries/{library_id}/components/{item_id}/lots",
+        headers=headers(1),
+        json={"quantity": 2, "source_type": "manual", "source_reference": "WRONG-TEAM-LOT"},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["can_delete"] is True
+    lot_id = created.json()["id"]
+
+    deleted = client.delete(
+        f"/api/team/libraries/{library_id}/components/{item_id}/lots/{lot_id}",
+        headers=headers(1),
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["removed_quantity"] == 2
+    assert deleted.json()["component"]["quantity"] == 5
+
+    db = Session()
+    assert db.get(InventoryLot, lot_id).status == "deleted"
+    assert [
+        (movement.movement_type, movement.quantity_delta)
+        for movement in db.query(StockMovement).filter(StockMovement.lot_id == lot_id).order_by(StockMovement.created_at.asc()).all()
+    ] == [("team_lot_create", 2), ("team_lot_delete", -2)]
+    assert db.query(CompetitionActivityLog).filter_by(library_id=library_id, action="component.lot.delete").count() == 1
     db.close()
 
 

@@ -150,6 +150,7 @@
           @load-lots="loadLots"
           @add-lot="addInventoryLot"
           @consume-lot="consumeInventoryLot"
+          @delete-lot="deleteInventoryLot"
           @ask-ai="askSelectedComponentAi"
         >
           <template #actions>
@@ -476,6 +477,7 @@ import {
   askComponentAi,
   aiComponentInfo,
   createComponentLot,
+  deleteComponentLot,
   deleteComponent,
   decrementComponentQuantity,
   downloadExternalOrderTemplate,
@@ -1281,29 +1283,33 @@ async function openDetail(row, edit = false) {
   aiCreateSuggestion.value = null
   quickAddPrompt.value = [row.model, row.normalized_spec, row.package, row.lcsc_number].filter(Boolean).join(' ')
   edaLoading.value = FEATURE_EDA_ENABLED
-  try {
-    const engineeringRequests = FEATURE_EDA_ENABLED
-      ? [listEdaBindings(row.id), listSupplierParts(row.id)]
-      : [Promise.resolve([]), Promise.resolve([])]
-    const [data, bindings, suppliers, lots] = await Promise.all([
-      getComponentAi(row.id),
-      ...engineeringRequests,
-      getComponentLots(row.id)
-    ])
-    selected.value = data.component
-    fillForm(data.component)
-    knowledgeCards.value = data.knowledge_cards || []
-    edaBindings.value = bindings
-    supplierParts.value = suppliers
-    inventoryLots.value = lots || []
-  } catch {
+  lotsLoading.value = true
+  const engineeringRequests = FEATURE_EDA_ENABLED
+    ? [listEdaBindings(row.id), listSupplierParts(row.id)]
+    : [Promise.resolve([]), Promise.resolve([])]
+  const [aiResult, bindingsResult, suppliersResult, lotsResult] = await Promise.allSettled([
+    getComponentAi(row.id),
+    ...engineeringRequests,
+    getComponentLots(row.id)
+  ])
+  if (selected.value?.id !== row.id) return
+  if (aiResult.status === 'fulfilled') {
+    selected.value = aiResult.value.component
+    fillForm(aiResult.value.component)
+    knowledgeCards.value = aiResult.value.knowledge_cards || []
+  } else {
     knowledgeCards.value = []
-    edaBindings.value = []
-    supplierParts.value = []
-    inventoryLots.value = []
-  } finally {
-    edaLoading.value = false
   }
+  edaBindings.value = bindingsResult.status === 'fulfilled' ? bindingsResult.value : []
+  supplierParts.value = suppliersResult.status === 'fulfilled' ? suppliersResult.value : []
+  if (lotsResult.status === 'fulfilled') {
+    inventoryLots.value = lotsResult.value || []
+  } else {
+    inventoryLots.value = []
+    ElMessage.error(lotsResult.reason?.response?.data?.detail || '库存批次加载失败')
+  }
+  edaLoading.value = false
+  lotsLoading.value = false
   usageRecords.value = []
 }
 
@@ -1519,6 +1525,30 @@ async function consumeInventoryLot(lot) {
     ElMessage.success('已从指定批次扣减 1')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+  }
+}
+
+async function deleteInventoryLot(lot) {
+  if (!selected.value?.id || !lot?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除批次「${lot.source_reference || sourceLabel(lot.source_type)}」？总库存将同步减少 ${lot.initial_quantity || 0}。`,
+      '删除误添加批次',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+    lotSaving.value = true
+    const result = await deleteComponentLot(selected.value.id, lot.id)
+    selected.value = result.component
+    fillForm(result.component)
+    await loadLots()
+    await load()
+    trackUsage(recordUsageEvent, 'ui.components.lot_delete', { target_type: 'component', target_id: selected.value.id, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success(`批次已删除，总库存已减少 ${result.removed_quantity || 0}`)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error.response?.data?.detail || '删除库存批次失败')
+  } finally {
+    lotSaving.value = false
   }
 }
 
