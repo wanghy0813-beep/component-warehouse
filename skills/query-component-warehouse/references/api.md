@@ -37,6 +37,8 @@ Only a unique high-confidence result with sufficient unreserved stock is auto-se
 
 The matcher never emits a candidate from package similarity alone. Without an exact warehouse, supplier, or normalized manufacturer part number, it only admits a passive with the same type, normalized value, and package, or a connector with the same connector role, pin count, and mechanical package. Net labels and pin names are not BOM items; omit isolated labels such as `RFREQ`, `RIPROPI`, `BEC`, `VCC`, `GND`, `SW`, `FB`, `COMP`, and `BOOT` unless a populated component reference and electrical identity are also known.
 
+If a known isolated label still reaches the API, the response keeps `classification: "missing"` for compatibility but sets `ignored_input: true`, provides `ignored_reason`, and omits `missing_suggestion`. Do not present ignored inputs as shortages or purchasing needs.
+
 For an existing project, do not run `match` against its BOM to calculate shortages because that would count the project's own reservation as unavailable. Read `project PROJECT_CODE` and use each BOM row's `physical_shortage_quantity`, `reservation_shortage_quantity`, `reserved_by_other_projects_quantity`, `available_for_project_quantity`, and `shortage_quantity`. Never guess the current project from recency; ask for the project code when it is ambiguous.
 
 For purchasing advice, count only `in_transit_quantity`; it is zero for planned, cancelled, or fully received lines. Join contexts by `warehouse_code` and `project_code`, not by display names.

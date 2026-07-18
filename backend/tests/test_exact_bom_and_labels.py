@@ -247,6 +247,12 @@ def test_bom_matching_filters_same_package_function_mismatches_and_net_labels(tm
     )
     assert [row["status"] for row in results[:4]] == ["missing", "missing", "missing", "missing"]
     assert all(not row["matches"] for row in results[:4])
+    assert results[0]["ignored_input"] is False
+    assert results[1]["ignored_input"] is False
+    assert results[2]["ignored_input"] is True
+    assert results[2]["missing_suggestion"] is None
+    assert results[3]["ignored_input"] is True
+    assert results[3]["missing_suggestion"] is None
     assert results[4]["status"] == "review"
     assert results[4]["selected_component_id"] is None
     assert [item["component"]["id"] for item in results[4]["matches"]] == [connector.id]

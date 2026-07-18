@@ -32,6 +32,27 @@ HEADER_ALIASES = {
     "layer": ["layer", "层"],
 }
 
+_NON_COMPONENT_LABELS = {
+    "agnd",
+    "bec",
+    "boot",
+    "comp",
+    "en",
+    "fb",
+    "gnd",
+    "pgnd",
+    "rfreq",
+    "ripropi",
+    "sw",
+    "test",
+    "tp",
+    "vcc",
+    "vdd",
+    "vin",
+    "vout",
+    "vss",
+}
+
 
 @dataclass
 class BomRow:
@@ -72,6 +93,16 @@ def _supplier_matches(expected: str, actual: str | None) -> bool:
     if not expected:
         return True
     return _normalize(expected) == _normalize(actual)
+
+
+def _non_component_label(row: dict[str, Any]) -> str | None:
+    if row.get("supplier_part") or row.get("manufacturer_part"):
+        return None
+    for field in ["designator", "value", "comment"]:
+        raw = str(row.get(field) or "").strip()
+        if raw and _normalize(raw) in _NON_COMPONENT_LABELS:
+            return raw
+    return None
 
 
 def _lcsc_supplier(value: str | None) -> bool:
@@ -735,6 +766,24 @@ def match_bom_rows(
     result: list[dict[str, Any]] = []
     reserved_by_component = reserved_quantities(db, component_ids)
     for row in rows:
+        ignored_label = _non_component_label(row.data)
+        if ignored_label:
+            result.append(
+                {
+                    **row.data,
+                    "status": "missing",
+                    "selected_component_id": None,
+                    "match_confidence": 0,
+                    "matches": [],
+                    "role": "该输入疑似网络名、供电轨或 IC 引脚标签，不是独立采购器件。",
+                    "missing_suggestion": None,
+                    "lcsc_search_url": None,
+                    "ignored_input": True,
+                    "ignored_reason": f"{ignored_label} 疑似非器件标签，已跳过库存和采购匹配。",
+                    "ai_reason": "非器件标签已由确定性规则忽略。",
+                }
+            )
+            continue
         matches = []
         seen = set()
         supplier_part = str(row.data.get("supplier_part") or "").strip()
@@ -835,6 +884,8 @@ def match_bom_rows(
                 "matches": top_matches[: max(3, top_n)],
                 "role": _bom_role(row.data),
                 "missing_suggestion": missing_suggestion,
+                "ignored_input": False,
+                "ignored_reason": None,
                 "lcsc_search_url": lcsc_search_url(row.data.get("supplier_part") or row.data.get("manufacturer_part") or row.data.get("value")),
                 "ai_reason": (
                     "编号一致自动匹配。"

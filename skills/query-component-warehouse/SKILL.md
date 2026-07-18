@@ -28,6 +28,7 @@ Use the deterministic client in `scripts/cw_client.py`. Treat the service as the
    - `candidate`: alternatives requiring manual electrical, package, and pinout review.
    - `shortage`: the part matches but available stock is insufficient.
    - `missing`: no safe personal-library match.
+   - `ignored_input: true`: a net, power rail, test point, or IC pin label was safely ignored; do not report it as a missing part or recommend purchasing it.
 5. Prefer `available_quantity`, not raw `quantity`, because project reservations reduce usable stock.
 6. State the stable `warehouse_code` for recommended in-stock parts. Never silently substitute a candidate.
 
