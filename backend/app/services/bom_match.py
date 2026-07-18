@@ -483,6 +483,58 @@ def _candidate_query(
     return query.order_by(Component.quantity.desc(), Component.updated_at.desc()).limit(limit).all()
 
 
+def _candidate_is_compatible(row: dict[str, Any], component: Component) -> bool:
+    """Require an electrical or mechanical identity anchor beyond package similarity."""
+    supplier_part = _normalize(row.get("supplier_part"))
+    manufacturer_part = _normalize(row.get("manufacturer_part"))
+    if supplier_part and supplier_part == _normalize(component.lcsc_number):
+        return True
+    if manufacturer_part and manufacturer_part == _normalize(component.model):
+        return True
+
+    footprint = _normalize_package(row.get("footprint"))
+    package = _normalize_package(component.package)
+    if not footprint or not package or footprint != package:
+        return False
+
+    row_passive_kind = _passive_kind(row)
+    component_passive_kind = _passive_kind(component=component)
+    if row_passive_kind or component_passive_kind:
+        if row_passive_kind != component_passive_kind:
+            return False
+        row_value = _parse_passive_value(
+            " ".join(str(row.get(key) or "") for key in ["value", "comment", "manufacturer_part"]),
+            row_passive_kind,
+        )
+        component_value = _component_passive_value(component, component_passive_kind)
+        return row_value is not None and component_value is not None and _values_match(row_value, component_value)
+
+    row_connectorish = _connectorish(
+        row.get("manufacturer_part"),
+        row.get("comment"),
+        row.get("value"),
+        row.get("footprint"),
+        row.get("category"),
+        row.get("primary_category"),
+    )
+    component_connectorish = _connectorish(
+        component.model,
+        component.name,
+        component.parameters,
+        component.package,
+        component.tags,
+    )
+    if not row_connectorish or not component_connectorish:
+        return False
+    row_pin_counts = _pin_counts(
+        row.get("manufacturer_part"), row.get("comment"), row.get("value"), row.get("footprint")
+    )
+    component_pin_counts = _pin_counts(
+        component.model, component.name, component.parameters, component.package, component.tags
+    )
+    return bool(row_pin_counts and component_pin_counts and row_pin_counts & component_pin_counts)
+
+
 def _score_match(row: dict[str, Any], component: Component) -> tuple[int, str, list[str]]:
     supplier_part = _normalize(row.get("supplier_part"))
     manufacturer_part = _normalize(row.get("manufacturer_part"))
@@ -525,9 +577,14 @@ def _score_match(row: dict[str, Any], component: Component) -> tuple[int, str, l
         if footprint and package:
             flags.append("封装一致" if (footprint == package or footprint in package or package in footprint) else "封装不一致")
         return 100, "立创 ID 精确匹配", flags
-    if manufacturer_part and model and manufacturer_part == model:
-        score += 88
+    manufacturer_part_exact = bool(manufacturer_part and model and manufacturer_part == model)
+    manufacturer_part_conflict = bool(manufacturer_part and model and manufacturer_part != model)
+    if manufacturer_part_exact:
+        score += 98
         reasons.append("型号精确匹配")
+
+    if not _candidate_is_compatible(row, component):
+        return 0, "只有封装接近，缺少电气功能或机械规格锚点", ["候选被安全过滤"]
 
     haystack = " ".join([name, model, params, tags])
     if value and value in haystack:
@@ -559,7 +616,7 @@ def _score_match(row: dict[str, Any], component: Component) -> tuple[int, str, l
         and package
         and footprint == package
     ):
-        score = max(score, 96)
+        score = max(score, 96 if not manufacturer_part_conflict else 79)
         reasons.append("类别、规范值和标准封装精确一致")
         flags.append("唯一复合键候选")
     if connectorish and row_pin_counts and component_pin_counts:
@@ -567,6 +624,8 @@ def _score_match(row: dict[str, Any], component: Component) -> tuple[int, str, l
             score += 16
             reasons.append("脚数匹配")
             flags.append("脚数一致")
+            if footprint and package and footprint == package:
+                score = max(score, 70)
         else:
             flags.append("脚数不一致")
             return min(score, 35), f"脚数不一致：BOM {sorted(row_pin_counts)[0]}P，库存 {sorted(component_pin_counts)[0]}P", flags
@@ -575,6 +634,10 @@ def _score_match(row: dict[str, Any], component: Component) -> tuple[int, str, l
         reasons.append("分类接近")
     if component.quantity > 0:
         score += 4
+    if manufacturer_part_conflict:
+        score = min(score, 79)
+        flags.append("型号不一致")
+        reasons.append("指定型号未入库，仅保留受控同规格候选")
     return min(score, 99), "，".join(reasons) or "仅精确字段候选", flags
 
 
@@ -707,7 +770,7 @@ def match_bom_rows(
                 score = 100
                 reason = "供应商料号精确匹配"
                 flags = ["编号一致", *[flag for flag in flags if flag != "编号一致"]]
-            if score < 18:
+            if score < 60:
                 continue
             available = max(0, int(component.quantity or 0) - int(reserved_by_component.get(component.id, 0)))
             required = row.data["required_quantity"]

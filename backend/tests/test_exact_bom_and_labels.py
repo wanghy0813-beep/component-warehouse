@@ -166,6 +166,95 @@ def test_bom_matching_is_exact_only_and_passive_composite_must_be_unique(tmp_pat
     engine.dispose()
 
 
+def test_bom_matching_filters_same_package_function_mismatches_and_net_labels(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'candidate-safety.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = Session()
+    user = User(id=1, phone="13800000001", nickname="候选安全测试")
+    categories = {
+        name: Category(name=name, color="#eef2ff")
+        for name in ["电阻", "电容", "二极管", "传感器", "连接器"]
+    }
+    db.add(user)
+    db.add_all(categories.values())
+    db.flush()
+    resistor = Component(
+        owner_user_id=1,
+        name="10kΩ 0805 电阻",
+        model="R0805-10K",
+        normalized_spec="10kΩ",
+        parameters="10kΩ",
+        package="0805",
+        quantity=10,
+        category_id=categories["电阻"].id,
+    )
+    capacitor = Component(
+        owner_user_id=1,
+        name="100nF 0805 电容",
+        model="C0805-100N",
+        normalized_spec="100nF",
+        parameters="100nF",
+        package="0805",
+        quantity=10,
+        category_id=categories["电容"].id,
+    )
+    switching_diode = Component(
+        owner_user_id=1,
+        name="1N4148W 开关二极管",
+        model="1N4148W",
+        parameters="高速开关二极管 100V",
+        package="SOD-123",
+        quantity=10,
+        category_id=categories["二极管"].id,
+    )
+    sensor = Component(
+        owner_user_id=1,
+        name="SHT30 温湿度传感器模块",
+        model="SHT30",
+        parameters="I2C 温湿度传感器",
+        package="模块",
+        quantity=2,
+        category_id=categories["传感器"].id,
+    )
+    connector = Component(
+        owner_user_id=1,
+        name="2.54mm 1x10P 排针",
+        model="1x10P",
+        parameters="单排 10P 2.54mm",
+        package="直插",
+        tags="连接器,排针,2.54mm,10P",
+        quantity=5,
+        category_id=categories["连接器"].id,
+    )
+    db.add_all([resistor, capacitor, switching_diode, sensor, connector])
+    db.commit()
+
+    rows = [
+        BomRow(1, {"required_quantity": 1, "manufacturer_part": "BZT52C12", "comment": "12V 稳压二极管", "footprint": "SOD-123", "designator": "D1"}),
+        BomRow(2, {"required_quantity": 1, "manufacturer_part": "DRV8876", "comment": "电荷泵电容", "footprint": "0805", "designator": "C1"}),
+        BomRow(3, {"required_quantity": 1, "value": "RFREQ", "comment": "IC pin label", "footprint": "0805", "designator": "RFREQ"}),
+        BomRow(4, {"required_quantity": 1, "value": "BEC", "comment": "power rail", "footprint": "模块", "designator": "BEC"}),
+        BomRow(5, {"required_quantity": 1, "value": "1x10P 排针", "comment": "2.54mm 排针 1x10P", "footprint": "直插", "category": "连接器", "designator": "J1"}),
+    ]
+    results = match_bom_rows(
+        db,
+        rows,
+        component_ids=[resistor.id, capacitor.id, switching_diode.id, sensor.id, connector.id],
+    )
+    assert [row["status"] for row in results[:4]] == ["missing", "missing", "missing", "missing"]
+    assert all(not row["matches"] for row in results[:4])
+    assert results[4]["status"] == "review"
+    assert results[4]["selected_component_id"] is None
+    assert [item["component"]["id"] for item in results[4]["matches"]] == [connector.id]
+
+    db.close()
+    engine.dispose()
+
+
 def test_label_html_is_exact_a4_40_grid_with_calibration_and_offsets():
     html = render_component_label_sheet(
         [

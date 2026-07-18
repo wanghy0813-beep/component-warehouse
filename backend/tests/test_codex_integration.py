@@ -161,6 +161,31 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     assert row["matches"][0]["component"]["warehouse_code"] == "RES-00000001"
     assert "PRIVATE-ONLY" not in match.text
 
+    unsafe_candidates = codex_env["client"].post(
+        "/api/integrations/codex/v1/components/match",
+        headers=headers,
+        json={
+            "items": [
+                {
+                    "designator": "D1",
+                    "quantity": 1,
+                    "manufacturer_part": "BZT52C12",
+                    "parameters": "12V 稳压二极管",
+                    "footprint": "0603",
+                },
+                {
+                    "designator": "RFREQ",
+                    "quantity": 1,
+                    "parameters": "RFREQ",
+                    "footprint": "0603",
+                },
+            ]
+        },
+    )
+    assert unsafe_candidates.status_code == 200, unsafe_candidates.text
+    assert [item["classification"] for item in unsafe_candidates.json()["items"]] == ["missing", "missing"]
+    assert all(not item["matches"] for item in unsafe_candidates.json()["items"])
+
     db = codex_env["Session"]()
     project = Project(scope_type="personal", owner_user_id=1, project_code="PRJ-RESERVED", name="预留测试")
     db.add(project)

@@ -35,6 +35,8 @@ The client adds `/api/integrations/codex/` to the configured service root and au
 
 Only a unique high-confidence result with sufficient unreserved stock is auto-selected. `available_quantity` already subtracts project reservations. `candidate`, `missing`, and `shortage` are never auto-selected. Put a complete manufacturer part number in `manufacturer_part`; place a family name such as `STM32G0` in `parameters` and treat the result as exploratory.
 
+The matcher never emits a candidate from package similarity alone. Without an exact warehouse, supplier, or normalized manufacturer part number, it only admits a passive with the same type, normalized value, and package, or a connector with the same connector role, pin count, and mechanical package. Net labels and pin names are not BOM items; omit isolated labels such as `RFREQ`, `RIPROPI`, `BEC`, `VCC`, `GND`, `SW`, `FB`, `COMP`, and `BOOT` unless a populated component reference and electrical identity are also known.
+
 For an existing project, do not run `match` against its BOM to calculate shortages because that would count the project's own reservation as unavailable. Read `project PROJECT_CODE` and use each BOM row's `physical_shortage_quantity`, `reservation_shortage_quantity`, `reserved_by_other_projects_quantity`, `available_for_project_quantity`, and `shortage_quantity`. Never guess the current project from recency; ask for the project code when it is ambiguous.
 
 For purchasing advice, count only `in_transit_quantity`; it is zero for planned, cancelled, or fully received lines. Join contexts by `warehouse_code` and `project_code`, not by display names.

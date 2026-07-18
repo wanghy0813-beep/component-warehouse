@@ -20,6 +20,7 @@ Use the deterministic client in `scripts/cw_client.py`. Treat the service as the
 
 1. Identify the requested parts locally from the image, schematic, notes, or BOM.
    Stop for missing design constraints before selecting a family-level part. For example, ask for the exact MCU variant/package and required peripherals before treating `STM32` as an MPN, and derive decoupling quantities from the exact datasheet rather than guessing.
+   Exclude net names, IC pin names, power rails, test points, and functional annotations from component requirements. Tokens such as `RFREQ`, `RIPROPI`, `BEC`, `VCC`, `GND`, `SW`, `FB`, `COMP`, and `BOOT` are not components unless a real reference designator plus value/model/package identifies a populated part. Do not search every OCR label independently.
 2. Normalize each requirement to the supported structured fields: `reference`/`designator`, `quantity`, `manufacturer_part`, `manufacturer`, `supplier_part`, `supplier`, `parameters`/`value`, `footprint`, and `category`.
 3. Use `match` for more than one requirement. Use `search` for exploratory selection and `get` for the stable warehouse code selected from results.
 4. Distinguish results exactly:
@@ -29,6 +30,8 @@ Use the deterministic client in `scripts/cw_client.py`. Treat the service as the
    - `missing`: no safe personal-library match.
 5. Prefer `available_quantity`, not raw `quantity`, because project reservations reduce usable stock.
 6. State the stable `warehouse_code` for recommended in-stock parts. Never silently substitute a candidate.
+
+Package similarity alone is never evidence of electrical compatibility. A non-exact candidate is valid only when the service confirms the same passive type, normalized value, and package, or the same connector type, pin count, and mechanical package. Treat a diode subtype, IC family, module, switch, fuse, sensor, or power part with no exact model/supplier match as `missing`; never promote a same-package part.
 
 For project-level questions, use `projects` or `project`, then query `risks` and `purchases` when shortages or sourcing matter. Ask the user to choose a `project_code` if more than one project could be meant. For an existing project use its reservation-aware shortage fields; do not rematch its already-reserved BOM to infer availability. Use only purchase lines marked with a positive `in_transit_quantity` as placed, outstanding coverage.
 
