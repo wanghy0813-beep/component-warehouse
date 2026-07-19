@@ -57,7 +57,12 @@
             <small>原始 {{ lot.initial_quantity }}<template v-if="lot.unit_cost !== null && lot.unit_cost !== undefined"> · ¥{{ lot.unit_cost }}</template></small>
           </div>
           <div class="lot-actions">
-            <el-button size="small" :disabled="!lot.remaining_quantity || !canEditInventoryLots" @click="$emit('consume-lot', lot)">扣 1</el-button>
+            <el-button
+              size="small"
+              :loading="lotConsumeIds.has(lot.id)"
+              :disabled="!lot.remaining_quantity || !canEditInventoryLots || lotConsumeIds.has(lot.id)"
+              @click="$emit('consume-lot', lot)"
+            >扣 1</el-button>
             <el-button
               v-if="lot.can_delete"
               size="small"
@@ -158,6 +163,7 @@ const props = defineProps({
   edaLoading: Boolean,
   lotsLoading: Boolean,
   lotSaving: Boolean,
+  lotConsumeIds: { type: Set, default: () => new Set() },
   canEditInventoryLots: { type: Boolean, default: true },
   aiAskLoading: Boolean,
   aiAnswer: { type: Object, default: null },

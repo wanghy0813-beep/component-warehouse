@@ -155,6 +155,7 @@
           :engineering-enabled="FEATURE_EDA_ENABLED"
           :lots-loading="lotsLoading"
           :lot-saving="lotSaving"
+          :lot-consume-ids="lotConsumeIds"
           :ai-ask-loading="aiAskLoading"
           :ai-answer="aiAnswer"
           @load-usage="loadUsage"
@@ -481,6 +482,7 @@ import InventoryComponentCard from '../components/inventory/InventoryComponentCa
 import InventoryComponentDetail from '../components/inventory/InventoryComponentDetail.vue'
 import ComponentCreateWorkspace from '../components/inventory/ComponentCreateWorkspace.vue'
 import MultiQrScanner from '../shared/components/MultiQrScanner.vue'
+import { applyInventoryLotConsumption } from '../shared/inventoryLotState'
 import LabelExportDialog from '../shared/components/LabelExportDialog.vue'
 import {
   commitExcel,
@@ -560,6 +562,7 @@ const edaLoading = ref(false)
 const inventoryLots = ref([])
 const lotsLoading = ref(false)
 const lotSaving = ref(false)
+const lotConsumeIds = reactive(new Set())
 const quickConsumeIds = reactive(new Set())
 const aiAskLoading = ref(false)
 const aiAnswer = ref(null)
@@ -1526,17 +1529,34 @@ async function addInventoryLot(payload) {
 }
 
 async function consumeInventoryLot(lot) {
-  if (!selected.value?.id || !lot?.id) return
+  if (!selected.value?.id || !lot?.id || lotConsumeIds.has(lot.id)) return
+  const componentId = selected.value.id
+  lotConsumeIds.add(lot.id)
   try {
-    const updated = await decrementComponentQuantity(selected.value.id, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
-    selected.value = updated
-    fillForm(updated)
-    await loadLots()
-    await load()
-    trackUsage(recordUsageEvent, 'ui.components.lot_consume', { target_type: 'component', target_id: selected.value.id, detail: { lot_id: lot.id, source_type: lot.source_type } })
-    ElMessage.success('已从指定批次扣减 1')
+    const updated = await decrementComponentQuantity(componentId, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
+    groups.value = groups.value.map((group) => ({
+      ...group,
+      items: (group.items || []).map((item) => item.id === updated.id ? decorateComponent({ ...item, ...updated }) : item)
+    }))
+    if (selected.value?.id === componentId) {
+      selected.value = updated
+      fillForm(updated)
+      inventoryLots.value = applyInventoryLotConsumption(inventoryLots.value, lot.id, 1)
+    }
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.id,
+      quantity: updated.quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
+    trackUsage(recordUsageEvent, 'ui.components.lot_consume', { target_type: 'component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success({ message: '已从指定批次扣减 1', grouping: true, duration: 1400 })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+  } finally {
+    lotConsumeIds.delete(lot.id)
   }
 }
 
@@ -1679,7 +1699,14 @@ async function quickConsume(row) {
       selected.value = updated
       fillForm(updated)
     }
-    inventoryChannel?.postMessage({ type: 'quantity-updated', componentId: updated.id })
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.id,
+      quantity: updated.quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
     trackUsage(recordUsageEvent, 'ui.components.quick_consume', {
       target_type: 'component',
       target_id: updated.id,
@@ -1869,7 +1896,26 @@ onMounted(async () => {
   setupAutoLoadObserver()
   if (inventoryChannel) {
     inventoryChannel.onmessage = (event) => {
-      if (event.data?.type === 'quantity-updated') load()
+      if (event.data?.type !== 'quantity-updated') return
+      const componentId = Number(event.data.componentId)
+      if (!componentId || event.data.quantity === undefined) return
+      const quantityPatch = {
+        quantity: Number(event.data.quantity || 0),
+        available_quantity: Number(event.data.availableQuantity || 0),
+        reserved_quantity: Number(event.data.reservedQuantity || 0),
+        status: event.data.status
+      }
+      groups.value = groups.value.map((group) => ({
+        ...group,
+        items: (group.items || []).map((item) => item.id === componentId ? decorateComponent({ ...item, ...quantityPatch }) : item)
+      }))
+      if (selected.value?.id === componentId) {
+        selected.value = { ...selected.value, ...quantityPatch }
+        fillForm(selected.value)
+        getComponentLots(componentId).then((lots) => {
+          if (selected.value?.id === componentId) inventoryLots.value = lots || []
+        }).catch(() => {})
+      }
     }
   }
 })

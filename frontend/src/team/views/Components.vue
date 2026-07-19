@@ -116,6 +116,7 @@
         :engineering-enabled="FEATURE_EDA_ENABLED"
         :lots-loading="lotsLoading"
         :lot-saving="lotSaving"
+        :lot-consume-ids="lotConsumeIds"
         :can-edit-inventory-lots="!readonly && selected.can_edit_quantity"
         :ai-ask-loading="componentAiAskLoading"
         :ai-answer="componentAiAnswer"
@@ -363,6 +364,7 @@ import { Camera, MoreFilled } from '@element-plus/icons-vue'
 import InventoryComponentCard from '../../components/inventory/InventoryComponentCard.vue'
 import InventoryComponentDetail from '../../components/inventory/InventoryComponentDetail.vue'
 import MultiQrScanner from '../../shared/components/MultiQrScanner.vue'
+import { applyInventoryLotConsumption } from '../../shared/inventoryLotState'
 import LabelExportDialog from '../../shared/components/LabelExportDialog.vue'
 import LcscPasteImport from '../../shared/components/LcscPasteImport.vue'
 import {
@@ -476,6 +478,7 @@ const edaLoading = ref(false)
 const inventoryLots = ref([])
 const lotsLoading = ref(false)
 const lotSaving = ref(false)
+const lotConsumeIds = reactive(new Set())
 const quickConsumeIds = reactive(new Set())
 const componentAiAskLoading = ref(false)
 const componentAiAnswer = ref(null)
@@ -1028,16 +1031,31 @@ async function addInventoryLot(payload) {
 }
 
 async function consumeInventoryLot(lot) {
-  if (!selected.value?.id || !lot?.id || readonly.value || !selected.value.can_edit_quantity) return
+  if (!selected.value?.id || !lot?.id || readonly.value || !selected.value.can_edit_quantity || lotConsumeIds.has(lot.id)) return
+  const componentId = selected.value.id
+  lotConsumeIds.add(lot.id)
   try {
-    const updated = await decrementTeamComponentQuantity(libraryId, selected.value.id, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
-    selected.value = updated
-    await loadLots()
-    await load()
-    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.lot_consume', { target_type: 'team_component', target_id: selected.value.id, detail: { lot_id: lot.id, source_type: lot.source_type } })
-    ElMessage.success('已从指定批次扣减 1')
+    const updated = await decrementTeamComponentQuantity(libraryId, componentId, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
+    items.value = items.value.map((item) => item.id === updated.id ? updated : item)
+    totalQuantity.value = Math.max(0, Number(totalQuantity.value || 0) - 1)
+    if (selected.value?.id === componentId) {
+      selected.value = updated
+      inventoryLots.value = applyInventoryLotConsumption(inventoryLots.value, lot.id, 1)
+    }
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.cw_component_id,
+      quantity: updated.quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.lot_consume', { target_type: 'team_component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success({ message: '已从指定批次扣减 1', grouping: true, duration: 1400 })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+  } finally {
+    lotConsumeIds.delete(lot.id)
   }
 }
 
@@ -1049,7 +1067,14 @@ async function quickConsume(row) {
     items.value = items.value.map((item) => item.id === updated.id ? updated : item)
     totalQuantity.value = Math.max(0, Number(totalQuantity.value || 0) - 1)
     if (selected.value?.id === updated.id) selected.value = updated
-    inventoryChannel?.postMessage({ type: 'quantity-updated', componentId: updated.cw_component_id })
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.cw_component_id,
+      quantity: updated.quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
     trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.quick_consume', {
       target_type: 'team_component',
       target_id: updated.id,
@@ -1135,7 +1160,14 @@ async function saveQuantity() {
     const updated = await updateComponentQuantity(libraryId, selected.value.id, quantityForm)
     selected.value = updated
     quantityDialog.value = false
-    inventoryChannel?.postMessage({ type: 'quantity-updated', componentId: updated.cw_component_id })
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.cw_component_id,
+      quantity: updated.quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
     await load()
     ElMessage.success('数量已同步到个人版')
   } catch (error) {
