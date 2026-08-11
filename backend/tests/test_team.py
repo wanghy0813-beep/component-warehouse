@@ -358,6 +358,59 @@ def test_quantity_sync_permissions_and_shared_markers(team_env, created_library)
     db.close()
 
 
+def test_team_equipment_occupancy_return_and_loss(team_env, created_library):
+    client = team_env["client"]
+    Session = team_env["Session"]
+    library_id = created_library["id"]
+    db = Session()
+    if not db.query(Category).filter_by(name="设备").first():
+        db.add(Category(name="设备", code_prefix="EQP"))
+        db.commit()
+    db.close()
+
+    created = client.post(
+        f"/api/team/libraries/{library_id}/components",
+        headers=headers(1),
+        json={"name": "团队示波器", "category": "设备", "quantity": 1},
+    )
+    assert created.status_code == 200, created.text
+    item = created.json()["item"]
+
+    occupied = client.post(
+        f"/api/team/libraries/{library_id}/components/{item['id']}/occupancy",
+        headers=headers(1),
+        json={"action": "occupy", "quantity": 1, "remark": "调试使用"},
+    )
+    assert occupied.status_code == 200, occupied.text
+    assert occupied.json()["quantity"] == 1
+    assert occupied.json()["occupied_quantity"] == 1
+    assert occupied.json()["available_quantity"] == 0
+
+    released = client.post(
+        f"/api/team/libraries/{library_id}/components/{item['id']}/occupancy",
+        headers=headers(1),
+        json={"action": "release", "quantity": 1},
+    )
+    assert released.status_code == 200, released.text
+    assert released.json()["occupied_quantity"] == 0
+    assert released.json()["available_quantity"] == 1
+
+    client.post(
+        f"/api/team/libraries/{library_id}/components/{item['id']}/occupancy",
+        headers=headers(1),
+        json={"action": "occupy", "quantity": 1},
+    )
+    lost = client.post(
+        f"/api/team/libraries/{library_id}/components/{item['id']}/quantity/decrement",
+        headers=headers(1),
+        json={"quantity": 1, "reason_type": "loss", "remark": "设备损坏"},
+    )
+    assert lost.status_code == 200, lost.text
+    assert lost.json()["quantity"] == 0
+    assert lost.json()["occupied_quantity"] == 0
+    assert lost.json()["status"] == "damaged"
+
+
 def test_team_lots_refresh_old_stock_and_delete_unused_manual_batch(team_env, created_library):
     client = team_env["client"]
     Session = team_env["Session"]

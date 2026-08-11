@@ -30,7 +30,8 @@ Use the deterministic client in `scripts/cw_client.py`. Treat the service as the
    - `missing`: no safe personal-library match.
    - `ignored_input: true`: a net, power rail, test point, or IC pin label was safely ignored; do not report it as a missing part or recommend purchasing it.
 5. Prefer `available_quantity`, not raw `quantity`, because project reservations reduce usable stock.
-6. State the stable `warehouse_code` for recommended in-stock parts. Never silently substitute a candidate.
+6. Include `average_unit_price` and `price_currency` when reporting each queried or matched component. Treat a null average as “未计价”; never display it as zero or infer a price from supplier quotes.
+7. State the stable `warehouse_code` for recommended in-stock parts. Never silently substitute a candidate.
 
 Package similarity alone is never evidence of electrical compatibility. A non-exact candidate is valid only when the service confirms the same passive type, normalized value, and package, or the same connector type, pin count, and mechanical package. Treat a diode subtype, IC family, module, switch, fuse, sensor, or power part with no exact model/supplier match as `missing`; never promote a same-package part.
 
@@ -45,6 +46,7 @@ Run commands from this skill directory:
 ```bash
 python3 scripts/cw_client.py search "STM32" --stock available
 python3 scripts/cw_client.py get ICS-00000001
+python3 scripts/cw_client.py categories
 python3 scripts/cw_client.py match /path/to/structured-bom.json
 python3 scripts/cw_client.py projects
 python3 scripts/cw_client.py project PRJ-12345678

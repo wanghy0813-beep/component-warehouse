@@ -17,6 +17,10 @@
             <el-button @click="exportInventory">导出库存 XLSX</el-button>
             <el-button @click="exportCurrentLabels">导出标签/PDF</el-button>
             <el-button @click="openCustomLabelDialog">自定义标签</el-button>
+            <el-upload :show-file-list="false" accept=".xlsx,.xls" :http-request="handlePriceStatementUpload">
+              <el-button :loading="priceImporting">导入价格对账单</el-button>
+            </el-upload>
+            <el-button @click="openPriceImportHistory">价格导入记录</el-button>
           </div>
         </el-popover>
       </div>
@@ -70,7 +74,35 @@
                 <el-button size="small" plain @click.stop="openLcsc(item)">立创搜索</el-button>
               </template>
               <template #stock-action>
+                <template v-if="isDurableEquipment(item)">
+                  <el-button
+                    v-if="Number(item.available_quantity || 0) > 0"
+                    size="small"
+                    type="primary"
+                    plain
+                    title="登记占用，不减少设备登记数量"
+                    :loading="quickConsumeIds.has(item.id)"
+                    @click.stop="quickOccupancy(item, 'occupy')"
+                  >占用 1 台</el-button>
+                  <el-button
+                    v-if="Number(item.occupied_quantity || 0) > 0"
+                    size="small"
+                    plain
+                    :loading="quickConsumeIds.has(item.id)"
+                    @click.stop="quickOccupancy(item, 'release')"
+                  >归还 1 台</el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    title="仅在设备损坏、遗失或退役时登记报损"
+                    :loading="quickConsumeIds.has(item.id)"
+                    :disabled="Number(item.quantity || 0) <= 0"
+                    @click.stop="quickConsume(item)"
+                  >报损 1 台</el-button>
+                </template>
                 <el-button
+                  v-else
                   size="small"
                   type="primary"
                   plain
@@ -78,7 +110,7 @@
                   :loading="quickConsumeIds.has(item.id)"
                   :disabled="Number(item.available_quantity || 0) <= 0"
                   @click.stop="quickConsume(item)"
-                >领用 1 个</el-button>
+                >{{ inventoryQuantityCopy(item).actionLabel }}</el-button>
               </template>
             </inventory-component-card>
           </div>
@@ -165,6 +197,11 @@
           @delete-lot="deleteInventoryLot"
           @ask-ai="askSelectedComponentAi"
         >
+          <template #asset-actions>
+            <el-button v-if="Number(selected.available_quantity || 0) > 0" type="primary" plain :loading="quickConsumeIds.has(selected.id)" @click="quickOccupancy(selected, 'occupy')">占用 1 台</el-button>
+            <el-button v-if="Number(selected.occupied_quantity || 0) > 0" plain :loading="quickConsumeIds.has(selected.id)" @click="quickOccupancy(selected, 'release')">归还 1 台</el-button>
+            <el-button type="danger" plain :loading="quickConsumeIds.has(selected.id)" :disabled="Number(selected.quantity || 0) <= 0" @click="quickConsume(selected)">报损 1 台</el-button>
+          </template>
           <template #actions>
             <div class="detail-links">
               <el-button size="small" type="primary" plain :icon="CopyDocument" @click="copyComponentName(selected)">复制型号</el-button>
@@ -332,6 +369,7 @@
             <el-form-item label="名称" required><el-input v-model="form.name" placeholder="例如 10kΩ 电阻 / AMS1117-3.3" /></el-form-item>
             <el-form-item label="型号"><el-input v-model="form.model" placeholder="厂商型号 MPN，可空" /></el-form-item>
             <el-form-item label="数量" required><el-input-number v-model="form.quantity" :min="0" style="width: 100%" /></el-form-item>
+            <el-form-item label="均价（元/件，可空）"><el-input-number v-model="form.average_unit_price" :min="0" :precision="6" :step="0.01" controls-position="right" style="width: 100%" /></el-form-item>
             <el-form-item label="分类">
             <el-select v-model="form.category_id" clearable filterable style="width: 100%">
               <el-option v-for="item in categories" :key="item.id" :label="item.name" :value="item.id" />
@@ -401,6 +439,61 @@
       <template #footer>
         <el-button @click="previewVisible = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="confirmImport">确认导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="pricePreviewVisible" title="立创价格对账单" width="94%" class="price-import-dialog">
+      <template v-if="pricePreview">
+        <el-alert type="info" show-icon :closable="false" class="import-alert">
+          这里只更新采购价格历史和器件均价，不增加库存；仅按 C 编号精确匹配，取消单不参与计价。
+        </el-alert>
+        <div class="price-summary-grid">
+          <span><small>已发货商品行</small><strong>{{ pricePreview.summary.shipped_item_row_count }}</strong></span>
+          <span><small>取消商品行</small><strong>{{ pricePreview.summary.canceled_item_row_count }}</strong></span>
+          <span><small>配送费行</small><strong>{{ pricePreview.summary.shipping_row_count }}</strong></span>
+          <span><small>唯一 C 编号</small><strong>{{ pricePreview.summary.unique_lcsc_count }}</strong></span>
+          <span><small>精确匹配</small><strong>{{ pricePreview.summary.matched_count }}</strong></span>
+          <span><small>未匹配跳过</small><strong>{{ pricePreview.summary.unmatched_count }}</strong></span>
+          <span><small>商品含税金额</small><strong>{{ moneyLabel(pricePreview.summary.shipped_merchandise_total) }}</strong></span>
+          <span><small>累计到手金额</small><strong>{{ moneyLabel(pricePreview.summary.shipped_landed_total) }}</strong></span>
+        </div>
+        <el-alert v-for="warning in pricePreview.warnings" :key="warning" :title="warning" type="warning" show-icon :closable="false" class="price-warning" />
+        <el-table :data="pricePreview.rows" max-height="500" empty-text="没有可回填的价格数据">
+          <el-table-column prop="lcsc_number" label="C 编号" width="125" fixed />
+          <el-table-column prop="warehouse_code" label="仓库编号" width="135" />
+          <el-table-column prop="component_name" label="器件" min-width="170" show-overflow-tooltip />
+          <el-table-column label="旧均价" width="115"><template #default="{ row }">{{ moneyLabel(row.old_average_unit_price, 4) }}</template></el-table-column>
+          <el-table-column label="新均价" width="115"><template #default="{ row }">{{ moneyLabel(row.new_average_unit_price, 4) }}</template></el-table-column>
+          <el-table-column prop="purchase_quantity" label="采购数量" width="95" />
+          <el-table-column label="商品金额" width="105"><template #default="{ row }">{{ moneyLabel(row.merchandise_total) }}</template></el-table-column>
+          <el-table-column label="分摊运费" width="105"><template #default="{ row }">{{ moneyLabel(row.allocated_shipping) }}</template></el-table-column>
+          <el-table-column label="处理" width="115">
+            <template #default="{ row }"><el-tag :type="priceActionType(row)">{{ priceActionLabel(row) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="note" label="异常项" min-width="210" show-overflow-tooltip />
+        </el-table>
+      </template>
+      <el-empty v-else description="选择“导入价格对账单”可先预览；下方保留最近批次和撤销入口" :image-size="70" />
+      <section class="import-history price-import-history">
+        <div class="import-history-head">
+          <strong>最近价格导入批次</strong>
+          <el-button size="small" text @click="loadPriceImportBatches">刷新</el-button>
+        </div>
+        <div v-if="priceImportBatches.length" class="import-batch-list">
+          <article v-for="batch in priceImportBatches" :key="batch.id" class="import-batch-card">
+            <div>
+              <strong>#{{ batch.id }} {{ batch.source_file || '价格对账单' }}</strong>
+              <p>新增历史 {{ batch.created_count }}，修订 {{ batch.updated_count }}，重复 {{ batch.unchanged_count }}，未匹配 {{ batch.unmatched_count }}</p>
+            </div>
+            <el-tag :type="batch.status === 'rolled_back' ? 'info' : 'success'">{{ batch.status === 'rolled_back' ? '已撤销' : '有效' }}</el-tag>
+            <el-button size="small" :disabled="batch.status === 'rolled_back'" @click="rollbackPriceBatch(batch)">撤销</el-button>
+          </article>
+        </div>
+        <el-empty v-else description="暂无价格导入批次" :image-size="55" />
+      </section>
+      <template #footer>
+        <el-button @click="pricePreviewVisible = false">关闭</el-button>
+        <el-button v-if="pricePreview" type="primary" :loading="priceImporting" :disabled="!priceStatementFile" @click="confirmPriceStatementImport">确认回填价格</el-button>
       </template>
     </el-dialog>
 
@@ -483,10 +576,13 @@ import InventoryComponentDetail from '../components/inventory/InventoryComponent
 import ComponentCreateWorkspace from '../components/inventory/ComponentCreateWorkspace.vue'
 import MultiQrScanner from '../shared/components/MultiQrScanner.vue'
 import { applyInventoryLotConsumption } from '../shared/inventoryLotState'
+import { confirmInventoryLotRemoval } from '../shared/confirmInventoryLotRemoval'
+import { inventoryQuantityCopy, isDurableEquipment } from '../shared/componentInventorySemantics'
 import LabelExportDialog from '../shared/components/LabelExportDialog.vue'
 import {
   commitExcel,
   commitExternalOrder,
+  commitPriceStatement,
   askComponentAi,
   aiComponentInfo,
   createComponentLot,
@@ -504,6 +600,7 @@ import {
   getComponentUsageRecords,
   getGroupedComponentsPage,
   getOrderImportBatches,
+  getPriceImportBatches,
   getSearchSuggestions,
   listCustomLabels,
   organizeComponent,
@@ -511,12 +608,15 @@ import {
   previewLcscComponent,
   previewExcel,
   previewExternalOrder,
+  previewPriceStatement,
   recordUsageEvent,
   refreshComponentAi,
   resolvePersonalScanBatch,
   searchPersonalScanCandidates,
   rollbackOrderImportBatch,
+  rollbackPriceImportBatch,
   saveComponent,
+  updateComponentOccupancy,
   undoLatestComponentAi
 } from '../api/client'
 import { componentOneLineUsage, componentUnitHints, extractComponentChips, makeLcscSearchUrl, normalizeToken, splitTags } from '../utils/componentUi'
@@ -536,14 +636,19 @@ const saving = ref(false)
 const importing = ref(false)
 const importingImages = ref(false)
 const externalParsing = ref(false)
+const priceImporting = ref(false)
 const aiRefreshing = ref(false)
 const previewVisible = ref(false)
 const imagePreviewVisible = ref(false)
 const externalPreviewVisible = ref(false)
+const pricePreviewVisible = ref(false)
 const previewRows = ref([])
 const importBatches = ref([])
 const imagePreviewRows = ref([])
 const externalPreviewRows = ref([])
+const pricePreview = ref(null)
+const priceStatementFile = ref(null)
+const priceImportBatches = ref([])
 const drawerVisible = ref(false)
 const scannerVisible = ref(false)
 const scannerTarget = ref(null)
@@ -594,6 +699,7 @@ const emptyForm = {
   parameters: '',
   package: '',
   quantity: 0,
+  average_unit_price: null,
   source: '',
   lcsc_number: '',
   tags: '',
@@ -675,6 +781,7 @@ const statusOptions = [
   { label: '待采购', value: 'pending_purchase' },
   { label: '待验证', value: 'pending' },
   { label: '导入已撤销', value: 'rolled_back' },
+  { label: '已报损', value: 'damaged' },
   { label: '停用', value: 'obsolete' }
 ]
 const stockLabels = { available: '有库存', low: '低库存', empty: '缺货' }
@@ -684,7 +791,7 @@ function statusLabel(value) {
 }
 
 function statusType(value) {
-  return { in_stock: 'success', low_stock: 'warning', pending_purchase: 'warning', pending: 'info', rolled_back: 'info', obsolete: 'danger' }[value] || 'info'
+  return { in_stock: 'success', low_stock: 'warning', pending_purchase: 'warning', pending: 'info', rolled_back: 'info', damaged: 'danger', obsolete: 'danger' }[value] || 'info'
 }
 
 function aiStatusLabel(value) {
@@ -1531,9 +1638,27 @@ async function addInventoryLot(payload) {
 async function consumeInventoryLot(lot) {
   if (!selected.value?.id || !lot?.id || lotConsumeIds.has(lot.id)) return
   const componentId = selected.value.id
+  const durable = isDurableEquipment(selected.value)
+  if (durable) {
+    try {
+      await ElMessageBox.confirm(
+        `确认将「${componentDisplayTitle(selected.value)}」登记为报损？\n\n这只用于设备损坏、遗失或退役，会使在库数量减少 1；正常使用、借出和归还不需要改库存。`,
+        '登记设备报损',
+        { type: 'warning', confirmButtonText: '确认报损', cancelButtonText: '取消' }
+      )
+    } catch (error) {
+      if (error === 'cancel' || error === 'close') return
+      throw error
+    }
+  }
   lotConsumeIds.add(lot.id)
   try {
-    const updated = await decrementComponentQuantity(componentId, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
+    const updated = await decrementComponentQuantity(componentId, {
+      quantity: 1,
+      reason_type: durable ? 'loss' : 'consume',
+      lot_id: lot.id,
+      remark: durable ? `设备报损，来源批次：${lot.source_reference || lot.source_type || '指定批次'}` : `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减`
+    })
     groups.value = groups.value.map((group) => ({
       ...group,
       items: (group.items || []).map((item) => item.id === updated.id ? decorateComponent({ ...item, ...updated }) : item)
@@ -1547,14 +1672,15 @@ async function consumeInventoryLot(lot) {
       type: 'quantity-updated',
       componentId: updated.id,
       quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
       availableQuantity: updated.available_quantity,
       reservedQuantity: updated.reserved_quantity,
       status: updated.status
     })
-    trackUsage(recordUsageEvent, 'ui.components.lot_consume', { target_type: 'component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
-    ElMessage.success({ message: '已从指定批次扣减 1', grouping: true, duration: 1400 })
+    trackUsage(recordUsageEvent, durable ? 'ui.components.lot_loss' : 'ui.components.lot_consume', { target_type: 'component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success({ message: durable ? '设备已登记报损，在库数量减少 1' : '已从指定批次扣减 1', grouping: true, duration: 1400 })
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+    ElMessage.error(error.response?.data?.detail || (durable ? '设备报损登记失败' : '批次扣减失败'))
   } finally {
     lotConsumeIds.delete(lot.id)
   }
@@ -1563,11 +1689,7 @@ async function consumeInventoryLot(lot) {
 async function deleteInventoryLot(lot) {
   if (!selected.value?.id || !lot?.id) return
   try {
-    await ElMessageBox.confirm(
-      `确认删除批次「${lot.source_reference || sourceLabel(lot.source_type)}」？总库存将同步减少 ${lot.initial_quantity || 0}。`,
-      '删除误添加批次',
-      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
-    )
+    await confirmInventoryLotRemoval(lot, lot.source_reference || sourceLabel(lot.source_type))
     lotSaving.value = true
     const result = await deleteComponentLot(selected.value.id, lot.id)
     selected.value = result.component
@@ -1686,11 +1808,17 @@ async function removeSelectedComponent() {
   }
 }
 
-async function quickConsume(row) {
-  if (!row?.id || quickConsumeIds.has(row.id) || Number(row.available_quantity || 0) <= 0) return
+async function quickOccupancy(row, action) {
+  if (!row?.id || !isDurableEquipment(row) || quickConsumeIds.has(row.id)) return
+  if (action === 'occupy' && Number(row.available_quantity || 0) <= 0) return
+  if (action === 'release' && Number(row.occupied_quantity || 0) <= 0) return
   quickConsumeIds.add(row.id)
   try {
-    const updated = await decrementComponentQuantity(row.id, { quantity: 1, remark: '器件卡片快捷领用 1 个' })
+    const updated = await updateComponentOccupancy(row.id, {
+      action,
+      quantity: 1,
+      remark: action === 'occupy' ? '设备卡片登记占用 1 台' : '设备卡片登记归还 1 台'
+    })
     groups.value = groups.value.map((group) => ({
       ...group,
       items: (group.items || []).map((item) => item.id === updated.id ? decorateComponent({ ...item, ...updated }) : item)
@@ -1703,19 +1831,77 @@ async function quickConsume(row) {
       type: 'quantity-updated',
       componentId: updated.id,
       quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
       availableQuantity: updated.available_quantity,
       reservedQuantity: updated.reserved_quantity,
       status: updated.status
     })
-    trackUsage(recordUsageEvent, 'ui.components.quick_consume', {
+    trackUsage(recordUsageEvent, action === 'occupy' ? 'ui.components.quick_occupy' : 'ui.components.quick_release', {
       target_type: 'component',
       target_id: updated.id,
       entry: 'inventory-card',
       detail: { quantity: 1 }
     })
-    ElMessage.success(`${componentDisplayTitle(row)} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
+    ElMessage.success(action === 'occupy'
+      ? `${componentDisplayTitle(row)} 已占用 1 台，登记数量不变`
+      : `${componentDisplayTitle(row)} 已归还 1 台，可用 ${updated.available_quantity || 0}`)
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '领用登记失败')
+    ElMessage.error(error.response?.data?.detail || (action === 'occupy' ? '设备占用登记失败' : '设备归还登记失败'))
+  } finally {
+    quickConsumeIds.delete(row.id)
+  }
+}
+
+async function quickConsume(row) {
+  const durable = isDurableEquipment(row)
+  if (!row?.id || quickConsumeIds.has(row.id) || (durable ? Number(row.quantity || 0) <= 0 : Number(row.available_quantity || 0) <= 0)) return
+  if (durable) {
+    try {
+      await ElMessageBox.confirm(
+        `确认将「${componentDisplayTitle(row)}」登记为报损？\n\n这只用于设备损坏、遗失或退役，会使在库数量减少 1；正常使用、借出和归还不需要改库存。`,
+        '登记设备报损',
+        { type: 'warning', confirmButtonText: '确认报损', cancelButtonText: '取消' }
+      )
+    } catch (error) {
+      if (error === 'cancel' || error === 'close') return
+      throw error
+    }
+  }
+  quickConsumeIds.add(row.id)
+  try {
+    const updated = await decrementComponentQuantity(row.id, {
+      quantity: 1,
+      reason_type: durable ? 'loss' : 'consume',
+      remark: durable ? '设备卡片登记报损 1 台' : '器件卡片快捷领用 1 个'
+    })
+    groups.value = groups.value.map((group) => ({
+      ...group,
+      items: (group.items || []).map((item) => item.id === updated.id ? decorateComponent({ ...item, ...updated }) : item)
+    }))
+    if (selected.value?.id === updated.id) {
+      selected.value = updated
+      fillForm(updated)
+    }
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.id,
+      quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
+    trackUsage(recordUsageEvent, durable ? 'ui.components.quick_loss' : 'ui.components.quick_consume', {
+      target_type: 'component',
+      target_id: updated.id,
+      entry: 'inventory-card',
+      detail: { quantity: 1 }
+    })
+    ElMessage.success(durable
+      ? `${componentDisplayTitle(row)} 已登记报损，在库 ${updated.available_quantity || 0}`
+      : `${componentDisplayTitle(row)} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || (durable ? '设备报损登记失败' : '领用登记失败'))
   } finally {
     quickConsumeIds.delete(row.id)
   }
@@ -1728,6 +1914,103 @@ async function handleExcelUpload({ file }) {
     previewVisible.value = true
   } catch {
     ElMessage.error('Excel 解析失败，请检查表头')
+  }
+}
+
+function moneyLabel(value, maximumFractionDigits = 2) {
+  if (value === null || value === undefined || value === '') return '—'
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return '—'
+  return `¥${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits }).format(amount)}`
+}
+
+function priceActionLabel(row) {
+  if (!row.matched) return '未匹配跳过'
+  if (row.action === 'create') return '新增历史'
+  if (row.action === 'update') return '修订历史'
+  return '重复不计'
+}
+
+function priceActionType(row) {
+  if (!row.matched) return 'danger'
+  if (row.action === 'create') return 'success'
+  if (row.action === 'update') return 'warning'
+  return 'info'
+}
+
+async function loadPriceImportBatches() {
+  try {
+    priceImportBatches.value = await getPriceImportBatches({ limit: 10 })
+  } catch {
+    priceImportBatches.value = []
+  }
+}
+
+async function openPriceImportHistory() {
+  pricePreview.value = null
+  priceStatementFile.value = null
+  await loadPriceImportBatches()
+  pricePreviewVisible.value = true
+}
+
+async function handlePriceStatementUpload({ file }) {
+  priceImporting.value = true
+  try {
+    const preview = await previewPriceStatement(file)
+    priceStatementFile.value = file
+    pricePreview.value = preview
+    await loadPriceImportBatches()
+    pricePreviewVisible.value = true
+    ElMessage.success(`已预览 ${preview.summary.unique_lcsc_count} 个 C 编号，精确匹配 ${preview.summary.matched_count} 个`)
+  } catch (error) {
+    priceStatementFile.value = null
+    pricePreview.value = null
+    ElMessage.error(error.response?.data?.detail || '价格对账单解析失败，请检查文件和表头')
+  } finally {
+    priceImporting.value = false
+  }
+}
+
+async function confirmPriceStatementImport() {
+  if (!priceStatementFile.value || !pricePreview.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认只回填价格？将精确匹配 ${pricePreview.value.summary.matched_count} 个 C 编号，累计到手金额 ${moneyLabel(pricePreview.value.summary.shipped_landed_total)}；库存数量不会变化。`,
+      '确认价格回填',
+      { type: 'warning', confirmButtonText: '确认回填', cancelButtonText: '再核对一下' }
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  priceImporting.value = true
+  try {
+    const result = await commitPriceStatement(priceStatementFile.value)
+    const batch = result.batch
+    ElMessage.success(`价格回填完成：新增历史 ${batch.created_count}，修订 ${batch.updated_count}，重复 ${batch.unchanged_count}，库存数量未变`)
+    priceStatementFile.value = null
+    pricePreview.value = null
+    await Promise.all([loadPriceImportBatches(), load()])
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '价格回填失败，未写入任何数据')
+  } finally {
+    priceImporting.value = false
+  }
+}
+
+async function rollbackPriceBatch(batch) {
+  try {
+    await ElMessageBox.confirm(`撤销价格导入批次 #${batch.id}？价格历史和均价会恢复，库存数量不会变化。`, '撤销价格导入', {
+      type: 'warning',
+      confirmButtonText: '撤销价格',
+      cancelButtonText: '取消'
+    })
+    const result = await rollbackPriceImportBatch(batch.id)
+    ElMessage.success(result.rollback_summary || '价格导入批次已撤销')
+    await Promise.all([loadPriceImportBatches(), load()])
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error.response?.data?.detail || '撤销价格导入失败')
   }
 }
 
@@ -1903,6 +2186,7 @@ onMounted(async () => {
         quantity: Number(event.data.quantity || 0),
         available_quantity: Number(event.data.availableQuantity || 0),
         reserved_quantity: Number(event.data.reservedQuantity || 0),
+        ...(event.data.occupiedQuantity !== undefined ? { occupied_quantity: Number(event.data.occupiedQuantity || 0) } : {}),
         status: event.data.status
       }
       groups.value = groups.value.map((group) => ({
@@ -2661,6 +2945,27 @@ pre {
 .import-alert {
   margin-bottom: 12px;
 }
+
+.price-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.price-summary-grid span {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e7ebf2;
+  border-radius: var(--cw-radius-control);
+  background: #f8fafc;
+}
+
+.price-summary-grid small { color: var(--cw-muted); }
+.price-summary-grid strong { color: #172b4d; font-size: 18px; }
+.price-warning { margin-bottom: 8px; }
+.price-import-history { max-height: 280px; overflow-y: auto; }
 
 .import-history {
   margin-top: 14px;

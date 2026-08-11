@@ -196,8 +196,9 @@
           </div>
           <div class="field-grid inventory-field-grid">
             <el-form-item label="库存数量" required><el-input-number v-model="form.quantity" :min="0" style="width: 100%" /></el-form-item>
+            <el-form-item label="均价（元/件，可空）"><el-input-number v-model="form.average_unit_price" :min="0" :precision="6" :step="0.01" controls-position="right" style="width: 100%" /></el-form-item>
             <el-form-item label="安全库存"><el-input-number v-model="form.safety_quantity" :min="0" style="width: 100%" /></el-form-item>
-            <el-form-item label="存放位置"><el-input v-model="form.location" placeholder="例如 A03-2 / 元件柜 1" /></el-form-item>
+            <el-form-item label="存放位置"><el-input v-model="form.location" placeholder="例如 A03-2 / 元件柜 1；运输进度请在采购中管理" /></el-form-item>
             <el-form-item label="来源"><el-input v-model="form.source" placeholder="手动新增 / 立创 / 其他平台" /></el-form-item>
           </div>
         </div>

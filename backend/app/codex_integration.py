@@ -6,6 +6,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from uuid import uuid4
 
@@ -40,14 +41,21 @@ from .models import (
     SupplierPart,
 )
 from .services.bom_match import BomRow, match_bom_rows
-from .services.inventory import reserved_quantities
+from .services.inventory import (
+    component_available_quantity,
+    equipment_occupied_quantity,
+    is_durable_equipment,
+    normalize_inventory_location,
+    normalize_inventory_status,
+    reserved_quantities,
+)
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import record_stock_delta
 from .risks import RiskScope, list_risks_impl
 
 
 router = APIRouter(tags=["codex-integration"])
-SERVICE_VERSION = "2026-07-18"
+SERVICE_VERSION = "2026-07-19"
 TOKEN_PREFIX = "cw_codex_"
 READ_SCOPE = "inventory:read"
 APPROVAL_TTL = timedelta(minutes=10)
@@ -130,6 +138,8 @@ def _utcnow() -> datetime:
 def _json_default(value: Any):
     if isinstance(value, datetime):
         return value.isoformat() + "Z"
+    if isinstance(value, Decimal):
+        return str(value)
     raise TypeError(f"不能序列化 {type(value).__name__}")
 
 
@@ -297,6 +307,8 @@ def _component_out(
     reserved = reserved if reserved is not None else reserved_quantities(db, [component.id])
     held = int(reserved.get(component.id, 0))
     quantity = int(component.quantity or 0)
+    occupied = equipment_occupied_quantity(component)
+    available = component_available_quantity(component, held)
     return {
         "id": component.id,
         "warehouse_code": component.warehouse_code,
@@ -310,10 +322,13 @@ def _component_out(
         "package": component.package,
         "lcsc_number": component.lcsc_number,
         "quantity": quantity,
+        "average_unit_price": component.average_unit_price,
+        "price_currency": "CNY",
         "reserved_quantity": held,
-        "available_quantity": max(0, quantity - held),
-        "stock_status": "shortage" if quantity - held < 0 else component.status,
-        "location": component.location,
+        "occupied_quantity": occupied,
+        "available_quantity": available,
+        "stock_status": "shortage" if quantity - held - occupied < 0 else normalize_inventory_status(component.status, location=component.location),
+        "location": normalize_inventory_location(component.location),
         "location_code": component.location_code,
         "datasheet_url": component.datasheet_url,
         "buy_url": component.buy_url,
@@ -351,6 +366,26 @@ def codex_session(principal: CodexPrincipal = Depends(require_codex_token)):
         "service_version": SERVICE_VERSION,
         "write_mode": "browser_approval_only",
         "limits": {"read_per_minute": READ_RATE_LIMIT, "proposals_per_minute": PROPOSAL_RATE_LIMIT},
+    }
+
+
+@router.get("/api/integrations/codex/v1/categories")
+def codex_categories(
+    _principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(Category).order_by(Category.id.asc()).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "color": row.color,
+                "code_prefix": row.code_prefix,
+            }
+            for row in rows
+        ],
+        "count": len(rows),
     }
 
 
@@ -500,8 +535,19 @@ def match_components(
         supplier_scope_type="personal",
         supplier_owner_user_id=principal.owner_user_id,
     )
+    price_by_component_id = {
+        component.id: component.average_unit_price
+        for component in _component_query(db, principal.owner_user_id)
+        .filter(Component.id.in_(component_ids or [0]))
+        .all()
+    }
     output = []
     for row in matches:
+        for match in row.get("matches") or []:
+            component_data = match.get("component") or {}
+            component_id = component_data.get("id")
+            component_data["average_unit_price"] = price_by_component_id.get(component_id)
+            component_data["price_currency"] = "CNY"
         best = row.get("matches", [None])[0] if row.get("matches") else None
         if row["status"] in {"exact", "exact_lcsc"} and best and not best.get("enough"):
             classification = "shortage"
@@ -699,6 +745,7 @@ COMPONENT_FIELDS = {
     "category_id",
     "parameters",
     "package",
+    "average_unit_price",
     "source",
     "lcsc_number",
     "tags",
@@ -735,11 +782,24 @@ SUPPORTED_ACTIONS = {
 }
 
 
+def _normalize_average_unit_price(payload: dict[str, Any]) -> None:
+    if "average_unit_price" not in payload or payload["average_unit_price"] is None:
+        return
+    try:
+        average_unit_price = Decimal(str(payload["average_unit_price"]))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail="器件均价必须是有效数字") from error
+    if average_unit_price < 0 or average_unit_price > Decimal("99999999.999999"):
+        raise HTTPException(status_code=422, detail="器件均价超出允许范围")
+    payload["average_unit_price"] = average_unit_price.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
 def _snapshot_component(component: Component) -> dict[str, Any]:
     return {field: getattr(component, field) for field in sorted(COMPONENT_FIELDS)} | {
         "id": component.id,
         "warehouse_code": component.warehouse_code,
         "quantity": component.quantity,
+        "occupied_quantity": equipment_occupied_quantity(component),
         "revoked_at": component.revoked_at,
         "updated_at": component.updated_at,
     }
@@ -807,6 +867,11 @@ def _prepare_action(
         if not str(payload.get("name") or "").strip():
             raise HTTPException(status_code=422, detail="新建元器件必须提供 name")
         payload = {key: value for key, value in payload.items() if key in COMPONENT_FIELDS or key == "quantity"}
+        original_location = payload.get("location")
+        if "location" in payload:
+            payload["location"] = normalize_inventory_location(original_location)
+        payload["status"] = normalize_inventory_status(payload.get("status"), location=original_location)
+        _normalize_average_unit_price(payload)
         if payload.get("category_id") is not None and not db.get(Category, int(payload["category_id"])):
             raise HTTPException(status_code=404, detail="元器件类别不存在")
         before = {"name": payload.get("name"), "model": payload.get("model"), "exists": False}
@@ -820,6 +885,12 @@ def _prepare_action(
             payload = {key: value for key, value in payload.items() if key in COMPONENT_FIELDS}
             if not payload:
                 raise HTTPException(status_code=422, detail="元器件更新没有有效字段")
+            original_location = payload.get("location")
+            if "location" in payload:
+                payload["location"] = normalize_inventory_location(original_location)
+            if "status" in payload or original_location:
+                payload["status"] = normalize_inventory_status(payload.get("status") or component.status, location=original_location)
+            _normalize_average_unit_price(payload)
         elif action_name == "stock.adjust":
             delta = int(payload.get("delta") or 0)
             if not delta:
@@ -1026,6 +1097,8 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
             component.quantity = int(component.quantity or 0) + delta
             if component.quantity < 0:
                 raise HTTPException(status_code=409, detail="库存不足，操作未执行")
+            if is_durable_equipment(component):
+                component.occupied_quantity = min(equipment_occupied_quantity(component), component.quantity)
             record_stock_delta(
                 db,
                 component,

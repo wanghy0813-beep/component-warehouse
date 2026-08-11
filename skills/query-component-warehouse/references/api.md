@@ -9,11 +9,14 @@ The client adds `/api/integrations/codex/` to the configured service root and au
 | session (configuration check) | `GET v1/session` | Owner, scope, expiry, service version |
 | `search` | `GET v1/components/search` | Name, model, spec, package, LCSC number, stock filters |
 | `get` | `GET v1/components/{warehouse_code}` | Full personal component, lots, suppliers, movements |
+| `categories` | `GET v1/categories` | System-maintained component and equipment categories with stable numeric IDs and code prefixes |
 | `match` | `POST v1/components/match` | Maximum 200 requirements |
 | `projects` | `GET v1/projects` | Active personal projects and reservation-aware BOM context |
 | `project` | `GET v1/projects/{id_or_code}` | One personal project; prefer the stable project code |
 | `risks` | `GET v1/risks` | Dynamic and manual personal risks with stable codes |
 | `purchases` | `GET v1/purchases` | Personal orders, stable codes, outstanding and reliable in-transit quantities |
+
+Component results from `search`, `get`, and candidates inside `match` include nullable `average_unit_price` with `price_currency: "CNY"`. This is the personal inventory's landed weighted average. Report it with the component when present; report null as “未计价”, never as zero. Supplier-part `unit_price` remains a separate quote and must not replace this average.
 
 `match` accepts an array or `{ "items": [...] }`. Each item supports:
 
@@ -69,6 +72,8 @@ Supported actions:
 - `purchase.create`, `purchase.update`, `purchase.cancel`, `purchase.receive`
 
 For `component.*` and `stock.adjust`, use the stable warehouse code as `target_id`. For `project.*`, use the project code or numeric ID. For an added BOM row, omit `target_id` and supply `project_id`/`project_code`, `warehouse_code`, `required_quantity`, `status`, and optional `remark`. For existing BOM rows use the numeric BOM row ID.
+
+`component.update` may set nullable `average_unit_price` as a non-negative CNY per-piece value. Use it only when the user supplied a reliable landed purchase amount and quantity. The proposal still requires browser approval; never bypass the approval flow for a price update.
 
 Actions execute in array order. To create a project and add its BOM atomically, explicitly set a unique `project_code` on `project.create`, put that action before dependent actions, and reuse the same code in each `bom.upsert` or `purchase.create` payload.
 

@@ -11,9 +11,11 @@ from app.component_identity import (
 )
 from app.database import Base
 from app.models import AppMigration, Category, Component, ComponentIdentityRegistry
+from app.seed import DEFAULT_CATEGORIES
 
 
 def test_v060_identity_migration_uses_global_non_reusable_sequence(tmp_path):
+    assert "设备" in DEFAULT_CATEGORIES
     engine = create_engine(f"sqlite:///{tmp_path / 'identity.db'}")
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
@@ -52,6 +54,13 @@ def test_v060_identity_migration_uses_global_non_reusable_sequence(tmp_path):
     assert allocate_component_identity(db, replacement).code == "RES-00000003"
     db.commit()
     assert db.query(ComponentIdentityRegistry).filter_by(code="RES-00000001", status="archived").one()
+    equipment = Category(name="设备")
+    db.add(equipment)
+    db.flush()
+    equipment_component = Component(name="实验室设备", category=equipment, quantity=1)
+    db.add(equipment_component)
+    db.flush()
+    assert allocate_component_identity(db, equipment_component).prefix == "EQP"
     custom = Category(name="特殊执行器")
     db.add(custom)
     db.flush()

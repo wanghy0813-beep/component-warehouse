@@ -239,6 +239,8 @@ def _build_parser() -> argparse.ArgumentParser:
     get = sub.add_parser("get", help="按稳定仓库编号读取器件详情")
     get.add_argument("warehouse_code")
 
+    sub.add_parser("categories", help="列出系统维护的元器件和设备分类")
+
     match = sub.add_parser("match", help="批量匹配结构化板卡/BOM 需求 JSON")
     match.add_argument("input", help="JSON 文件路径，或 - 从标准输入读取")
     match.add_argument("--top-n", type=int, default=5)
@@ -274,6 +276,8 @@ def run(args: argparse.Namespace) -> Any:
         )
     if args.command == "get":
         return _request(config, "GET", f"v1/components/{urllib.parse.quote(args.warehouse_code, safe='')}")
+    if args.command == "categories":
+        return _request(config, "GET", "v1/categories")
     if args.command == "match":
         payload = _load_input(args.input)
         if isinstance(payload, list):

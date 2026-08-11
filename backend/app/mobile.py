@@ -21,7 +21,7 @@ from .team import (
 from .team_schemas import TeamComponentQuantityUpdate, TeamMarkerCreate, TeamMarkerUpdate
 from .database import get_db
 from .models import ActivityLog, Component, CompetitionLibraryComponent
-from .services.inventory import reserved_quantities
+from .services.inventory import component_available_quantity, equipment_occupied_quantity, reserved_quantities
 
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile"])
@@ -98,7 +98,8 @@ def safe_personal_component(
     if include_stock:
         component_data.update({
             "quantity": int(component.quantity or 0),
-            "available_quantity": max(0, int(component.quantity or 0) - int(reserved or 0)),
+            "occupied_quantity": equipment_occupied_quantity(component),
+            "available_quantity": component_available_quantity(component, reserved),
         })
     return {
         "type": "personal_component",

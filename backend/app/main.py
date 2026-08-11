@@ -17,6 +17,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -57,6 +58,7 @@ from .models import (
     AiTask,
     Category,
     Component,
+    ComponentPriceEntry,
     ComponentIdentityRegistry,
     CustomLabelAsset,
     CustomLabelTemplate,
@@ -76,6 +78,8 @@ from .models import (
     InventoryLot,
     OrderImportBatch,
     OrderImportLine,
+    PriceImportBatch,
+    PriceImportLine,
     Project,
     ProjectBoard,
     ProjectBomImportBatch,
@@ -127,6 +131,7 @@ from .schemas import (
     ComponentGroup,
     ComponentGroupPage,
     ComponentConsumeRequest,
+    EquipmentOccupancyRequest,
     CustomLabelExportRequest,
     CustomLabelTemplateCreate,
     CustomLabelTemplateOut,
@@ -160,6 +165,7 @@ from .services.excel_import import (
     merge_component,
     parse_excel,
 )
+from .services.price_import import PriceStatementError, SHIPPED_STATUS, money, parse_price_statement
 from .services.external_order_import import (
     parse_external_order,
     find_external_duplicate,
@@ -206,13 +212,18 @@ from .services.lcsc_lookup import (
 )
 from .services.category_governance import ai_category_allowed
 from .services.inventory import (
+    component_available_quantity,
+    equipment_occupied_quantity,
+    is_durable_equipment,
+    normalize_inventory_location,
+    normalize_inventory_status,
     reserved_quantities as inventory_reserved_quantities,
     sort_components_by_value,
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.substitutions import substitution_suggestions_for_bom_items
 from .services.stock_ledger import (
-    delete_unused_manual_lot,
+    delete_unused_inventory_lot,
     ensure_component_lot,
     inventory_lot_delete_eligibility,
     migrate_legacy_inventory_lots,
@@ -611,6 +622,8 @@ def ensure_database_schema(connection) -> None:
         "components",
         {
             "owner_user_id": "INTEGER",
+            "average_unit_price": "NUMERIC(14,6)",
+            "occupied_quantity": "INTEGER DEFAULT 0",
             "warehouse_code": "VARCHAR(80)",
             "manufacturer": "VARCHAR(200)",
             "description": "TEXT",
@@ -1055,11 +1068,9 @@ def run_v041_inventory_migration(db: Session) -> None:
             item.model = component.model
             item.lcsc_number = component.lcsc_number
             reserved = inventory_reserved_quantities(db, [component.id]).get(component.id, 0)
-            item.frozen_snapshot_json = json.dumps(
-                component_out(component, reserved),
-                ensure_ascii=False,
-                default=str,
-            )
+            team_snapshot = component_out(component, reserved)
+            team_snapshot.pop("average_unit_price", None)
+            item.frozen_snapshot_json = json.dumps(team_snapshot, ensure_ascii=False, default=str)
             active_member = (
                 db.query(CompetitionLibraryMember)
                 .filter(
@@ -1484,6 +1495,11 @@ def clean_pending_purchase_tags(tags: str | None) -> str | None:
 def normalize_for_inventory(db: Session, values: dict, *, clean_name: bool = True) -> dict:
     normalized = normalize_component_values(values) if clean_name else dict(values)
     normalized = infer_small_part_fields(normalized)
+    original_location = normalized.get("location")
+    if "location" in normalized:
+        normalized["location"] = normalize_inventory_location(original_location)
+    if "status" in normalized or original_location:
+        normalized["status"] = normalize_inventory_status(normalized.get("status"), location=original_location)
     if normalized.get("lcsc_number"):
         normalized["lcsc_number"] = normalize_lcsc_number(normalized.get("lcsc_number")) or str(normalized.get("lcsc_number")).strip()[:120]
     if "warehouse_code" in normalized:
@@ -1872,7 +1888,8 @@ def reserved_quantities(db: Session, component_ids: list[int] | None = None) -> 
 
 def component_out(component: Component, reserved: int = 0, search_keyword: str | None = None) -> dict:
     quantity = component.quantity or 0
-    available = max(0, quantity - reserved)
+    occupied = equipment_occupied_quantity(component)
+    available = component_available_quantity(component, reserved)
     safety_quantity = max(0, int(component.safety_quantity or 0))
     warning_threshold = safety_quantity if safety_quantity > 0 else 5
     low_stock_warning = bool(
@@ -1891,6 +1908,7 @@ def component_out(component: Component, reserved: int = 0, search_keyword: str |
         "parameters": component.parameters,
         "package": component.package,
         "quantity": quantity,
+        "average_unit_price": component.average_unit_price,
         "source": component.source,
         "lcsc_number": component.lcsc_number,
         "tags": component.tags,
@@ -1898,8 +1916,8 @@ def component_out(component: Component, reserved: int = 0, search_keyword: str |
         "part_family": component.part_family or "component",
         "count_mode": component.count_mode or "exact",
         "normalized_spec": component.normalized_spec,
-        "status": component.status,
-        "location": component.location,
+        "status": normalize_inventory_status(component.status, location=component.location),
+        "location": normalize_inventory_location(component.location),
         "remark": component.remark,
         "datasheet_url": component.datasheet_url,
         "buy_url": component.buy_url,
@@ -1914,6 +1932,7 @@ def component_out(component: Component, reserved: int = 0, search_keyword: str |
         "low_stock_warning": low_stock_warning,
         "category": component.category,
         "reserved_quantity": reserved,
+        "occupied_quantity": occupied,
         "available_quantity": available,
         "ai_summary": component.ai_summary,
         "ai_usage": component.ai_usage,
@@ -1968,7 +1987,7 @@ def inventory_lot_out(
         "component_id": lot.component_id,
         "source_type": lot.source_type,
         "source_reference": lot.source_reference,
-        "location": lot.location,
+        "location": normalize_inventory_location(lot.location),
         "initial_quantity": int(lot.initial_quantity or 0),
         "remaining_quantity": int(lot.remaining_quantity or 0),
         "unit_cost": lot.unit_cost,
@@ -3558,7 +3577,7 @@ def export_component_id_table(payload: ComponentExportRequest, auth: Protected, 
     components = export_components_from_ids(db, payload.ids, auth, payload.all)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["器件 ID", "型号", "名称", "分类", "封装", "核心规格", "立创 ID", "数量", "可用库存"])
+    writer.writerow(["器件 ID", "型号", "名称", "分类", "封装", "核心规格", "立创 ID", "数量", "占用", "可用库存"])
     reserved = reserved_quantities(db, [item.id for item in components])
     for component in components:
         quantity = int(component.quantity or 0)
@@ -3572,7 +3591,8 @@ def export_component_id_table(payload: ComponentExportRequest, auth: Protected, 
                 component.normalized_spec or "",
                 component.lcsc_number or "",
                 quantity,
-                max(0, quantity - reserved.get(component.id, 0)),
+                equipment_occupied_quantity(component),
+                component_available_quantity(component, reserved.get(component.id, 0)),
             ]
         )
     data = "\ufeff" + output.getvalue()
@@ -3593,7 +3613,7 @@ def export_component_inventory(auth: Protected, db: Session = Depends(get_db)):
     sheet.append(
         [
             "器件 ID", "名称", "分类", "参数值", "封装", "厂商", "MPN", "LCSC",
-            "总库存", "预占", "可用库存", "最低库存", "常用", "位置", "描述", "标签", "备注",
+            "总库存", "项目预占", "设备占用", "可用库存", "最低库存", "常用", "位置", "描述", "标签", "备注",
         ]
     )
     for component in components:
@@ -3611,10 +3631,11 @@ def export_component_inventory(auth: Protected, db: Session = Depends(get_db)):
                 component.lcsc_number or "",
                 quantity,
                 reserved_quantity,
-                max(0, quantity - reserved_quantity),
+                equipment_occupied_quantity(component),
+                component_available_quantity(component, reserved_quantity),
                 int(component.safety_quantity or 0),
                 "是" if component.is_common else "否",
-                component.location or "",
+                normalize_inventory_location(component.location) or "",
                 component.description or "",
                 component.tags or "",
                 component.remark or "",
@@ -4264,6 +4285,11 @@ def update_component(component_id: int, payload: ComponentUpdate, auth: Protecte
         enqueue_ai_task(db, "component_analyze", "component", component.id, new_cache_key)
         enqueue_ai_task(db, "component_organize", "component", component.id, organize_cache_key(component))
     new_quantity = component.quantity or 0
+    if is_durable_equipment(component):
+        component.occupied_quantity = min(
+            max(0, int(component.occupied_quantity or 0)),
+            max(0, int(new_quantity)),
+        )
     if new_quantity != old_quantity:
         mark_stock_change(component, new_quantity - old_quantity)
         record_stock_delta(
@@ -4300,6 +4326,10 @@ def decrement_component_quantity(
     component = db.get(Component, component_id)
     assert_owned(component, auth, "Component not found")
     consume_quantity = payload.quantity if payload else 1
+    reason_type = payload.reason_type if payload else "consume"
+    durable_equipment = is_durable_equipment(component)
+    if durable_equipment and reason_type != "loss":
+        raise HTTPException(status_code=400, detail="设备正常使用不扣库存；仅在报损、遗失或退役时登记报损")
     if (component.quantity or 0) < consume_quantity:
         raise HTTPException(status_code=400, detail="Quantity is not enough")
     if payload and payload.lot_id:
@@ -4309,13 +4339,20 @@ def decrement_component_quantity(
         if int(lot.remaining_quantity or 0) < consume_quantity:
             raise HTTPException(status_code=400, detail=f"指定库存批次库存不足：需要 {consume_quantity}，剩余 {int(lot.remaining_quantity or 0)}")
     component.quantity -= consume_quantity
+    if durable_equipment:
+        component.occupied_quantity = min(
+            max(0, int(component.occupied_quantity or 0)),
+            max(0, int(component.quantity or 0)),
+        )
     mark_stock_change(component, -consume_quantity)
+    if durable_equipment and component.quantity <= 0:
+        component.status = "damaged"
     try:
         record_stock_delta(
             db,
             component,
             -consume_quantity,
-            movement_type="manual_consume",
+            movement_type="manual_loss" if reason_type == "loss" else "manual_consume",
             reason=payload.remark if payload else None,
             project_id=payload.project_id if payload else None,
             actor_user_id=owner_id(auth),
@@ -4325,15 +4362,65 @@ def decrement_component_quantity(
         raise HTTPException(status_code=400, detail=str(error)) from error
     log_activity(
         db,
-        "component.consume",
+        "component.loss" if reason_type == "loss" else "component.consume",
         "component",
-        f"使用元器件 {component.name} x {consume_quantity}",
+        f"{'报损设备' if reason_type == 'loss' else '使用元器件'} {component.name} x {consume_quantity}",
         owner_user_id=owner_id(auth),
         entity_id=component.id,
         component_id=component.id,
         project_id=payload.project_id if payload else None,
         quantity_delta=-consume_quantity,
         detail={"remark": payload.remark} if payload and payload.remark else None,
+    )
+    db.commit()
+    db.refresh(component)
+    reserved = reserved_quantities(db, [component.id]).get(component.id, 0)
+    return component_out(component, reserved)
+
+
+@app.post("/api/components/{component_id}/occupancy", response_model=ComponentOut)
+def update_equipment_occupancy(
+    component_id: int,
+    payload: EquipmentOccupancyRequest,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    component = db.get(Component, component_id)
+    assert_owned(component, auth, "Component not found")
+    if not is_durable_equipment(component):
+        raise HTTPException(status_code=400, detail="占用状态仅适用于设备分类")
+    quantity = int(payload.quantity or 1)
+    old_occupied = equipment_occupied_quantity(component)
+    if payload.action == "occupy":
+        available = component_available_quantity(component, reserved_quantities(db, [component.id]).get(component.id, 0))
+        if available < quantity:
+            raise HTTPException(status_code=400, detail=f"可占用设备不足：需要 {quantity}，当前可用 {available}")
+        component.occupied_quantity = old_occupied + quantity
+        action = "component.occupy"
+        summary = f"占用设备 {component.name} x {quantity}"
+        occupied_delta = quantity
+    else:
+        if old_occupied < quantity:
+            raise HTTPException(status_code=400, detail=f"已占用设备不足：需要归还 {quantity}，当前占用 {old_occupied}")
+        component.occupied_quantity = old_occupied - quantity
+        action = "component.release"
+        summary = f"归还设备 {component.name} x {quantity}"
+        occupied_delta = -quantity
+    component.status = "in_stock" if int(component.quantity or 0) > 0 else component.status
+    log_activity(
+        db,
+        action,
+        "component",
+        summary,
+        owner_user_id=owner_id(auth),
+        entity_id=component.id,
+        component_id=component.id,
+        quantity_delta=0,
+        detail={
+            "remark": payload.remark,
+            "occupied_delta": occupied_delta,
+            "occupied_quantity": component.occupied_quantity,
+        },
     )
     db.commit()
     db.refresh(component)
@@ -4352,6 +4439,8 @@ def increment_component_quantity(
     assert_owned(component, auth, "Component not found")
     add_quantity = payload.quantity if payload else 1
     component.quantity = (component.quantity or 0) + add_quantity
+    if is_durable_equipment(component):
+        component.status = "in_stock"
     mark_stock_change(component, add_quantity)
     component.first_stocked_at = component.first_stocked_at or datetime.utcnow()
     component.last_stocked_at = datetime.utcnow()
@@ -4363,7 +4452,7 @@ def increment_component_quantity(
         reason=payload.remark if payload else None,
         project_id=payload.project_id if payload else None,
         actor_user_id=owner_id(auth),
-        location=payload.location if payload else None,
+        location=normalize_inventory_location(payload.location) if payload else None,
         unit_cost=payload.unit_cost if payload else None,
         source_type=payload.source_type if payload else None,
         source_reference=payload.source_reference if payload else None,
@@ -4417,6 +4506,8 @@ def create_component_lot(component_id: int, payload: InventoryLotCreate, auth: P
     assert_owned(component, auth, "Component not found")
     quantity = int(payload.quantity or 0)
     component.quantity = int(component.quantity or 0) + quantity
+    if is_durable_equipment(component):
+        component.status = "in_stock"
     component.first_stocked_at = component.first_stocked_at or datetime.utcnow()
     component.last_stocked_at = datetime.utcnow()
     mark_stock_change(component, quantity)
@@ -4427,7 +4518,7 @@ def create_component_lot(component_id: int, payload: InventoryLotCreate, auth: P
         movement_type="manual_lot_create",
         reason=payload.note or "手动新增渠道库存批次",
         actor_user_id=owner_id(auth),
-        location=payload.location,
+        location=normalize_inventory_location(payload.location),
         unit_cost=payload.unit_cost,
         source_type=(payload.source_type or "manual").strip() or "manual",
         source_reference=(payload.source_reference or "").strip() or None,
@@ -4469,7 +4560,7 @@ def delete_component_lot(
     if not lot or lot.component_id != component.id or lot.status == "deleted":
         raise HTTPException(status_code=404, detail="库存批次不存在")
     try:
-        removed_quantity = delete_unused_manual_lot(
+        removed_quantity = delete_unused_inventory_lot(
             db,
             component,
             lot,
@@ -4513,7 +4604,13 @@ def component_usage_records(
         filter_owner(db.query(ActivityLog), ActivityLog, auth)
         .filter(
             ActivityLog.component_id == component_id,
-            ActivityLog.action.in_(["component.consume", "component.loss", "component.restore"]),
+            ActivityLog.action.in_([
+                "component.consume",
+                "component.loss",
+                "component.restore",
+                "component.occupy",
+                "component.release",
+            ]),
         )
         .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
         .limit(limit)
@@ -4528,6 +4625,8 @@ def component_usage_records(
         "component.consume": "焊接/使用",
         "component.loss": "报损",
         "component.restore": "返还库存",
+        "component.occupy": "设备占用",
+        "component.release": "设备归还",
     }
     result = []
     for row in rows:
@@ -4685,6 +4784,7 @@ def delete_component(component_id: int, auth: Protected, db: Session = Depends(g
         component,
         reserved_quantities(db, [component.id]).get(component.id, 0),
     )
+    snapshot.pop("average_unit_price", None)
     for item in (
         db.query(CompetitionLibraryComponent)
         .filter(CompetitionLibraryComponent.cw_component_id == component.id)
@@ -4722,6 +4822,7 @@ def dashboard(auth: Protected, db: Session = Depends(get_db)):
     project_base = filter_owner(db.query(Project), Project, auth)
     total_kinds = component_base.with_entities(func.count(Component.id)).scalar() or 0
     total_quantity = component_base.with_entities(func.coalesce(func.sum(Component.quantity), 0)).scalar() or 0
+    occupied_total = component_base.with_entities(func.coalesce(func.sum(Component.occupied_quantity), 0)).scalar() or 0
     pending = component_base.with_entities(func.count(Component.id)).filter(Component.status == "pending").scalar() or 0
     recent_projects = (
         project_base
@@ -4739,6 +4840,21 @@ def dashboard(auth: Protected, db: Session = Depends(get_db)):
     visible_component_ids = [row[0] for row in component_base.with_entities(Component.id).all()]
     all_reserved = reserved_quantities(db, visible_component_ids)
     reserved_total = sum(all_reserved.values())
+    priced_components = component_base.filter(Component.average_unit_price.isnot(None)).all()
+    priced_component_count = len(priced_components)
+    unpriced_component_count = max(0, int(total_kinds) - priced_component_count)
+    inventory_value_total = sum(
+        (Decimal(item.average_unit_price) * max(0, int(item.quantity or 0)) for item in priced_components),
+        Decimal("0"),
+    )
+    available_inventory_value_total = sum(
+        (
+            Decimal(item.average_unit_price)
+            * component_available_quantity(item, all_reserved.get(item.id, 0))
+            for item in priced_components
+        ),
+        Decimal("0"),
+    )
     low_stock_candidates = (
         filter_owner(db.query(Component), Component, auth)
         .options(joinedload(Component.category))
@@ -4939,7 +5055,21 @@ def dashboard(auth: Protected, db: Session = Depends(get_db)):
         "category_count": db.query(func.count(Category.id)).scalar() or 0,
         "total_quantity": total_quantity,
         "reserved_quantity": reserved_total,
-        "available_quantity": max(0, total_quantity - reserved_total),
+        "occupied_quantity": int(occupied_total or 0),
+        "available_quantity": max(0, total_quantity - reserved_total - int(occupied_total or 0)),
+        "inventory_value_total": (
+            inventory_value_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if priced_component_count
+            else None
+        ),
+        "available_inventory_value_total": (
+            available_inventory_value_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if priced_component_count
+            else None
+        ),
+        "priced_component_count": priced_component_count,
+        "unpriced_component_count": unpriced_component_count,
+        "currency": "CNY",
         "low_stock": low_stock,
         "pending": pending,
         "common_count": component_base.with_entities(func.count(Component.id)).filter(Component.is_common == True).scalar() or 0,
@@ -6258,6 +6388,461 @@ def project_ai_consult(project_id: int, payload: ProjectAiConsultRequest, auth: 
     return result
 
 
+PRICE_ENTRY_FIELDS = (
+    "component_id",
+    "order_status",
+    "ordered_at",
+    "quantity",
+    "merchandise_total",
+    "allocated_shipping",
+    "landed_total",
+    "active",
+)
+PRICE_FALLBACK_UNSET = object()
+
+
+def _decimal_api(value: Decimal | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _price_entry_snapshot(entry: ComponentPriceEntry) -> dict:
+    return {
+        "component_id": entry.component_id,
+        "order_number": entry.order_number,
+        "lcsc_number": entry.lcsc_number,
+        "order_status": entry.order_status,
+        "ordered_at": entry.ordered_at,
+        "quantity": int(entry.quantity or 0),
+        "merchandise_total": str(money(entry.merchandise_total or Decimal("0"))),
+        "allocated_shipping": str(money(entry.allocated_shipping or Decimal("0"))),
+        "landed_total": str(money(entry.landed_total or Decimal("0"))),
+        "source_file": entry.source_file,
+        "source_row": entry.source_row,
+        "active": bool(entry.active),
+    }
+
+
+def _statement_entry_snapshot(row, component_id: int) -> dict:
+    return {
+        "component_id": component_id,
+        "order_status": row.order_status,
+        "ordered_at": row.ordered_at,
+        "quantity": int(row.quantity),
+        "merchandise_total": str(money(row.merchandise_total)),
+        "allocated_shipping": str(money(row.allocated_shipping)),
+        "landed_total": str(money(row.landed_total)),
+        "active": True,
+    }
+
+
+def _price_entry_changed(entry: ComponentPriceEntry, row, component_id: int) -> bool:
+    current = _price_entry_snapshot(entry)
+    expected = _statement_entry_snapshot(row, component_id)
+    return any(current.get(field) != expected.get(field) for field in PRICE_ENTRY_FIELDS)
+
+
+def _set_price_entry(entry: ComponentPriceEntry, row, component: Component, source_file: str | None) -> None:
+    entry.component_id = component.id
+    entry.order_status = row.order_status
+    entry.ordered_at = row.ordered_at
+    entry.quantity = int(row.quantity)
+    entry.merchandise_total = money(row.merchandise_total)
+    entry.allocated_shipping = money(row.allocated_shipping)
+    entry.landed_total = money(row.landed_total)
+    entry.source_file = source_file
+    entry.source_row = row.source_row
+    entry.active = True
+
+
+def _restore_price_entry(entry: ComponentPriceEntry, snapshot: dict) -> None:
+    entry.component_id = int(snapshot["component_id"])
+    entry.order_status = snapshot["order_status"]
+    entry.ordered_at = snapshot.get("ordered_at")
+    entry.quantity = int(snapshot.get("quantity") or 0)
+    entry.merchandise_total = money(snapshot.get("merchandise_total") or 0)
+    entry.allocated_shipping = money(snapshot.get("allocated_shipping") or 0)
+    entry.landed_total = money(snapshot.get("landed_total") or 0)
+    entry.source_file = snapshot.get("source_file")
+    entry.source_row = snapshot.get("source_row")
+    entry.active = bool(snapshot.get("active", True))
+
+
+def _recompute_component_price(
+    db: Session,
+    component: Component,
+    fallback: Decimal | None | object = PRICE_FALLBACK_UNSET,
+) -> Decimal | None:
+    entries = (
+        db.query(ComponentPriceEntry)
+        .filter(
+            ComponentPriceEntry.owner_user_id == component.owner_user_id,
+            ComponentPriceEntry.component_id == component.id,
+            ComponentPriceEntry.active == True,
+            ComponentPriceEntry.order_status == SHIPPED_STATUS,
+        )
+        .all()
+    )
+    total_quantity = sum(max(0, int(entry.quantity or 0)) for entry in entries)
+    if total_quantity > 0:
+        landed_total = sum((Decimal(entry.landed_total or 0) for entry in entries), Decimal("0"))
+        component.average_unit_price = money(landed_total / Decimal(total_quantity))
+    elif fallback is not PRICE_FALLBACK_UNSET:
+        component.average_unit_price = fallback
+    return component.average_unit_price
+
+
+def _price_components_by_lcsc(db: Session, auth: AuthContext, lcsc_numbers: set[str]) -> dict[str, Component]:
+    if not lcsc_numbers:
+        return {}
+    components = (
+        filter_owner(db.query(Component), Component, auth)
+        .filter(func.upper(Component.lcsc_number).in_(sorted(lcsc_numbers)))
+        .all()
+    )
+    return {str(component.lcsc_number or "").upper(): component for component in components}
+
+
+def _projected_average(entries: list[dict]) -> Decimal | None:
+    shipped = [
+        entry
+        for entry in entries
+        if entry.get("active", True)
+        and entry.get("order_status") == SHIPPED_STATUS
+        and int(entry.get("quantity") or 0) > 0
+    ]
+    total_quantity = sum(int(entry["quantity"]) for entry in shipped)
+    if total_quantity <= 0:
+        return None
+    landed_total = sum((Decimal(str(entry.get("landed_total") or 0)) for entry in shipped), Decimal("0"))
+    return money(landed_total / Decimal(total_quantity))
+
+
+def _price_statement_preview(db: Session, auth: AuthContext, statement) -> dict:
+    lcsc_numbers = {row.lcsc_number for row in statement.rows}
+    components = _price_components_by_lcsc(db, auth, lcsc_numbers)
+    historical = (
+        db.query(ComponentPriceEntry)
+        .filter(
+            ComponentPriceEntry.owner_user_id == owner_id(auth),
+            ComponentPriceEntry.lcsc_number.in_(sorted(lcsc_numbers)),
+        )
+        .all()
+    )
+    history_by_lcsc: dict[str, list[ComponentPriceEntry]] = {}
+    for entry in historical:
+        history_by_lcsc.setdefault(entry.lcsc_number.upper(), []).append(entry)
+    uploaded_by_lcsc: dict[str, list] = {}
+    for row in statement.rows:
+        uploaded_by_lcsc.setdefault(row.lcsc_number, []).append(row)
+
+    preview_rows = []
+    for lcsc_number in sorted(uploaded_by_lcsc):
+        uploaded = uploaded_by_lcsc[lcsc_number]
+        component = components.get(lcsc_number)
+        existing_entries = history_by_lcsc.get(lcsc_number, [])
+        projected = {
+            (entry.order_number, entry.lcsc_number): _price_entry_snapshot(entry)
+            for entry in existing_entries
+        }
+        operations: set[str] = set()
+        for row in uploaded:
+            current = next((entry for entry in existing_entries if entry.order_number == row.order_number), None)
+            if not component:
+                operations.add("unmatched")
+                continue
+            if current is None:
+                operations.add("create")
+            elif _price_entry_changed(current, row, component.id):
+                operations.add("update")
+            else:
+                operations.add("unchanged")
+            projected[row.key] = {
+                **_statement_entry_snapshot(row, component.id),
+                "order_number": row.order_number,
+                "lcsc_number": row.lcsc_number,
+            }
+        projected_average = _projected_average(list(projected.values())) if component else None
+        old_average = Decimal(component.average_unit_price) if component and component.average_unit_price is not None else None
+        action = (
+            "unmatched"
+            if not component
+            else "create"
+            if "create" in operations
+            else "update"
+            if "update" in operations
+            else "unchanged"
+        )
+        shipped_rows = [row for row in uploaded if row.is_shipped]
+        preview_rows.append(
+            {
+                "lcsc_number": lcsc_number,
+                "component_id": component.id if component else None,
+                "warehouse_code": component.warehouse_code if component else None,
+                "component_name": component.name if component else (uploaded[0].name or uploaded[0].model),
+                "old_average_unit_price": _decimal_api(old_average),
+                "new_average_unit_price": _decimal_api(projected_average if projected_average is not None else old_average),
+                "purchase_quantity": sum(row.quantity for row in shipped_rows),
+                "merchandise_total": _decimal_api(sum((row.merchandise_total for row in shipped_rows), Decimal("0"))),
+                "allocated_shipping": _decimal_api(sum((row.allocated_shipping for row in shipped_rows), Decimal("0"))),
+                "landed_total": _decimal_api(sum((row.landed_total for row in shipped_rows), Decimal("0"))),
+                "canceled_order_count": sum(1 for row in uploaded if not row.is_shipped),
+                "matched": component is not None,
+                "action": action,
+                "note": None if component else "个人库存中没有精确匹配的 C 编号，本项将跳过",
+            }
+        )
+    matched_count = sum(1 for row in preview_rows if row["matched"])
+    return {
+        "summary": {
+            "item_row_count": statement.item_row_count,
+            "shipped_item_row_count": statement.shipped_item_row_count,
+            "canceled_item_row_count": statement.canceled_item_row_count,
+            "shipping_row_count": statement.shipping_row_count,
+            "price_detail_count": len(statement.rows),
+            "unique_lcsc_count": len(preview_rows),
+            "matched_count": matched_count,
+            "unmatched_count": len(preview_rows) - matched_count,
+            "shipped_merchandise_total": _decimal_api(statement.shipped_merchandise_total),
+            "shipped_shipping_total": _decimal_api(statement.shipped_shipping_total),
+            "shipped_landed_total": _decimal_api(statement.shipped_landed_total),
+        },
+        "warnings": statement.warnings,
+        "rows": preview_rows,
+    }
+
+
+def _price_batch_out(batch: PriceImportBatch) -> dict:
+    return {
+        "id": batch.id,
+        "source_file": batch.source_file,
+        "source_sha256": batch.source_sha256,
+        "status": batch.status,
+        "created_count": int(batch.created_count or 0),
+        "updated_count": int(batch.updated_count or 0),
+        "unchanged_count": int(batch.unchanged_count or 0),
+        "unmatched_count": int(batch.unmatched_count or 0),
+        "canceled_count": int(batch.canceled_count or 0),
+        "rollback_summary": batch.rollback_summary,
+        "created_at": batch.created_at,
+        "rolled_back_at": batch.rolled_back_at,
+    }
+
+
+@app.post("/api/import/price-statement/preview")
+async def preview_price_statement(auth: Protected, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="价格对账单不能超过 15MB")
+    try:
+        statement = parse_price_statement(content, file.filename)
+    except PriceStatementError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _price_statement_preview(db, auth, statement)
+
+
+@app.post("/api/import/price-statement/commit")
+async def commit_price_statement(auth: Protected, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="价格对账单不能超过 15MB")
+    try:
+        statement = parse_price_statement(content, file.filename)
+    except PriceStatementError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    source_file = Path(file.filename or "price-statement").name[:300]
+    owner_user_id = owner_id(auth)
+    components = _price_components_by_lcsc(db, auth, {row.lcsc_number for row in statement.rows})
+    existing_entries = (
+        db.query(ComponentPriceEntry)
+        .filter(
+            ComponentPriceEntry.owner_user_id == owner_user_id,
+            ComponentPriceEntry.lcsc_number.in_([row.lcsc_number for row in statement.rows]),
+        )
+        .all()
+    )
+    entries_by_key = {(entry.order_number, entry.lcsc_number): entry for entry in existing_entries}
+    batch = PriceImportBatch(
+        owner_user_id=owner_user_id,
+        source_file=source_file,
+        source_sha256=hashlib.sha256(content).hexdigest(),
+        status="active",
+    )
+    db.add(batch)
+    db.flush()
+    affected_components: dict[int, Component] = {}
+    for row in statement.rows:
+        component = components.get(row.lcsc_number)
+        previous_average = component.average_unit_price if component else None
+        if not component:
+            batch.unmatched_count += 1
+            db.add(
+                PriceImportLine(
+                    owner_user_id=owner_user_id,
+                    batch_id=batch.id,
+                    component_id=None,
+                    source_row=row.source_row,
+                    order_number=row.order_number,
+                    lcsc_number=row.lcsc_number,
+                    operation="unmatched",
+                    row_data=json.dumps(row.as_dict(), ensure_ascii=False, default=str),
+                    note="个人库存中无精确 C 编号匹配，未写入价格历史",
+                )
+            )
+            continue
+        existing = entries_by_key.get(row.key)
+        previous_entry = _price_entry_snapshot(existing) if existing else None
+        if existing is None:
+            entry = ComponentPriceEntry(
+                owner_user_id=owner_user_id,
+                component_id=component.id,
+                order_number=row.order_number,
+                lcsc_number=row.lcsc_number,
+                order_status=row.order_status,
+            )
+            _set_price_entry(entry, row, component, source_file)
+            db.add(entry)
+            db.flush()
+            entries_by_key[row.key] = entry
+            operation = "create"
+            batch.created_count += 1
+        elif _price_entry_changed(existing, row, component.id):
+            entry = existing
+            _set_price_entry(entry, row, component, source_file)
+            operation = "update"
+            batch.updated_count += 1
+        else:
+            entry = existing
+            operation = "unchanged"
+            batch.unchanged_count += 1
+        if row.order_status != SHIPPED_STATUS:
+            batch.canceled_count += 1
+        db.add(
+            PriceImportLine(
+                owner_user_id=owner_user_id,
+                batch_id=batch.id,
+                price_entry_id=entry.id,
+                component_id=component.id,
+                source_row=row.source_row,
+                order_number=row.order_number,
+                lcsc_number=row.lcsc_number,
+                operation=operation,
+                previous_entry=json.dumps(previous_entry, ensure_ascii=False, default=str) if previous_entry else None,
+                previous_average_unit_price=previous_average,
+                row_data=json.dumps(row.as_dict(), ensure_ascii=False, default=str),
+            )
+        )
+        affected_components[component.id] = component
+
+    db.flush()
+    for component in affected_components.values():
+        _recompute_component_price(db, component)
+    log_activity(
+        db,
+        "import.price_statement.commit",
+        "price_import",
+        f"导入价格对账单批次 {batch.id}",
+        owner_user_id=owner_user_id,
+        entity_id=batch.id,
+        detail={
+            "created": batch.created_count,
+            "updated": batch.updated_count,
+            "unchanged": batch.unchanged_count,
+            "unmatched": batch.unmatched_count,
+            "landed_total": str(statement.shipped_landed_total),
+        },
+    )
+    db.commit()
+    db.refresh(batch)
+    return {"batch": _price_batch_out(batch), "preview": _price_statement_preview(db, auth, statement)}
+
+
+@app.get("/api/import/price-statement/batches")
+def list_price_statement_batches(auth: Protected, limit: int = Query(default=20, ge=1, le=50), db: Session = Depends(get_db)):
+    batches = (
+        db.query(PriceImportBatch)
+        .filter(PriceImportBatch.owner_user_id == owner_id(auth))
+        .order_by(PriceImportBatch.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_price_batch_out(batch) for batch in batches]
+
+
+@app.post("/api/import/price-statement/batches/{batch_id}/rollback")
+def rollback_price_statement_batch(batch_id: int, auth: Protected, db: Session = Depends(get_db)):
+    batch = (
+        db.query(PriceImportBatch)
+        .filter(PriceImportBatch.id == batch_id, PriceImportBatch.owner_user_id == owner_id(auth))
+        .first()
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="价格导入批次不存在")
+    if batch.status != "active":
+        raise HTTPException(status_code=409, detail="该价格导入批次已经撤销")
+    lines = (
+        db.query(PriceImportLine)
+        .filter(PriceImportLine.batch_id == batch.id, PriceImportLine.owner_user_id == owner_id(auth))
+        .order_by(PriceImportLine.id.desc())
+        .all()
+    )
+    price_entry_ids = [line.price_entry_id for line in lines if line.price_entry_id]
+    if price_entry_ids:
+        later_change = (
+            db.query(PriceImportLine.id)
+            .join(PriceImportBatch, PriceImportBatch.id == PriceImportLine.batch_id)
+            .filter(
+                PriceImportLine.price_entry_id.in_(price_entry_ids),
+                PriceImportLine.batch_id != batch.id,
+                PriceImportLine.operation.in_(["create", "update"]),
+                PriceImportBatch.owner_user_id == owner_id(auth),
+                PriceImportBatch.status == "active",
+                PriceImportBatch.id > batch.id,
+            )
+            .first()
+        )
+        if later_change:
+            raise HTTPException(status_code=409, detail="该批次中的价格历史已被后续批次修订，请先撤销后续批次")
+
+    affected: dict[int, Component] = {}
+    fallbacks: dict[int, Decimal | None] = {}
+    restored = 0
+    deactivated = 0
+    now = datetime.utcnow()
+    for line in lines:
+        if line.component_id:
+            component = db.get(Component, line.component_id)
+            if component and component.owner_user_id == owner_id(auth):
+                affected[component.id] = component
+                fallbacks.setdefault(component.id, line.previous_average_unit_price)
+        entry = db.get(ComponentPriceEntry, line.price_entry_id) if line.price_entry_id else None
+        if line.operation == "create" and entry:
+            entry.active = False
+            deactivated += 1
+        elif line.operation == "update" and entry and line.previous_entry:
+            _restore_price_entry(entry, json.loads(line.previous_entry))
+            restored += 1
+        line.rolled_back_at = now
+    db.flush()
+    for component_id, component in affected.items():
+        _recompute_component_price(db, component, fallbacks.get(component_id))
+    batch.status = "rolled_back"
+    batch.rolled_back_at = now
+    batch.rollback_summary = f"已恢复修订 {restored} 条，停用新增历史 {deactivated} 条；库存数量未变。"
+    log_activity(
+        db,
+        "import.price_statement.rollback",
+        "price_import",
+        f"撤销价格对账单批次 {batch.id}",
+        owner_user_id=owner_id(auth),
+        entity_id=batch.id,
+        detail={"restored": restored, "deactivated": deactivated},
+    )
+    db.commit()
+    db.refresh(batch)
+    return _price_batch_out(batch)
+
+
 @app.post("/api/import/excel/preview", response_model=list[ImportPreviewRow])
 async def preview_excel(auth: Protected, file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
@@ -6294,6 +6879,7 @@ ORDER_IMPORT_SNAPSHOT_FIELDS = [
     "parameters",
     "package",
     "quantity",
+    "occupied_quantity",
     "source",
     "lcsc_number",
     "tags",
@@ -7713,8 +8299,12 @@ def ui_action_label(action: str | None) -> str:
         "ui.components.ai_quick_create": "AI 补全元器件",
         "ui.components.lot_create": "新增库存批次",
         "ui.components.lot_consume": "批次扣减",
+        "ui.components.lot_loss": "设备批次报损",
         "ui.components.lot_delete": "删除误添加批次",
         "ui.components.quick_consume": "卡片快捷领用",
+        "ui.components.quick_occupy": "设备卡片占用",
+        "ui.components.quick_release": "设备卡片归还",
+        "ui.components.quick_loss": "设备卡片报损",
         "ui.components.ai_ask": "元器件 AI 问答",
         "ui.components.remove": "移除元器件记录",
         "ui.team_components.auto_load": "团队元器件自动加载",
@@ -7722,8 +8312,12 @@ def ui_action_label(action: str | None) -> str:
         "ui.team_components.detail_open": "团队元器件详情",
         "ui.team_components.lot_create": "团队新增库存批次",
         "ui.team_components.lot_consume": "团队批次扣减",
+        "ui.team_components.lot_loss": "团队设备批次报损",
         "ui.team_components.lot_delete": "团队删除误添加批次",
         "ui.team_components.quick_consume": "团队卡片快捷领用",
+        "ui.team_components.quick_occupy": "团队设备卡片占用",
+        "ui.team_components.quick_release": "团队设备卡片归还",
+        "ui.team_components.quick_loss": "团队设备卡片报损",
         "ui.team_components.ai_ask": "团队元器件 AI 问答",
     }
     return mapping.get(action or "", action or "未知操作")

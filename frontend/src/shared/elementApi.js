@@ -1,3 +1,10 @@
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/notification/style/css'
+
 export { ElAlert } from 'element-plus/es/components/alert/index'
 export { ElButton } from 'element-plus/es/components/button/index'
 export { ElInput } from 'element-plus/es/components/input/index'

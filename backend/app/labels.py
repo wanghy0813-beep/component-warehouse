@@ -56,6 +56,7 @@ CATEGORY_FALLBACK_COLORS = {
     "时钟源": "#E0F2FE",
     "开关": "#FAE8FF",
     "开发板": "#E5E7EB",
+    "设备": "#E2E8F0",
     "功能模块": "#D1FAE5",
     "通信模块": "#CFFAFE",
     "显示模块": "#FDE68A",
@@ -85,6 +86,7 @@ STANDARD_CATEGORY_LABEL_KIND = "standard_category_group"
 KNOWN_CATEGORY_NAMES = set(CATEGORY_FALLBACK_COLORS.keys())
 MODEL_SUMMARY_CATEGORY_NAMES = {
     "开发板",
+    "设备",
     "功能模块",
     "通信模块",
     "显示模块",

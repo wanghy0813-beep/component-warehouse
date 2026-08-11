@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -96,6 +97,8 @@ class Component(Base):
     parameters: Mapped[str | None] = mapped_column(Text)
     package: Mapped[str | None] = mapped_column(String(120), index=True)
     quantity: Mapped[int] = mapped_column(Integer, default=0)
+    occupied_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    average_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
     source: Mapped[str | None] = mapped_column(String(120))
     lcsc_number: Mapped[str | None] = mapped_column(String(120), index=True)
     tags: Mapped[str | None] = mapped_column(String(300), index=True)
@@ -363,6 +366,68 @@ class OrderImportLine(Base):
     operation: Mapped[str] = mapped_column(String(40), index=True)
     quantity_delta: Mapped[int] = mapped_column(Integer, default=0)
     previous_component: Mapped[str | None] = mapped_column(Text)
+    row_data: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PriceImportBatch(Base):
+    __tablename__ = "price_import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    source_file: Mapped[str | None] = mapped_column(String(300))
+    source_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="active", index=True)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0)
+    unmatched_count: Mapped[int] = mapped_column(Integer, default=0)
+    canceled_count: Mapped[int] = mapped_column(Integer, default=0)
+    rollback_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+
+class ComponentPriceEntry(Base):
+    __tablename__ = "component_price_entries"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "order_number", "lcsc_number", name="uq_component_price_owner_order_lcsc"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("components.id"), index=True)
+    order_number: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    lcsc_number: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    order_status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    ordered_at: Mapped[str | None] = mapped_column(String(40), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    merchandise_total: Mapped[Decimal] = mapped_column(Numeric(14, 6), default=Decimal("0"))
+    allocated_shipping: Mapped[Decimal] = mapped_column(Numeric(14, 6), default=Decimal("0"))
+    landed_total: Mapped[Decimal] = mapped_column(Numeric(14, 6), default=Decimal("0"))
+    source_file: Mapped[str | None] = mapped_column(String(300))
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PriceImportLine(Base):
+    __tablename__ = "price_import_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("price_import_batches.id"), index=True)
+    price_entry_id: Mapped[int | None] = mapped_column(ForeignKey("component_price_entries.id"), index=True)
+    component_id: Mapped[int | None] = mapped_column(ForeignKey("components.id"), index=True)
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    order_number: Mapped[str | None] = mapped_column(String(120), index=True)
+    lcsc_number: Mapped[str | None] = mapped_column(String(120), index=True)
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    previous_entry: Mapped[str | None] = mapped_column(Text)
+    previous_average_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
     row_data: Mapped[str | None] = mapped_column(Text)
     note: Mapped[str | None] = mapped_column(Text)
     rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)

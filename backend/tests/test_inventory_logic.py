@@ -14,11 +14,14 @@ from app.main import (
     component_usage_records,
     component_out,
     create_component_lot,
+    decrement_component_quantity,
     delete_bom_item,
     delete_component_lot,
+    increment_component_quantity,
     list_component_lots,
     record_usage_event,
     sync_bom_solder_points,
+    update_equipment_occupancy,
 )
 from app.models import (
     ActivityLog,
@@ -33,8 +36,11 @@ from app.models import (
     User,
 )
 from app.services.stock_ledger import record_stock_delta
-from app.schemas import InventoryLotCreate, UsageEventRequest
+from app.schemas import ComponentConsumeRequest, EquipmentOccupancyRequest, InventoryLotCreate, UsageEventRequest
 from app.services.inventory import (
+    is_durable_equipment,
+    normalize_inventory_location,
+    normalize_inventory_status,
     parse_passive_si_value,
     reserved_quantities,
     sort_components_by_value,
@@ -253,6 +259,87 @@ def test_low_stock_warning_requires_common_and_respects_exemption(inventory_env)
     assert component_out(component, 1)["low_stock_warning"] is False
 
 
+def test_equipment_occupancy_keeps_asset_count_and_only_loss_reduces_inventory(inventory_env):
+    db = inventory_env["db"]
+    auth = inventory_env["auth"]
+    equipment_category = Category(name="设备", color="#e2e8f0")
+    db.add(equipment_category)
+    db.flush()
+    equipment = Component(
+        owner_user_id=auth.user_id,
+        name="实验室调试器",
+        category=equipment_category,
+        warehouse_code="EQP-00000999",
+        quantity=1,
+        status="in_transit",
+        location="运输中",
+    )
+    db.add(equipment)
+    db.commit()
+
+    assert is_durable_equipment(equipment) is True
+    assert normalize_inventory_location(" 运输中 ") is None
+    assert normalize_inventory_status("in_transit") == "in_stock"
+    assert component_out(equipment)["location"] is None
+    assert component_out(equipment)["status"] == "in_stock"
+
+    occupied = update_equipment_occupancy(
+        equipment.id,
+        EquipmentOccupancyRequest(action="occupy", quantity=1, remark="实验台使用"),
+        auth,
+        db,
+    )
+    assert occupied["quantity"] == 1
+    assert occupied["occupied_quantity"] == 1
+    assert occupied["available_quantity"] == 0
+    assert db.query(ActivityLog).filter_by(component_id=equipment.id, action="component.occupy").one()
+
+    released = update_equipment_occupancy(
+        equipment.id,
+        EquipmentOccupancyRequest(action="release", quantity=1, remark="实验完成"),
+        auth,
+        db,
+    )
+    assert released["quantity"] == 1
+    assert released["occupied_quantity"] == 0
+    assert released["available_quantity"] == 1
+    assert db.query(ActivityLog).filter_by(component_id=equipment.id, action="component.release").one()
+
+    with pytest.raises(HTTPException) as error:
+        decrement_component_quantity(equipment.id, auth, db, ComponentConsumeRequest(quantity=1))
+    assert error.value.status_code == 400
+    assert "正常使用不扣库存" in error.value.detail
+    assert equipment.quantity == 1
+
+    update_equipment_occupancy(
+        equipment.id,
+        EquipmentOccupancyRequest(action="occupy", quantity=1),
+        auth,
+        db,
+    )
+
+    result = decrement_component_quantity(
+        equipment.id,
+        auth,
+        db,
+        ComponentConsumeRequest(quantity=1, reason_type="loss", remark="外壳损坏"),
+    )
+    assert result["quantity"] == 0
+    assert result["occupied_quantity"] == 0
+    assert result["status"] == "damaged"
+    assert db.query(ActivityLog).filter_by(component_id=equipment.id, action="component.loss").one()
+    assert db.query(StockMovement).filter_by(component_id=equipment.id, movement_type="manual_loss").one()
+
+    restored = increment_component_quantity(
+        equipment.id,
+        auth,
+        db,
+        ComponentConsumeRequest(quantity=1, remark="维修后重新入库"),
+    )
+    assert restored["quantity"] == 1
+    assert restored["status"] == "in_stock"
+
+
 def test_inventory_lots_track_channel_and_support_specific_lot_decrement(inventory_env):
     db = inventory_env["db"]
     component = inventory_env["component"]
@@ -311,6 +398,79 @@ def test_old_lots_refresh_immediately_and_unused_manual_lot_can_be_deleted(inven
         (movement.movement_type, movement.quantity_delta)
         for movement in db.query(StockMovement).filter(StockMovement.lot_id == created["id"]).order_by(StockMovement.created_at.asc()).all()
     ] == [("manual_lot_create", 3), ("manual_lot_delete", -3)]
+
+
+@pytest.mark.parametrize("movement_type", ["component_create", "team_component_create"])
+def test_unused_initial_inventory_lot_can_be_deleted(inventory_env, movement_type):
+    db = inventory_env["db"]
+    auth = inventory_env["auth"]
+    component = Component(
+        owner_user_id=1,
+        name=f"{movement_type} 初始库存测试",
+        quantity=4,
+        warehouse_code=f"CW-{movement_type}",
+    )
+    db.add(component)
+    db.flush()
+    movements = record_stock_delta(
+        db,
+        component,
+        4,
+        movement_type=movement_type,
+        reason="新增元器件初始库存",
+        actor_user_id=1,
+    )
+    lot_id = movements[0].lot_id
+    db.commit()
+
+    lots = list_component_lots(component.id, auth, db)
+    assert len(lots) == 1
+    assert lots[0]["source_type"] == movement_type
+    assert lots[0]["can_delete"] is True
+
+    result = delete_component_lot(component.id, lot_id, auth, db)
+    assert result["deleted"] is True
+    assert result["removed_quantity"] == 4
+    assert result["component"]["quantity"] == 0
+    assert db.get(InventoryLot, lot_id).status == "deleted"
+    assert [
+        (movement.movement_type, movement.quantity_delta)
+        for movement in db.query(StockMovement).filter(StockMovement.lot_id == lot_id).order_by(StockMovement.created_at.asc()).all()
+    ] == [(movement_type, 4), ("manual_lot_delete", -4)]
+
+
+def test_used_initial_inventory_lot_cannot_be_deleted(inventory_env):
+    db = inventory_env["db"]
+    auth = inventory_env["auth"]
+    component = Component(
+        owner_user_id=1,
+        name="已扣减初始库存测试",
+        quantity=3,
+        warehouse_code="CW-USED-INITIAL",
+    )
+    db.add(component)
+    db.flush()
+    movements = record_stock_delta(
+        db,
+        component,
+        3,
+        movement_type="component_create",
+        reason="新增元器件初始库存",
+        actor_user_id=1,
+    )
+    lot_id = movements[0].lot_id
+    component.quantity -= 1
+    record_stock_delta(db, component, -1, movement_type="manual_consume", lot_id=lot_id)
+    db.commit()
+
+    lots = list_component_lots(component.id, auth, db)
+    assert lots[0]["can_delete"] is False
+    assert "已经发生扣减" in lots[0]["delete_block_reason"]
+    with pytest.raises(HTTPException) as error:
+        delete_component_lot(component.id, lot_id, auth, db)
+    assert error.value.status_code == 400
+    assert "已经发生扣减" in error.value.detail
+    assert db.get(InventoryLot, lot_id).status == "active"
 
 
 def test_used_manual_lot_cannot_be_deleted(inventory_env):

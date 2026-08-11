@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 from ..models import Component, InventoryLot, StockMovement
 
 
-MANUAL_LOT_CREATE_MOVEMENT_TYPES = {"manual_lot_create", "team_lot_create"}
+REMOVABLE_LOT_CREATE_MOVEMENT_TYPES = {
+    "component_create",
+    "team_component_create",
+    "manual_lot_create",
+    "team_lot_create",
+}
 
 
 def new_uuid() -> str:
@@ -202,17 +207,17 @@ def inventory_lot_delete_eligibility(
     creation_movements = [
         movement
         for movement in movements
-        if movement.movement_type in MANUAL_LOT_CREATE_MOVEMENT_TYPES
+        if movement.movement_type in REMOVABLE_LOT_CREATE_MOVEMENT_TYPES
         and int(movement.quantity_delta or 0) == initial_quantity
     ]
     if len(creation_movements) != 1 or len(movements) != 1:
-        return False, "仅支持删除未使用过的手工新增批次"
+        return False, "仅支持删除未使用过的初始库存或手工新增批次"
     if int(component.quantity or 0) < initial_quantity:
         return False, "当前总库存不足，不能自动撤销该批次"
     return True, None
 
 
-def delete_unused_manual_lot(
+def delete_unused_inventory_lot(
     db: Session,
     component: Component,
     lot: InventoryLot,

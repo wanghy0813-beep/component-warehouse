@@ -38,7 +38,7 @@ from .team_schemas import (
     TeamMarkerCreate,
     TeamMarkerUpdate,
 )
-from .schemas import ComponentAiAskRequest, ComponentAiAskOut, ComponentConsumeRequest, ComponentExportRequest, CustomLabelExportRequest, CustomLabelTemplateCreate, CustomLabelTemplateOut, CustomLabelTemplateUpdate, InventoryLotCreate, InventoryLotOut, UsageEventRequest
+from .schemas import ComponentAiAskRequest, ComponentAiAskOut, ComponentConsumeRequest, ComponentExportRequest, CustomLabelExportRequest, CustomLabelTemplateCreate, CustomLabelTemplateOut, CustomLabelTemplateUpdate, EquipmentOccupancyRequest, InventoryLotCreate, InventoryLotOut, UsageEventRequest
 from .database import get_db
 from .branding import APP_BRAND_NAME
 from .models import (
@@ -60,10 +60,19 @@ from .models import (
     ProjectBomItem,
     User,
 )
-from .services.inventory import category_sort_key, component_value_sort_key, reserved_quantities
+from .services.inventory import (
+    category_sort_key,
+    component_available_quantity,
+    component_value_sort_key,
+    equipment_occupied_quantity,
+    is_durable_equipment,
+    normalize_inventory_location,
+    normalize_inventory_status,
+    reserved_quantities,
+)
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import (
-    delete_unused_manual_lot,
+    delete_unused_inventory_lot,
     ensure_component_lot,
     inventory_lot_delete_eligibility,
     reconcile_component_lots,
@@ -402,7 +411,8 @@ def cw_component_out(
 ) -> dict | None:
     if not component:
         return None
-    available = max(0, int(component.quantity or 0) - int(reserved or 0))
+    occupied = equipment_occupied_quantity(component)
+    available = component_available_quantity(component, reserved)
     safety_quantity = max(0, int(component.safety_quantity or 0))
     return {
         "id": component.id,
@@ -419,6 +429,8 @@ def cw_component_out(
         "buy_url": component.buy_url,
         "source_title": component.source_title,
         "tags": component.tags,
+        "part_family": component.part_family or "component",
+        "count_mode": component.count_mode or "exact",
         "ai_summary": component.ai_summary,
         "ai_usage": component.ai_usage,
         "ai_risk_notes": component.ai_risk_notes,
@@ -433,6 +445,7 @@ def cw_component_out(
         } if component.category else None,
         "quantity": int(component.quantity or 0),
         "reserved_quantity": int(reserved or 0),
+        "occupied_quantity": occupied,
         "available_quantity": available,
         "safety_quantity": safety_quantity,
         "low_stock_exempt": bool(component.low_stock_exempt),
@@ -442,10 +455,10 @@ def cw_component_out(
             and available <= (safety_quantity if safety_quantity > 0 else 5)
         ),
         "is_common": bool(component.is_common),
-        "status": component.status,
+        "status": normalize_inventory_status(component.status, location=component.location),
         "source": component.source,
         "normalized_spec": component.normalized_spec,
-        "location": component.location,
+        "location": normalize_inventory_location(component.location),
         "remark": component.remark,
         "first_stocked_at": component.first_stocked_at,
         "last_stocked_at": component.last_stocked_at,
@@ -550,6 +563,8 @@ def team_components_out(
         )
         quantity = int(source.get("quantity") if source.get("quantity") is not None else item.quantity or 0)
         reserved_quantity = int(source.get("reserved_quantity") or 0)
+        warehouse_code = str(source.get("warehouse_code") or item.warehouse_code_snapshot or "").upper()
+        occupied_quantity = min(quantity, max(0, int(source.get("occupied_quantity") or 0))) if category_name == "设备" or warehouse_code.startswith("EQP-") else 0
         output.append({
             **record_dict(item),
             "name": source.get("name") or item.name,
@@ -572,13 +587,17 @@ def team_components_out(
             "ai_tags": source.get("ai_tags"),
             "ai_confidence": source.get("ai_confidence"),
             "source": source.get("source"),
-            "status": source.get("status") or "in_stock",
+            "part_family": source.get("part_family") or "component",
+            "count_mode": source.get("count_mode") or "exact",
+            "status": normalize_inventory_status(source.get("status"), location=source.get("location")),
+            "location": normalize_inventory_location(item.location or source.get("location")),
             "category": category if isinstance(category, dict) else (
                 {"id": None, "name": category_name, "color": "#eef2f7"} if category_name else None
             ),
             "quantity": quantity,
             "reserved_quantity": reserved_quantity,
-            "available_quantity": max(0, quantity - reserved_quantity),
+            "occupied_quantity": occupied_quantity,
+            "available_quantity": max(0, quantity - reserved_quantity - occupied_quantity),
             "safety_quantity": int(source.get("safety_quantity") or 0),
             "low_stock_exempt": bool(source.get("low_stock_exempt")),
             "low_stock_warning": bool(source.get("low_stock_warning")),
@@ -619,7 +638,7 @@ def inventory_lot_out(
         "component_id": lot.component_id,
         "source_type": lot.source_type,
         "source_reference": lot.source_reference,
-        "location": lot.location,
+        "location": normalize_inventory_location(lot.location),
         "initial_quantity": int(lot.initial_quantity or 0),
         "remaining_quantity": int(lot.remaining_quantity or 0),
         "unit_cost": lot.unit_cost,
@@ -1106,7 +1125,7 @@ def create_personal_component(
         buy_url=str(values.get("buy_url") or "").strip()[:500] or None,
         tags=str(values.get("tags") or "").strip()[:300] or None,
         source_title=str(values.get("source_title") or "").strip()[:4000] or None,
-        location=str(values.get("location") or "").strip()[:200] or None,
+        location=normalize_inventory_location(str(values.get("location") or "").strip()[:200] or None),
         remark=str(values.get("remark") or "").strip() or None,
         source=str(values.get("source") or "团队版新增").strip()[:120],
         status="in_stock",
@@ -1178,7 +1197,7 @@ def add_or_merge_component(
     )
     if existing:
         before = record_dict(existing)
-        existing.location = existing.location or values.get("location")
+        existing.location = normalize_inventory_location(existing.location or values.get("location"))
         existing.remark = append_text(existing.remark, values.get("remark"))
         existing.tags = existing.tags or values.get("tags")
         existing.category = existing.category or values.get("category")
@@ -1209,7 +1228,7 @@ def add_or_merge_component(
         model=(values.get("model") or (cw.model if cw else None)),
         lcsc_number=(values.get("lcsc_number") or (cw.lcsc_number if cw else None)),
         quantity=int(cw.quantity or 0),
-        location=values.get("location"),
+        location=normalize_inventory_location(values.get("location")),
         category=values.get("category"),
         tags=values.get("tags"),
         remark=values.get("remark"),
@@ -2090,7 +2109,7 @@ def bulk_add_components(
                 "model": cw.model,
                 "lcsc_number": cw.lcsc_number,
                 "quantity": int(cw.quantity or 0),
-                "location": raw.get("location"),
+                "location": normalize_inventory_location(raw.get("location")),
                 "category": raw.get("category"),
                 "tags": raw.get("tags"),
                 "remark": raw.get("remark"),
@@ -2130,6 +2149,8 @@ def update_component(
             continue
         if isinstance(value, str):
             value = value.strip() or None
+        if key == "location":
+            value = normalize_inventory_location(value)
         setattr(item, key, value)
     item.updated_by_user_id = auth.user_id
     log_action(
@@ -2192,6 +2213,8 @@ def create_team_component_lot(
     quantity = int(payload.quantity or 0)
     old_quantity = int(component.quantity or 0)
     component.quantity = old_quantity + quantity
+    if is_durable_equipment(component):
+        component.status = "in_stock"
     item.quantity = component.quantity
     component.first_stocked_at = component.first_stocked_at or datetime.utcnow()
     component.last_stocked_at = datetime.utcnow()
@@ -2202,7 +2225,7 @@ def create_team_component_lot(
         movement_type="team_lot_create",
         reason=payload.note or f"团队库 {library_id} 新增渠道库存批次",
         actor_user_id=auth.user_id,
-        location=payload.location,
+        location=normalize_inventory_location(payload.location),
         unit_cost=payload.unit_cost,
         source_type=(payload.source_type or "manual").strip() or "manual",
         source_reference=(payload.source_reference or "").strip() or None,
@@ -2243,7 +2266,7 @@ def delete_team_component_lot(
         raise HTTPException(status_code=404, detail="库存批次不存在")
     old_quantity = int(component.quantity or 0)
     try:
-        removed_quantity = delete_unused_manual_lot(
+        removed_quantity = delete_unused_inventory_lot(
             db,
             component,
             lot,
@@ -2287,6 +2310,10 @@ def decrement_team_component_quantity(
 ):
     item, component, _ = require_team_source_component(db, library_id, item_id, auth, mutate=True)
     quantity = int(payload.quantity or 1)
+    reason_type = payload.reason_type
+    durable_equipment = is_durable_equipment(component)
+    if durable_equipment and reason_type != "loss":
+        raise HTTPException(status_code=400, detail="设备正常使用不扣库存；仅在报损、遗失或退役时登记报损")
     if int(component.quantity or 0) < quantity:
         raise HTTPException(status_code=400, detail="库存不足")
     if payload.lot_id:
@@ -2297,6 +2324,13 @@ def decrement_team_component_quantity(
             raise HTTPException(status_code=400, detail=f"指定库存批次库存不足：需要 {quantity}，剩余 {int(lot.remaining_quantity or 0)}")
     old_quantity = int(component.quantity or 0)
     component.quantity = old_quantity - quantity
+    if durable_equipment and component.quantity <= 0:
+        component.status = "damaged"
+    if durable_equipment:
+        component.occupied_quantity = min(
+            equipment_occupied_quantity(component),
+            max(0, int(component.quantity or 0)),
+        )
     item.quantity = component.quantity
     component.last_outbound_at = datetime.utcnow()
     try:
@@ -2304,8 +2338,8 @@ def decrement_team_component_quantity(
             db,
             component,
             -quantity,
-            movement_type="team_manual_consume",
-            reason=payload.remark or f"团队库 {library_id} 扣减库存",
+            movement_type="team_manual_loss" if reason_type == "loss" else "team_manual_consume",
+            reason=payload.remark or (f"团队库 {library_id} 设备报损" if reason_type == "loss" else f"团队库 {library_id} 扣减库存"),
             actor_user_id=auth.user_id,
             lot_id=payload.lot_id,
         )
@@ -2317,12 +2351,81 @@ def decrement_team_component_quantity(
         library_id,
         auth,
         request,
-        "component.quantity.consume",
+        "component.quantity.loss" if reason_type == "loss" else "component.quantity.consume",
         "component",
-        f"扣减器件 {component.name} x {quantity}",
+        f"{'报损设备' if reason_type == 'loss' else '扣减器件'} {component.name} x {quantity}",
         entity_id=item.id,
         before={"quantity": old_quantity},
         after={"quantity": component.quantity, "lot_id": payload.lot_id},
+    )
+    db.commit()
+    db.refresh(item)
+    return team_component_out(db, item, auth)
+
+
+@router.post("/libraries/{library_id}/components/{item_id}/occupancy")
+def update_team_equipment_occupancy(
+    library_id: str,
+    item_id: str,
+    payload: EquipmentOccupancyRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_access),
+    db: Session = Depends(get_db),
+):
+    item, component, _ = require_team_source_component(db, library_id, item_id, auth, mutate=True)
+    if not is_durable_equipment(component):
+        raise HTTPException(status_code=400, detail="占用状态仅适用于设备分类")
+    quantity = int(payload.quantity or 1)
+    old_occupied = equipment_occupied_quantity(component)
+    if payload.action == "occupy":
+        reserved = reserved_quantities(db, [component.id]).get(component.id, 0)
+        available = component_available_quantity(component, reserved)
+        if available < quantity:
+            raise HTTPException(status_code=400, detail=f"可占用设备不足：需要 {quantity}，当前可用 {available}")
+        component.occupied_quantity = old_occupied + quantity
+        action = "component.occupy"
+        summary = f"占用设备 {component.name} x {quantity}"
+        occupied_delta = quantity
+    else:
+        if old_occupied < quantity:
+            raise HTTPException(status_code=400, detail=f"已占用设备不足：需要归还 {quantity}，当前占用 {old_occupied}")
+        component.occupied_quantity = old_occupied - quantity
+        action = "component.release"
+        summary = f"归还设备 {component.name} x {quantity}"
+        occupied_delta = -quantity
+    component.status = "in_stock" if int(component.quantity or 0) > 0 else component.status
+    item.quantity = int(component.quantity or 0)
+    item.frozen_snapshot_json = json.dumps(component_snapshot(db, component), ensure_ascii=False, default=str)
+    db.add(
+        ActivityLog(
+            owner_user_id=component.owner_user_id,
+            action=action,
+            entity_type="component",
+            entity_id=component.id,
+            component_id=component.id,
+            quantity_delta=0,
+            summary=summary,
+            detail=json_value({
+                "library_id": library_id,
+                "team_component_id": item.id,
+                "actor_user_id": auth.user_id,
+                "remark": payload.remark,
+                "occupied_delta": occupied_delta,
+                "occupied_quantity": component.occupied_quantity,
+            }),
+        )
+    )
+    log_action(
+        db,
+        library_id,
+        auth,
+        request,
+        action,
+        "component",
+        summary,
+        entity_id=item.id,
+        before={"occupied_quantity": old_occupied},
+        after={"occupied_quantity": component.occupied_quantity, "remark": payload.remark},
     )
     db.commit()
     db.refresh(item)
@@ -2398,6 +2501,8 @@ def update_component_quantity(
     old_quantity = int(component.quantity or 0)
     new_quantity = int(payload.quantity)
     component.quantity = new_quantity
+    if is_durable_equipment(component):
+        component.occupied_quantity = min(equipment_occupied_quantity(component), max(0, new_quantity))
     item.quantity = new_quantity
     item.updated_by_user_id = auth.user_id
     if new_quantity > old_quantity:

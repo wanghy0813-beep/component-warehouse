@@ -66,6 +66,7 @@ export const listTeamComponentLots = (id, itemId) => teamApi.get(`${base}/librar
 export const createTeamComponentLot = (id, itemId, payload) => teamApi.post(`${base}/libraries/${id}/components/${itemId}/lots`, payload).then((r) => r.data)
 export const deleteTeamComponentLot = (id, itemId, lotId) => teamApi.delete(`${base}/libraries/${id}/components/${itemId}/lots/${lotId}`).then((r) => r.data)
 export const decrementTeamComponentQuantity = (id, itemId, payload) => teamApi.post(`${base}/libraries/${id}/components/${itemId}/quantity/decrement`, payload).then((r) => r.data)
+export const updateTeamComponentOccupancy = (id, itemId, payload) => teamApi.post(`${base}/libraries/${id}/components/${itemId}/occupancy`, payload).then((r) => r.data)
 export const askTeamComponentAi = (id, itemId, payload) => teamApi.post(`${base}/libraries/${id}/components/${itemId}/ai/ask`, payload, { timeout: 120000 }).then((r) => r.data)
 export const listTeamComponentUsage = (id, itemId, params = {}) => teamApi.get(`${base}/libraries/${id}/components/${itemId}/usage-records`, { params }).then((r) => r.data)
 export const listComponentMarkers = (id, itemId) => teamApi.get(`${base}/libraries/${id}/components/${itemId}/markers`).then((r) => r.data)

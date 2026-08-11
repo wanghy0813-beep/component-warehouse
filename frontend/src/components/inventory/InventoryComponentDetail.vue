@@ -22,11 +22,13 @@
         <strong>常用换算</strong><span v-for="hint in unitHints" :key="hint">{{ hint }}</span>
       </div>
       <div class="stock-tags">
-        <el-tag>总量 {{ item.quantity || 0 }}</el-tag>
-        <el-tag type="success">可用 {{ item.available_quantity || 0 }}</el-tag>
-        <el-tag v-if="item.reserved_quantity" type="info" effect="plain">项目预留 {{ item.reserved_quantity }}</el-tag>
-        <el-tag v-if="item.location" effect="plain">团队位置 {{ item.location }}</el-tag>
+        <el-tag>{{ quantityCopy.totalLabel }} {{ item.quantity || 0 }}</el-tag>
+        <el-tag type="success">{{ quantityCopy.availableLabel }} {{ item.available_quantity || 0 }}</el-tag>
+        <el-tag v-if="item.reserved_quantity && !durable" type="info" effect="plain">项目预留 {{ item.reserved_quantity }}</el-tag>
+        <el-tag v-if="durable && item.occupied_quantity" type="warning" effect="plain">占用 {{ item.occupied_quantity }}</el-tag>
+        <el-tag v-if="location" effect="plain">存放位置 {{ location }}</el-tag>
       </div>
+      <div v-if="durable" class="asset-actions"><slot name="asset-actions" /></div>
       <slot name="actions" />
     </section>
 
@@ -40,7 +42,7 @@
           <el-option v-for="option in lotSourceOptions" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
         <el-input v-model="lotForm.source_reference" size="small" placeholder="订单号/链接/备注" />
-        <el-input v-model="lotForm.location" size="small" placeholder="位置" />
+        <el-input v-model="lotForm.location" size="small" placeholder="实际存放位置（非运输状态）" />
         <el-input-number v-model="lotForm.quantity" size="small" :min="1" />
         <el-input-number v-model="lotForm.unit_cost" size="small" :min="0" :precision="4" placeholder="单价" />
         <el-button size="small" type="primary" :loading="lotSaving" :disabled="!canEditInventoryLots" @click="submitLot">新增批次</el-button>
@@ -50,7 +52,7 @@
           <div>
             <strong>{{ sourceLabel(lot.source_type) }}</strong>
             <span v-if="lot.source_reference">{{ lot.source_reference }}</span>
-            <small>{{ lot.location || '未填写位置' }} · {{ formatTime(lot.received_at || lot.created_at) }}</small>
+            <small>{{ visibleInventoryLocation(lot.location) || '未填写位置' }} · {{ formatTime(lot.received_at || lot.created_at) }}</small>
           </div>
           <div class="lot-quantity">
             <span>剩余 {{ lot.remaining_quantity }}</span>
@@ -62,7 +64,7 @@
               :loading="lotConsumeIds.has(lot.id)"
               :disabled="!lot.remaining_quantity || !canEditInventoryLots || lotConsumeIds.has(lot.id)"
               @click="$emit('consume-lot', lot)"
-            >扣 1</el-button>
+            >{{ durable ? '报损 1 台' : '扣 1' }}</el-button>
             <el-button
               v-if="lot.can_delete"
               size="small"
@@ -140,7 +142,7 @@
           <p v-if="record.designators?.length">位号：{{ record.designators.join('、') }}</p>
         </el-timeline-item>
       </el-timeline>
-      <el-empty v-else description="暂无焊接、报损或返还记录" :image-size="64" />
+      <el-empty v-else :description="durable ? '暂无设备占用、归还或报损记录' : '暂无焊接、报损或返还记录'" :image-size="64" />
       <el-button v-if="usageRecords.length >= 20" text type="primary" @click="$emit('load-usage', usageRecords.length + 20)">继续加载</el-button>
       </div>
     </section>
@@ -153,6 +155,7 @@
 import { computed, reactive, ref } from 'vue'
 import { componentUnitHints, extractComponentChips, packageTagStyle, parseJsonValue } from '../../utils/componentUi'
 import { componentDisplaySubtitle, componentDisplayTitle } from '../../shared/componentDisplay'
+import { inventoryQuantityCopy, isDurableEquipment, visibleInventoryLocation } from '../../shared/componentInventorySemantics'
 
 const props = defineProps({
   item: { type: Object, required: true },
@@ -189,6 +192,9 @@ const subtitle = computed(() => componentDisplaySubtitle(props.item, title.value
 const chips = computed(() => extractComponentChips(props.item, 10))
 const unitHints = computed(() => componentUnitHints(props.item))
 const packageStyle = computed(() => packageTagStyle(props.item.package))
+const durable = computed(() => isDurableEquipment(props.item))
+const location = computed(() => visibleInventoryLocation(props.item.location))
+const quantityCopy = computed(() => inventoryQuantityCopy(props.item))
 const usage = computed(() => {
   const parsed = parseJsonValue(props.item.ai_usage)
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { usage: typeof parsed === 'string' ? parsed : '' }
@@ -252,7 +258,8 @@ function submitAiQuestion() {
 <style scoped>
 .inventory-detail { min-width: 0; display: grid; gap: 14px; }
 .summary-card, .knowledge-card, .usage-card, .engineering-card, .stock-lot-card, .ai-ask-card { padding: 18px; border: 1px solid #e4eaf2; border-radius: var(--cw-radius-card); background: #fff; }
-.tag-row, .stock-tags, .unit-hints { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tag-row, .stock-tags, .unit-hints, .asset-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.asset-actions { margin: 12px 0; }
 h2 { margin: 14px 0 6px; color: #101828; font-size: clamp(24px, 4vw, 32px); overflow-wrap: anywhere; }
 h3 { margin: 0 0 12px; color: #243b53; }
 p { color: #475467; line-height: 1.65; overflow-wrap: anywhere; }

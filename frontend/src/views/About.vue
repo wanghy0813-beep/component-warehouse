@@ -493,12 +493,15 @@ onMounted(load)
 }
 
 .management-grid > .panel:not(.danger-panel) {
-  min-height: 420px;
+  min-height: 0;
+}
+
+.codex-panel {
+  grid-column: span 2;
 }
 
 .danger-panel {
-  grid-column: 1 / -1;
-  min-height: 0;
+  grid-column: auto;
   border-color: #fecdd3;
 }
 
@@ -879,6 +882,7 @@ h3 {
   }
 
   .danger-panel,
+  .codex-panel,
   .admin-wide {
     grid-column: auto;
   }

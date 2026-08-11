@@ -15,6 +15,15 @@
     <div class="metric-grid dashboard-metrics">
       <article v-for="item in metrics" :key="item.label" class="metric dashboard-metric" :class="item.tone">
         <span>{{ item.label }}</span>
+        <el-button
+          v-if="item.sensitive"
+          class="metric-visibility"
+          text
+          circle
+          :icon="showInventoryValues ? View : Hide"
+          :aria-label="showInventoryValues ? '隐藏库存估值' : '显示库存估值'"
+          @click="toggleInventoryValues"
+        />
         <strong>{{ item.value }}</strong>
         <small>{{ item.hint }}</small>
       </article>
@@ -98,18 +107,36 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from '../shared/elementApi'
 import { useRouter } from 'vue-router'
-import { Box, Files, Refresh } from '@element-plus/icons-vue'
+import { Box, Files, Hide, Refresh, View } from '@element-plus/icons-vue'
 import { dashboardSummary } from '../api/client'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
 
 const router = useRouter()
 const summary = ref({})
+const INVENTORY_VALUE_VISIBILITY_KEY = 'cw.dashboard.inventory-values-visible'
+const showInventoryValues = ref(localStorage.getItem(INVENTORY_VALUE_VISIBILITY_KEY) !== 'hidden')
 const priority = ['电阻', '电容', '电感', '芯片', '电源', '接口', '连接件', '传感器', '保护器件', '开关', '开发板']
+
+function inventoryValue(value) {
+  if (!showInventoryValues.value) return '••••••'
+  if (value === null || value === undefined || value === '') return '—'
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return '—'
+  return `¥${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount)}`
+}
+
+function toggleInventoryValues() {
+  showInventoryValues.value = !showInventoryValues.value
+  localStorage.setItem(INVENTORY_VALUE_VISIBILITY_KEY, showInventoryValues.value ? 'visible' : 'hidden')
+}
 
 const metrics = computed(() => [
   { label: '元器件种类', value: summary.value.total_kinds || 0, hint: '当前有效条目', tone: 'tone-blue' },
   { label: '库存总量', value: summary.value.total_quantity || 0, hint: '所有库存数量', tone: 'tone-green' },
-  { label: '可用库存', value: summary.value.available_quantity || 0, hint: '扣除项目预留后的可用数', tone: 'tone-green' },
+  { label: '设备占用', value: summary.value.occupied_quantity || 0, hint: '使用中或借出的设备台数', tone: 'tone-amber' },
+  { label: '可用库存', value: summary.value.available_quantity || 0, hint: '扣除项目预留和设备占用后的可用数', tone: 'tone-green' },
+  { label: '全部库存总值', value: inventoryValue(summary.value.inventory_value_total), hint: `已计价 ${summary.value.priced_component_count || 0} 种 · 未计价 ${summary.value.unpriced_component_count || 0} 种`, tone: 'tone-blue', sensitive: true },
+  { label: '可用库存总值', value: inventoryValue(summary.value.available_inventory_value_total), hint: '按扣除项目预留和设备占用后的可用数量估值', tone: 'tone-green', sensitive: true },
   { label: '低库存', value: summary.value.low_stock || 0, hint: '常用件低于安全库存', tone: 'tone-red' },
   { label: '常用器件', value: summary.value.common_count || 0, hint: '已标记为常用', tone: 'tone-amber' },
   { label: '分类数量', value: summary.value.category_count || 0, hint: '库存分类总数', tone: 'tone-purple' }
@@ -183,11 +210,19 @@ onMounted(load)
 }
 
 .dashboard-metric {
+  position: relative;
   min-height: 112px;
   display: grid;
   gap: 6px;
   align-content: center;
   background: #fff;
+}
+
+.metric-visibility {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #667085;
 }
 
 .dashboard-metric span,

@@ -25,17 +25,19 @@
     </div>
     <p class="usage">{{ usage }}</p>
     <div class="meta-row">
-      <span v-if="item.location">位置 {{ item.location }}</span>
+      <span v-if="location">位置 {{ location }}</span>
       <span v-for="tag in tags" :key="tag">{{ tag }}</span>
     </div>
     <div class="actions" @click.stop>
       <slot name="actions" />
     </div>
+    <p v-if="averagePriceLabel" class="average-price">均价 {{ averagePriceLabel }}/件</p>
     <div class="stock-row">
       <div class="stock-summary">
-        <span>总量 {{ item.quantity || 0 }}</span>
-        <span v-if="item.reserved_quantity" class="reserved-note">预留 {{ item.reserved_quantity }}</span>
-        <strong>可用 {{ item.available_quantity || 0 }}</strong>
+        <span>{{ quantityCopy.totalLabel }} {{ item.quantity || 0 }}</span>
+        <span v-if="item.reserved_quantity && !durable" class="reserved-note">预留 {{ item.reserved_quantity }}</span>
+        <span v-if="durable && item.occupied_quantity" class="occupied-note">占用 {{ item.occupied_quantity }}</span>
+        <strong>{{ quantityCopy.availableLabel }} {{ item.available_quantity || 0 }}</strong>
       </div>
       <div class="stock-action" @click.stop><slot name="stock-action" /></div>
     </div>
@@ -46,6 +48,7 @@
 import { computed } from 'vue'
 import { componentOneLineUsage, extractComponentChips, packageTagStyle, splitTags } from '../../utils/componentUi'
 import { componentDisplaySubtitle, componentDisplayTitle } from '../../shared/componentDisplay'
+import { inventoryQuantityCopy, isDurableEquipment, visibleInventoryLocation } from '../../shared/componentInventorySemantics'
 
 const props = defineProps({
   item: { type: Object, required: true }
@@ -63,6 +66,15 @@ const syncLabel = computed(() => {
   if (!props.item.sync_status) return ''
   return props.item.sync_status === 'live' ? '实时库存' : '离队快照'
 })
+const averagePriceLabel = computed(() => {
+  if (props.item.average_unit_price === null || props.item.average_unit_price === undefined || props.item.average_unit_price === '') return ''
+  const value = Number(props.item.average_unit_price)
+  if (!Number.isFinite(value)) return ''
+  return `¥${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(value)}`
+})
+const durable = computed(() => isDurableEquipment(props.item))
+const location = computed(() => visibleInventoryLocation(props.item.location))
+const quantityCopy = computed(() => inventoryQuantityCopy(props.item))
 </script>
 
 <style scoped>
@@ -111,10 +123,13 @@ p { margin: 0; }
 .mini-chip small { margin-right: 5px; color: #7a8699; }
 .meta-row span { background: #f8fafc; }
 .actions:empty { display: none; }
+.average-price { align-self: flex-end; color: #98a2b3; font-size: 12px; line-height: 1.2; }
 .stock-row { padding-top: 7px; border-top: 1px solid #eef2f7; color: #667085; font-size: 13px; }
 .stock-summary { gap: 9px; }
 .stock-row strong { color: #172b4d; }
 .stock-action:empty { display: none; }
+.stock-action { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .stock-action :deep(.el-button) { min-height: 32px; margin: 0; border-radius: var(--cw-radius-control); font-weight: 700; }
 .reserved-note { color: #98a2b3; }
+.occupied-note { color: #d97706; font-weight: 700; }
 </style>

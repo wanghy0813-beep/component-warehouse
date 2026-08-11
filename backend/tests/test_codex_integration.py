@@ -1,4 +1,5 @@
 import hashlib
+from decimal import Decimal
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -41,6 +42,7 @@ def codex_env(tmp_path: Path):
             User(id=1, phone="13800000001", nickname="库主"),
             User(id=2, phone="13800000002", nickname="其他用户"),
             Category(id=1, name="电阻", color="#fff", code_prefix="RES", code_prefix_locked=True),
+            Category(id=2, name="设备", color="#eee", code_prefix="EQP", code_prefix_locked=True),
         ]
     )
     db.add(
@@ -68,6 +70,7 @@ def codex_env(tmp_path: Path):
                 package="0603",
                 lcsc_number="C25804",
                 quantity=20,
+                average_unit_price=Decimal("0.125"),
                 category_id=1,
             ),
             Component(
@@ -129,6 +132,12 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     session = codex_env["client"].get("/api/integrations/codex/v1/session", headers=headers)
     assert session.status_code == 200
     assert session.json()["scopes"] == ["inventory:read"]
+    categories = codex_env["client"].get("/api/integrations/codex/v1/categories", headers=headers)
+    assert categories.status_code == 200
+    assert categories.json()["items"] == [
+        {"id": 1, "name": "电阻", "color": "#fff", "code_prefix": "RES"},
+        {"id": 2, "name": "设备", "color": "#eee", "code_prefix": "EQP"},
+    ]
     result = codex_env["client"].get(
         "/api/integrations/codex/v1/components/search",
         params={"q": "电阻"},
@@ -136,6 +145,8 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     )
     assert result.status_code == 200, result.text
     assert [row["warehouse_code"] for row in result.json()["items"]] == ["RES-00000001"]
+    assert result.json()["items"][0]["average_unit_price"] == 0.125
+    assert result.json()["items"][0]["price_currency"] == "CNY"
     assert "PRIVATE-ONLY" not in result.text
 
     match = codex_env["client"].post(
@@ -159,6 +170,8 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     assert row["auto_selected"] is True
     assert {candidate["component"]["id"] for candidate in row["matches"]} == {1}
     assert row["matches"][0]["component"]["warehouse_code"] == "RES-00000001"
+    assert row["matches"][0]["component"]["average_unit_price"] == 0.125
+    assert row["matches"][0]["component"]["price_currency"] == "CNY"
     assert "PRIVATE-ONLY" not in match.text
 
     unsafe_candidates = codex_env["client"].post(

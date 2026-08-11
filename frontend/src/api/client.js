@@ -202,6 +202,11 @@ export async function decrementComponentQuantity(id, payload = { quantity: 1 }) 
   return data
 }
 
+export async function updateComponentOccupancy(id, payload) {
+  const { data } = await api.post(`/components/${id}/occupancy`, payload)
+  return data
+}
+
 export async function incrementComponentQuantity(id, payload = { quantity: 1 }) {
   const { data } = await api.post(`/components/${id}/quantity/increment`, payload)
   return data
@@ -247,6 +252,30 @@ export async function getOrderImportBatches(params = {}) {
 
 export async function rollbackOrderImportBatch(batchId) {
   const { data } = await api.post(`/import/excel/batches/${batchId}/rollback`)
+  return data
+}
+
+export async function previewPriceStatement(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/import/price-statement/preview', formData)
+  return data
+}
+
+export async function commitPriceStatement(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/import/price-statement/commit', formData)
+  return data
+}
+
+export async function getPriceImportBatches(params = {}) {
+  const { data } = await api.get('/import/price-statement/batches', { params })
+  return data
+}
+
+export async function rollbackPriceImportBatch(batchId) {
+  const { data } = await api.post(`/import/price-statement/batches/${batchId}/rollback`)
   return data
 }
 

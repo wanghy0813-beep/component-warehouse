@@ -71,7 +71,13 @@
               <el-button v-if="row.lcsc_number" size="small" text @click="copyText(row.lcsc_number, '立创 ID')">复制立创 ID</el-button>
             </template>
             <template #stock-action>
+              <template v-if="isDurableEquipment(row)">
+                <el-button v-if="Number(row.available_quantity || 0) > 0" size="small" type="primary" plain title="登记占用，不减少设备登记数量" :loading="quickConsumeIds.has(row.id)" :disabled="readonly || !row.can_edit_quantity" @click.stop="quickOccupancy(row, 'occupy')">占用 1 台</el-button>
+                <el-button v-if="Number(row.occupied_quantity || 0) > 0" size="small" plain :loading="quickConsumeIds.has(row.id)" :disabled="readonly || !row.can_edit_quantity" @click.stop="quickOccupancy(row, 'release')">归还 1 台</el-button>
+                <el-button size="small" type="danger" plain title="仅在设备损坏、遗失或退役时登记报损" :loading="quickConsumeIds.has(row.id)" :disabled="readonly || !row.can_edit_quantity || Number(row.quantity || 0) <= 0" @click.stop="quickConsume(row)">报损 1 台</el-button>
+              </template>
               <el-button
+                v-else
                 size="small"
                 type="primary"
                 plain
@@ -79,7 +85,7 @@
                 :loading="quickConsumeIds.has(row.id)"
                 :disabled="readonly || !row.can_edit_quantity || Number(row.available_quantity || 0) <= 0"
                 @click.stop="quickConsume(row)"
-              >领用 1 个</el-button>
+              >{{ inventoryQuantityCopy(row).actionLabel }}</el-button>
             </template>
           </inventory-component-card>
         </div>
@@ -127,6 +133,11 @@
         @delete-lot="deleteInventoryLot"
         @ask-ai="askSelectedComponentAi"
       >
+        <template #asset-actions>
+          <el-button v-if="Number(selected.available_quantity || 0) > 0" type="primary" plain :loading="quickConsumeIds.has(selected.id)" :disabled="readonly || !selected.can_edit_quantity" @click="quickOccupancy(selected, 'occupy')">占用 1 台</el-button>
+          <el-button v-if="Number(selected.occupied_quantity || 0) > 0" plain :loading="quickConsumeIds.has(selected.id)" :disabled="readonly || !selected.can_edit_quantity" @click="quickOccupancy(selected, 'release')">归还 1 台</el-button>
+          <el-button type="danger" plain :loading="quickConsumeIds.has(selected.id)" :disabled="readonly || !selected.can_edit_quantity || Number(selected.quantity || 0) <= 0" @click="quickConsume(selected)">报损 1 台</el-button>
+        </template>
         <template #actions>
           <div class="detail-actions">
             <el-button v-if="selected.warehouse_code" plain @click="copyText(selected.warehouse_code, '器件 ID')">复制器件 ID</el-button>
@@ -365,6 +376,8 @@ import InventoryComponentCard from '../../components/inventory/InventoryComponen
 import InventoryComponentDetail from '../../components/inventory/InventoryComponentDetail.vue'
 import MultiQrScanner from '../../shared/components/MultiQrScanner.vue'
 import { applyInventoryLotConsumption } from '../../shared/inventoryLotState'
+import { confirmInventoryLotRemoval } from '../../shared/confirmInventoryLotRemoval'
+import { inventoryQuantityCopy, isDurableEquipment } from '../../shared/componentInventorySemantics'
 import LabelExportDialog from '../../shared/components/LabelExportDialog.vue'
 import LcscPasteImport from '../../shared/components/LcscPasteImport.vue'
 import {
@@ -398,6 +411,7 @@ import {
   searchTeamScanCandidates,
   updateComponent,
   updateComponentMarker,
+  updateTeamComponentOccupancy,
   updateComponentQuantity
 } from '../api'
 import { clearLibrarySnapshots, readSnapshot, writeSnapshot } from '../cache'
@@ -1033,9 +1047,27 @@ async function addInventoryLot(payload) {
 async function consumeInventoryLot(lot) {
   if (!selected.value?.id || !lot?.id || readonly.value || !selected.value.can_edit_quantity || lotConsumeIds.has(lot.id)) return
   const componentId = selected.value.id
+  const durable = isDurableEquipment(selected.value)
+  if (durable) {
+    try {
+      await ElMessageBox.confirm(
+        `确认将「${selected.value.name || selected.value.model || selected.value.warehouse_code || '设备'}」登记为报损？\n\n这只用于设备损坏、遗失或退役，会使在库数量减少 1；正常使用、借出和归还不需要改库存。`,
+        '登记设备报损',
+        { type: 'warning', confirmButtonText: '确认报损', cancelButtonText: '取消' }
+      )
+    } catch (error) {
+      if (error === 'cancel' || error === 'close') return
+      throw error
+    }
+  }
   lotConsumeIds.add(lot.id)
   try {
-    const updated = await decrementTeamComponentQuantity(libraryId, componentId, { quantity: 1, lot_id: lot.id, remark: `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减` })
+    const updated = await decrementTeamComponentQuantity(libraryId, componentId, {
+      quantity: 1,
+      reason_type: durable ? 'loss' : 'consume',
+      lot_id: lot.id,
+      remark: durable ? `设备报损，来源批次：${lot.source_reference || lot.source_type || '指定批次'}` : `从 ${lot.source_reference || lot.source_type || '指定批次'} 扣减`
+    })
     items.value = items.value.map((item) => item.id === updated.id ? updated : item)
     totalQuantity.value = Math.max(0, Number(totalQuantity.value || 0) - 1)
     if (selected.value?.id === componentId) {
@@ -1046,24 +1078,80 @@ async function consumeInventoryLot(lot) {
       type: 'quantity-updated',
       componentId: updated.cw_component_id,
       quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
       availableQuantity: updated.available_quantity,
       reservedQuantity: updated.reserved_quantity,
       status: updated.status
     })
-    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.lot_consume', { target_type: 'team_component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
-    ElMessage.success({ message: '已从指定批次扣减 1', grouping: true, duration: 1400 })
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), durable ? 'ui.team_components.lot_loss' : 'ui.team_components.lot_consume', { target_type: 'team_component', target_id: componentId, detail: { lot_id: lot.id, source_type: lot.source_type } })
+    ElMessage.success({ message: durable ? '设备已登记报损，在库数量减少 1' : '已从指定批次扣减 1', grouping: true, duration: 1400 })
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '批次扣减失败')
+    ElMessage.error(error.response?.data?.detail || (durable ? '设备报损登记失败' : '批次扣减失败'))
   } finally {
     lotConsumeIds.delete(lot.id)
   }
 }
 
-async function quickConsume(row) {
-  if (!row?.id || readonly.value || !row.can_edit_quantity || quickConsumeIds.has(row.id) || Number(row.available_quantity || 0) <= 0) return
+async function quickOccupancy(row, action) {
+  if (!row?.id || !isDurableEquipment(row) || readonly.value || !row.can_edit_quantity || quickConsumeIds.has(row.id)) return
+  if (action === 'occupy' && Number(row.available_quantity || 0) <= 0) return
+  if (action === 'release' && Number(row.occupied_quantity || 0) <= 0) return
   quickConsumeIds.add(row.id)
   try {
-    const updated = await decrementTeamComponentQuantity(libraryId, row.id, { quantity: 1, remark: '团队器件卡片快捷领用 1 个' })
+    const updated = await updateTeamComponentOccupancy(libraryId, row.id, {
+      action,
+      quantity: 1,
+      remark: action === 'occupy' ? '团队设备卡片登记占用 1 台' : '团队设备卡片登记归还 1 台'
+    })
+    items.value = items.value.map((item) => item.id === updated.id ? updated : item)
+    if (selected.value?.id === updated.id) selected.value = updated
+    inventoryChannel?.postMessage({
+      type: 'quantity-updated',
+      componentId: updated.cw_component_id,
+      quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
+      availableQuantity: updated.available_quantity,
+      reservedQuantity: updated.reserved_quantity,
+      status: updated.status
+    })
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), action === 'occupy' ? 'ui.team_components.quick_occupy' : 'ui.team_components.quick_release', {
+      target_type: 'team_component',
+      target_id: updated.id,
+      entry: 'inventory-card',
+      detail: { quantity: 1 }
+    })
+    ElMessage.success(action === 'occupy'
+      ? `${row.name || row.model || row.warehouse_code || '设备'} 已占用 1 台，登记数量不变`
+      : `${row.name || row.model || row.warehouse_code || '设备'} 已归还 1 台，可用 ${updated.available_quantity || 0}`)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || (action === 'occupy' ? '设备占用登记失败' : '设备归还登记失败'))
+  } finally {
+    quickConsumeIds.delete(row.id)
+  }
+}
+
+async function quickConsume(row) {
+  const durable = isDurableEquipment(row)
+  if (!row?.id || readonly.value || !row.can_edit_quantity || quickConsumeIds.has(row.id) || (durable ? Number(row.quantity || 0) <= 0 : Number(row.available_quantity || 0) <= 0)) return
+  if (durable) {
+    try {
+      await ElMessageBox.confirm(
+        `确认将「${row.name || row.model || row.warehouse_code || '设备'}」登记为报损？\n\n这只用于设备损坏、遗失或退役，会使在库数量减少 1；正常使用、借出和归还不需要改库存。`,
+        '登记设备报损',
+        { type: 'warning', confirmButtonText: '确认报损', cancelButtonText: '取消' }
+      )
+    } catch (error) {
+      if (error === 'cancel' || error === 'close') return
+      throw error
+    }
+  }
+  quickConsumeIds.add(row.id)
+  try {
+    const updated = await decrementTeamComponentQuantity(libraryId, row.id, {
+      quantity: 1,
+      reason_type: durable ? 'loss' : 'consume',
+      remark: durable ? '团队设备卡片登记报损 1 台' : '团队器件卡片快捷领用 1 个'
+    })
     items.value = items.value.map((item) => item.id === updated.id ? updated : item)
     totalQuantity.value = Math.max(0, Number(totalQuantity.value || 0) - 1)
     if (selected.value?.id === updated.id) selected.value = updated
@@ -1071,19 +1159,22 @@ async function quickConsume(row) {
       type: 'quantity-updated',
       componentId: updated.cw_component_id,
       quantity: updated.quantity,
+      occupiedQuantity: updated.occupied_quantity,
       availableQuantity: updated.available_quantity,
       reservedQuantity: updated.reserved_quantity,
       status: updated.status
     })
-    trackUsage((body) => recordTeamUsageEvent(libraryId, body), 'ui.team_components.quick_consume', {
+    trackUsage((body) => recordTeamUsageEvent(libraryId, body), durable ? 'ui.team_components.quick_loss' : 'ui.team_components.quick_consume', {
       target_type: 'team_component',
       target_id: updated.id,
       entry: 'inventory-card',
       detail: { quantity: 1 }
     })
-    ElMessage.success(`${row.name || row.model || row.warehouse_code || '器件'} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
+    ElMessage.success(durable
+      ? `${row.name || row.model || row.warehouse_code || '设备'} 已登记报损，在库 ${updated.available_quantity || 0}`
+      : `${row.name || row.model || row.warehouse_code || '器件'} 已领用 1 个，可用 ${updated.available_quantity || 0}`)
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '领用登记失败')
+    ElMessage.error(error.response?.data?.detail || (durable ? '设备报损登记失败' : '领用登记失败'))
   } finally {
     quickConsumeIds.delete(row.id)
   }
@@ -1092,11 +1183,7 @@ async function quickConsume(row) {
 async function deleteInventoryLot(lot) {
   if (!selected.value?.id || !lot?.id || readonly.value || !selected.value.can_edit_quantity) return
   try {
-    await ElMessageBox.confirm(
-      `确认删除批次「${lot.source_reference || lot.source_type || '手工批次'}」？总库存将同步减少 ${lot.initial_quantity || 0}。`,
-      '删除误添加批次',
-      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
-    )
+    await confirmInventoryLotRemoval(lot, lot.source_reference || lot.source_type || '库存批次')
     lotSaving.value = true
     const result = await deleteTeamComponentLot(libraryId, selected.value.id, lot.id)
     selected.value = result.component

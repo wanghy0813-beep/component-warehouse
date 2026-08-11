@@ -32,6 +32,7 @@ DEFAULT_CATEGORY_PREFIXES = {
     "开关": "SWT",
     "传感器": "SEN",
     "开发板": "DEV",
+    "设备": "EQP",
     "显示模块": "DIS",
     "机电件": "MEC",
     "功能模块": "FNC",

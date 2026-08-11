@@ -32,7 +32,7 @@
         <div class="section-head">
           <div>
             <h2>{{ activeCategory }}核心规格分布</h2>
-            <span>横轴是{{ activeCategory }}核心值的对数轴，越靠右规格值越大 · {{ visibleItems.length }} 个规格点</span>
+            <span>{{ axisDescription }} · {{ visibleItems.length }} 个规格点</span>
           </div>
           <el-tag effect="plain">{{ activeData.unit || unitLabel }}</el-tag>
         </div>
@@ -44,7 +44,7 @@
         </div>
 
         <div v-if="axisTicks.length" class="axis-ruler">
-          <span v-for="tick in axisTicks" :key="tick.label" :style="{ left: `${tick.left}%` }">{{ tick.label }}</span>
+          <span v-for="tick in axisTicks" :key="`${tick.left}-${tick.label}`" :style="{ left: `${tick.left}%` }">{{ tick.label }}</span>
         </div>
 
         <div v-if="packageLanes.length" class="lane-stack">
@@ -53,7 +53,13 @@
               <strong>{{ lane.name }}</strong>
               <span>{{ lane.count }} 项 · 可用 {{ lane.available }}</span>
             </div>
-            <div class="lane-track">
+            <div class="lane-track" :style="{ height: `${lane.trackHeight}px` }">
+              <i
+                v-for="guide in axisGuides"
+                :key="guide"
+                class="lane-guide"
+                :style="{ left: `${guide}%` }"
+              ></i>
               <button
                 v-for="point in lane.points"
                 :key="point.key"
@@ -63,11 +69,12 @@
                   left: `${point.left}%`,
                   width: `${point.size}px`,
                   height: `${point.size}px`,
-                  background: point.available_quantity > 0 ? lane.color : '#cbd5e1'
+                  background: point.available_quantity > 0 ? lane.color : '#cbd5e1',
+                  '--label-offset': `${2 + point.labelRow * 12}px`
                 }"
                 :title="point.title"
               >
-                <span>{{ point.display_value }}</span>
+                <span v-if="point.showLabel">{{ point.display_value }}</span>
               </button>
             </div>
           </div>
@@ -81,7 +88,7 @@
           <div class="section-head small">
             <div>
               <h2>规格段</h2>
-              <span>按对数值域聚合</span>
+              <span>{{ bucketDescription }}</span>
             </div>
           </div>
           <div class="bucket-grid">
@@ -179,6 +186,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from '../shared/elementApi'
 import { Refresh } from '@element-plus/icons-vue'
 import { getComponentCoverage } from '../api/client'
+import { createCoverageAxis, layoutCoveragePointLabels } from '../shared/coverageAxis'
 
 const categoryOptions = ['电阻', '电容', '电感']
 const activeCategory = ref('电阻')
@@ -194,13 +202,12 @@ const packageOptions = computed(() => activeData.value.packages || [])
 const visibleItems = computed(() => activeData.value.items || [])
 const listItems = computed(() => visibleItems.value.slice(0, 160))
 
-const numericValues = computed(() => visibleItems.value.map((item) => Number(item.value)).filter((value) => Number.isFinite(value) && value > 0))
-const logRange = computed(() => {
-  if (!numericValues.value.length) return { min: 0, max: 1, spread: 1 }
-  const min = Math.log10(Math.min(...numericValues.value))
-  const max = Math.log10(Math.max(...numericValues.value))
-  return { min, max, spread: Math.max(max - min, 0.0001) }
-})
+const numericValues = computed(() => visibleItems.value.map((item) => Number(item.value)).filter((value) => Number.isFinite(value) && value >= 0))
+const coverageAxis = computed(() => createCoverageAxis(numericValues.value, activeCategory.value))
+const axisDescription = computed(() => activeCategory.value === '电阻'
+  ? '横轴按常用阻值数量级分段：0Ω 单列、<1Ω 压缩，1Ω 起每十倍一段'
+  : `横轴是${activeCategory.value}核心值的对数轴，越靠右规格值越大`)
+const bucketDescription = computed(() => activeCategory.value === '电阻' ? '按常用阻值数量级聚合' : '按对数值域聚合')
 
 const summaryCards = computed(() => {
   const categories = coverage.value || []
@@ -214,17 +221,6 @@ const summaryCards = computed(() => {
     { label: '封装覆盖', value: packages, hint: '不同封装/规格组', tone: 'amber' },
     { label: '待整理', value: unparsed, hint: '缺少高置信规格', tone: 'red' },
   ]
-})
-
-const rangeSummary = computed(() => {
-  const values = numericValues.value
-  const unit = activeData.value.unit || unitLabel.value
-  if (!values.length) return { min: '-', max: '-', count: 0 }
-  return {
-    min: formatValue(Math.min(...values), unit),
-    max: formatValue(Math.max(...values), unit),
-    count: values.length,
-  }
 })
 
 const packageStats = computed(() => {
@@ -255,45 +251,37 @@ const packageLanes = computed(() => {
         return {
           ...item,
           key: `${item.id}-${item.value}`,
-          left: logPosition(item.value),
+          left: coverageAxis.value.position(item.value),
           size,
           title: `${item.display_value} | ${item.model || item.name} | ${stat.name} | 可用 ${available}`
         }
       })
-    return { ...stat, points }
+    const labelLayout = layoutCoveragePointLabels(points)
+    return { ...stat, ...labelLayout }
   })
 })
 
 const axisTicks = computed(() => {
-  const values = numericValues.value
-  if (!values.length) return []
   const unit = activeData.value.unit || unitLabel.value
-  const min = Math.log10(Math.min(...values))
-  const max = Math.log10(Math.max(...values))
-  const count = Math.min(6, Math.max(3, Math.ceil(max - min) + 2))
-  return Array.from({ length: count }, (_, index) => {
-    const ratio = count === 1 ? 0 : index / (count - 1)
-    const value = Math.pow(10, min + (max - min) * ratio)
-    return { left: Math.round(ratio * 100), label: formatValue(value, unit) }
-  })
+  return coverageAxis.value.ticks.map((tick) => ({
+    ...tick,
+    label: tick.label || formatValue(tick.value, unit),
+  }))
 })
+const axisGuides = computed(() => coverageAxis.value.ticks.filter((tick) => tick.guide).map((tick) => tick.left))
 
 const valueBuckets = computed(() => {
-  const values = numericValues.value
-  if (!values.length) return []
   const unit = activeData.value.unit || unitLabel.value
-  const count = Math.min(8, Math.max(4, Math.ceil(logRange.value.spread * 1.4)))
-  const buckets = Array.from({ length: count }, (_, index) => {
-    const startRatio = index / count
-    const endRatio = (index + 1) / count
-    const start = Math.pow(10, logRange.value.min + logRange.value.spread * startRatio)
-    const end = Math.pow(10, logRange.value.min + logRange.value.spread * endRatio)
-    return { start, end, label: `${formatValue(start, unit)}-${formatValue(end, unit)}`, count: 0, available: 0 }
-  })
+  const buckets = coverageAxis.value.buckets.map((bucket) => ({
+    ...bucket,
+    label: bucket.label || `${formatValue(bucket.start, unit)}–${formatValue(bucket.end, unit)}`,
+    count: 0,
+    available: 0,
+  }))
   for (const item of visibleItems.value) {
     const value = Number(item.value)
-    if (!Number.isFinite(value) || value <= 0) continue
-    const position = Math.min(count - 1, Math.max(0, Math.floor(((Math.log10(value) - logRange.value.min) / logRange.value.spread) * count)))
+    const position = coverageAxis.value.bucketIndex(value)
+    if (position < 0) continue
     buckets[position].count += 1
     buckets[position].available += item.available_quantity || 0
   }
@@ -329,12 +317,6 @@ function colorForPackage(name) {
   let hash = 0
   for (let index = 0; index < text.length; index += 1) hash = (hash * 31 + text.charCodeAt(index)) >>> 0
   return palette[hash % palette.length]
-}
-
-function logPosition(value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric) || numeric <= 0) return 0
-  return Math.max(0, Math.min(100, ((Math.log10(numeric) - logRange.value.min) / logRange.value.spread) * 100))
 }
 
 function formatValue(value, unit) {
@@ -592,19 +574,24 @@ watch(activeCategory, () => {
 
 .lane-track {
   position: relative;
-  height: 40px;
+  min-height: 46px;
+  overflow: hidden;
   border: 1px solid #e5eaf3;
   border-radius: 16px;
-  background:
-    linear-gradient(to right, transparent 24.5%, rgba(148, 163, 184, 0.18) 25%, transparent 25.5%),
-    linear-gradient(to right, transparent 49.5%, rgba(148, 163, 184, 0.18) 50%, transparent 50.5%),
-    linear-gradient(to right, transparent 74.5%, rgba(148, 163, 184, 0.18) 75%, transparent 75.5%),
-    #f8fafc;
+  background: #f8fafc;
+}
+
+.lane-guide {
+  position: absolute;
+  inset: 0 auto 0;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.2);
+  pointer-events: none;
 }
 
 .lane-point {
   position: absolute;
-  top: 45%;
+  top: 16px;
   transform: translate(-50%, -50%);
   border: 2px solid #fff;
   border-radius: 999px;
@@ -615,7 +602,7 @@ watch(activeCategory, () => {
 .lane-point span {
   position: absolute;
   left: 50%;
-  top: calc(100% + 2px);
+  top: calc(100% + var(--label-offset, 2px));
   transform: translateX(-50%);
   max-width: 90px;
   overflow: hidden;

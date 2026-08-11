@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +29,7 @@ class ComponentBase(BaseModel):
     parameters: str | None = None
     package: str | None = None
     quantity: int = 0
+    average_unit_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=6)
     source: str | None = None
     lcsc_number: str | None = None
     tags: str | None = None
@@ -84,6 +86,7 @@ class ComponentOut(ComponentBase):
     id: int
     category: CategoryOut | None = None
     reserved_quantity: int = 0
+    occupied_quantity: int = 0
     available_quantity: int = 0
     low_stock_warning: bool = False
     ai_summary: str | None = None
@@ -513,6 +516,7 @@ class AiTaskSummary(BaseModel):
 
 class ComponentConsumeRequest(BaseModel):
     quantity: int = Field(default=1, ge=1)
+    reason_type: Literal["consume", "loss"] = "consume"
     project_id: int | None = None
     remark: str | None = None
     lot_id: str | None = None
@@ -520,6 +524,12 @@ class ComponentConsumeRequest(BaseModel):
     source_reference: str | None = None
     location: str | None = None
     unit_cost: float | None = None
+
+
+class EquipmentOccupancyRequest(BaseModel):
+    action: Literal["occupy", "release"]
+    quantity: int = Field(default=1, ge=1)
+    remark: str | None = Field(default=None, max_length=1000)
 
 
 class InventoryLotCreate(BaseModel):

@@ -24,6 +24,7 @@ STANDARD_CATEGORY_ORDER = [
     "接口",
     "开关",
     "开发板",
+    "设备",
     "保护器件",
     "传感器",
     "连接件",
@@ -36,6 +37,62 @@ STANDARD_CATEGORY_ORDER = [
     "结构件",
 ]
 STANDARD_CATEGORY_RANK = {name: index for index, name in enumerate(STANDARD_CATEGORY_ORDER)}
+
+TRANSIT_LOCATION_LABELS = {
+    "运输中",
+    "在途",
+    "快递中",
+    "配送中",
+    "物流中",
+    "物流运输中",
+}
+TRANSIT_STOCK_STATUSES = {
+    "in_transit",
+    "transit",
+    "shipping",
+    "shipped",
+    "运输中",
+    "在途",
+}
+
+
+def normalize_inventory_location(value: str | None) -> str | None:
+    """Inventory locations describe where an owned item is stored, not its delivery stage."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    compact = re.sub(r"\s+", "", text)
+    return None if compact in TRANSIT_LOCATION_LABELS else text
+
+
+def normalize_inventory_status(value: str | None, *, location: str | None = None) -> str:
+    status = str(value or "in_stock").strip() or "in_stock"
+    compact_status = re.sub(r"\s+", "", status).lower()
+    compact_location = re.sub(r"\s+", "", str(location or "").strip())
+    if compact_status in TRANSIT_STOCK_STATUSES:
+        return "in_stock"
+    if compact_location in TRANSIT_LOCATION_LABELS and compact_status in {"in_stock", "pending", "pending_purchase"}:
+        return "in_stock"
+    return status
+
+
+def is_durable_equipment(component) -> bool:
+    category = getattr(component, "category", None)
+    category_name = category.get("name") if isinstance(category, dict) else getattr(category, "name", category)
+    warehouse_code = str(getattr(component, "warehouse_code", "") or "").strip().upper()
+    return str(category_name or "").strip() == "设备" or warehouse_code.startswith("EQP-")
+
+
+def equipment_occupied_quantity(component) -> int:
+    if not is_durable_equipment(component):
+        return 0
+    quantity = max(0, int(getattr(component, "quantity", 0) or 0))
+    return min(quantity, max(0, int(getattr(component, "occupied_quantity", 0) or 0)))
+
+
+def component_available_quantity(component, reserved: int = 0) -> int:
+    quantity = max(0, int(getattr(component, "quantity", 0) or 0))
+    return max(0, quantity - max(0, int(reserved or 0)) - equipment_occupied_quantity(component))
 
 
 def category_sort_key(category_name: str | None):
