@@ -26,7 +26,7 @@
       </div>
     </div>
 
-    <div class="panel filter-panel">
+    <div ref="filterPanel" class="panel filter-panel">
       <el-input v-model="filters.keyword" clearable placeholder="搜索器件 ID、名称、型号、参数、封装、立创 ID、AI 摘要" @keyup.enter="reloadFromFirstPage" @clear="reloadFromFirstPage" />
       <el-select v-model="filters.category_id" clearable placeholder="分类" @change="reloadFromFirstPage">
         <el-option v-for="item in categories" :key="item.id" :label="item.name" :value="item.id" />
@@ -49,7 +49,21 @@
       <el-button type="primary" :icon="Search" @click="reloadFromFirstPage">查询</el-button>
     </div>
 
-    <div v-loading="loading" class="category-stack">
+    <transition name="floating-search">
+      <form v-show="showFloatingSearch" class="floating-search" role="search" aria-label="悬浮元器件搜索" @submit.prevent="reloadFromFirstPage">
+        <el-input
+          v-model="filters.keyword"
+          clearable
+          placeholder="随时搜索元器件、型号或规格"
+          aria-label="搜索元器件"
+          @clear="reloadFromFirstPage"
+        />
+        <span v-if="activeFilterText" class="floating-filter-summary">{{ activeFilterText }}</span>
+        <el-button native-type="submit" type="primary" :icon="Search">搜索</el-button>
+      </form>
+    </transition>
+
+    <div v-loading="loading && !groups.length" class="category-stack">
         <div v-if="loading && !groups.length" class="component-skeleton-grid" aria-label="正在加载元器件">
           <el-skeleton v-for="index in 8" :key="index" animated>
             <template #template><el-skeleton-item variant="rect" class="component-skeleton" /></template>
@@ -628,9 +642,12 @@ import { FEATURE_EDA_ENABLED } from '../shared/features'
 const categories = ref([])
 const groups = ref([])
 const loading = ref(false)
+const filterPanel = ref(null)
+const showFloatingSearch = ref(false)
 const autoLoadSentinel = ref(null)
 const autoLoadError = ref(false)
 let autoLoadObserver = null
+let floatingSearchObserver = null
 const suggestionLoading = ref(false)
 const saving = ref(false)
 const importing = ref(false)
@@ -686,6 +703,8 @@ const pagination = reactive({ page: 1, pageSize: 60, total: 0 })
 const categoryPaging = reactive({ page: 1, pageSize: 3, categoryTotal: 0, hasMore: false })
 let suggestionRequestId = 0
 let autoOpenComponentCode = ''
+let componentLoadController = null
+let componentLoadRequestId = 0
 
 const filters = reactive({ keyword: '', category_id: null, status: '', ai_status: '', stock: '' })
 const emptyForm = {
@@ -1237,16 +1256,7 @@ function valueList(value) {
 }
 
 function decorateComponent(item) {
-  return {
-    ...item,
-    _display: {
-      primary: primaryLabel(item),
-      secondary: secondaryLabel(item),
-      tags: displayTags(item).slice(0, 3),
-      chips: cardChips(item),
-      usage: oneLineUsage(item)
-    }
-  }
+  return { ...item }
 }
 
 function toggleGroup(key) {
@@ -1256,12 +1266,17 @@ function toggleGroup(key) {
 }
 
 async function load({ append = false } = {}) {
+  const requestId = ++componentLoadRequestId
+  componentLoadController?.abort()
+  const controller = new AbortController()
+  componentLoadController = controller
   loading.value = true
   try {
     const params = { ...filters }
     params.page = categoryPaging.page
     params.page_size = categoryPaging.pageSize
-    const data = await getGroupedComponentsPage(params)
+    const data = await getGroupedComponentsPage(params, { signal: controller.signal })
+    if (requestId !== componentLoadRequestId) return
     const nextGroups = (data.groups || []).map((group) => ({
       ...group,
       items: (group.items || []).map(decorateComponent)
@@ -1289,10 +1304,14 @@ async function load({ append = false } = {}) {
     maybeLoadSearchSuggestions()
     maybeOpenComponentFromRoute()
   } catch (error) {
+    if (error?.code === 'ERR_CANCELED' || requestId !== componentLoadRequestId) return
     ElMessage.error('读取元器件失败')
     if (append) throw error
   } finally {
-    loading.value = false
+    if (requestId === componentLoadRequestId) {
+      loading.value = false
+      componentLoadController = null
+    }
   }
 }
 
@@ -2173,10 +2192,12 @@ onMounted(async () => {
     autoOpenComponentCode = String(route.query.component)
     filters.keyword = autoOpenComponentCode
   } else if (route.query.keyword) filters.keyword = String(route.query.keyword)
-  await Promise.all([loadCategories(), loadImportBatches(), loadCustomLabels()])
+  const auxiliaryLoads = Promise.allSettled([loadCategories(), loadImportBatches(), loadCustomLabels()])
   await load()
   await nextTick()
   setupAutoLoadObserver()
+  setupFloatingSearchObserver()
+  void auxiliaryLoads
   if (inventoryChannel) {
     inventoryChannel.onmessage = (event) => {
       if (event.data?.type !== 'quantity-updated') return
@@ -2205,8 +2226,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  componentLoadController?.abort()
   inventoryChannel?.close()
   stopAutoLoadObserver()
+  stopFloatingSearchObserver()
 })
 
 watch(
@@ -2246,6 +2269,20 @@ function setupAutoLoadObserver() {
   }, { rootMargin: '420px 0px 420px 0px', threshold: 0.01 })
   autoLoadObserver.observe(autoLoadSentinel.value)
 }
+
+function stopFloatingSearchObserver() {
+  floatingSearchObserver?.disconnect()
+  floatingSearchObserver = null
+}
+
+function setupFloatingSearchObserver() {
+  stopFloatingSearchObserver()
+  if (!filterPanel.value) return
+  floatingSearchObserver = new IntersectionObserver(([entry]) => {
+    showFloatingSearch.value = !entry.isIntersecting && entry.boundingClientRect.bottom < 72
+  }, { rootMargin: '-72px 0px 0px 0px', threshold: 0 })
+  floatingSearchObserver.observe(filterPanel.value)
+}
 </script>
 
 <style scoped>
@@ -2274,6 +2311,62 @@ function setupAutoLoadObserver() {
 .filter-panel :deep(.el-segmented),
 .filter-panel :deep(.el-button) {
   border-radius: var(--cw-radius-control);
+}
+
+.floating-search {
+  position: fixed;
+  top: 78px;
+  left: 50%;
+  z-index: 19;
+  width: min(760px, calc(100vw - 40px));
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, .76);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .08);
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+  transform: translateX(-50%);
+  will-change: transform, opacity;
+}
+
+.floating-search :deep(.el-input__wrapper) {
+  min-height: 42px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .86);
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, .25) inset;
+}
+
+.floating-search :deep(.el-button) {
+  min-height: 42px;
+  border-radius: 14px;
+}
+
+.floating-filter-summary {
+  max-width: 210px;
+  overflow: hidden;
+  color: var(--cw-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-search-enter-active {
+  transition: opacity .28s ease, transform .38s cubic-bezier(.2, .82, .2, 1);
+}
+
+.floating-search-leave-active {
+  transition: opacity .18s ease, transform .22s ease;
+}
+
+.floating-search-enter-from,
+.floating-search-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -16px) scale(.97);
 }
 
 .toolbar :deep(.el-button) {
@@ -3039,6 +3132,19 @@ pre {
 }
 
 @media (max-width: 620px) {
+  .floating-search {
+    top: 68px;
+    width: calc(100vw - 24px);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 18px;
+  }
+
+  .floating-filter-summary {
+    display: none;
+  }
+
   :global(.component-detail-drawer.el-drawer) {
     width: 100vw !important;
     max-width: 100vw;
@@ -3163,6 +3269,13 @@ pre {
 @media (max-width: 420px) {
   .drawer-actions {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-search-enter-active,
+  .floating-search-leave-active {
+    transition-duration: .01ms;
   }
 }
 </style>

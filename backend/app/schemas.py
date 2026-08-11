@@ -108,6 +108,39 @@ class ComponentOut(ComponentBase):
     search_unit_conversion: SearchUnitConversion | None = None
 
 
+class ComponentCardOut(BaseModel):
+    """Compact component representation used by the inventory card stream."""
+
+    id: int
+    warehouse_code: str | None = None
+    name: str
+    model: str | None = None
+    category_id: int | None = None
+    category: CategoryOut | None = None
+    parameters: str | None = None
+    package: str | None = None
+    quantity: int = 0
+    average_unit_price: Decimal | None = None
+    source: str | None = None
+    lcsc_number: str | None = None
+    tags: str | None = None
+    source_title: str | None = None
+    part_family: str | None = "component"
+    normalized_spec: str | None = None
+    status: str = "in_stock"
+    location: str | None = None
+    buy_url: str | None = None
+    reserved_quantity: int = 0
+    occupied_quantity: int = 0
+    available_quantity: int = 0
+    low_stock_warning: bool = False
+    card_chips: list[dict[str, Any]] = Field(default_factory=list)
+    card_usage: str | None = None
+    ai_tags: str | None = None
+    ai_status: str = "pending"
+    search_unit_conversion: SearchUnitConversion | None = None
+
+
 class ComponentList(BaseModel):
     items: list[ComponentOut]
     total: int
@@ -134,6 +167,21 @@ class ComponentGroup(BaseModel):
 
 class ComponentGroupPage(BaseModel):
     groups: list[ComponentGroup]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool = False
+    category_total: int = 0
+
+
+class ComponentCardGroup(BaseModel):
+    category: CategoryOut | None = None
+    items: list[ComponentCardOut]
+    total: int
+
+
+class ComponentCardGroupPage(BaseModel):
+    groups: list[ComponentCardGroup]
     total: int
     page: int
     page_size: int

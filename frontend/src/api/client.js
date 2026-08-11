@@ -85,8 +85,8 @@ export async function getGroupedComponents(params = {}) {
   return data
 }
 
-export async function getGroupedComponentsPage(params = {}) {
-  const { data } = await api.get('/components/grouped-page', { params })
+export async function getGroupedComponentsPage(params = {}, config = {}) {
+  const { data } = await api.get('/components/card-page', { ...config, params })
   return data
 }
 

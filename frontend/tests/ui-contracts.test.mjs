@@ -46,6 +46,24 @@ test('usage records are collapsed and lazy loaded', () => {
   assert.match(text, /max-height: 360px/)
 })
 
+test('personal component stream uses a compact cancellable response and smooth floating search', () => {
+  const page = source('../src/views/Components.vue')
+  const client = source('../src/api/client.js')
+  assert.match(client, /\/components\/card-page/)
+  assert.match(client, /\{ \.\.\.config, params \}/)
+  assert.match(page, /new AbortController\(\)/)
+  assert.match(page, /Promise\.allSettled\(\[loadCategories\(\), loadImportBatches\(\), loadCustomLabels\(\)\]\)/)
+  assert.match(page, /v-loading="loading && !groups\.length"/)
+  assert.match(page, /class="floating-search"/)
+  assert.match(page, /backdrop-filter: blur\(20px\) saturate\(145%\)/)
+  assert.match(page, /new IntersectionObserver/)
+  assert.match(page, /prefers-reduced-motion: reduce/)
+  assert.doesNotMatch(page, /_display:/)
+  const card = source('../src/components/inventory/InventoryComponentCard.vue')
+  assert.match(card, /Array\.isArray\(props\.item\.card_chips\)/)
+  assert.match(card, /props\.item\.card_usage \|\| componentOneLineUsage/)
+})
+
 test('component detail exposes inventory lots and component-scoped AI question UI', () => {
   const text = source('../src/components/inventory/InventoryComponentDetail.vue')
   const page = source('../src/views/Components.vue')

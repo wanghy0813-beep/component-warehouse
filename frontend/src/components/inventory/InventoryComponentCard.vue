@@ -58,9 +58,9 @@ defineEmits(['open'])
 
 const primary = computed(() => componentDisplayTitle(props.item))
 const secondary = computed(() => componentDisplaySubtitle(props.item, primary.value) || '暂无型号信息')
-const chips = computed(() => extractComponentChips(props.item, 4))
+const chips = computed(() => Array.isArray(props.item.card_chips) ? props.item.card_chips.slice(0, 4) : extractComponentChips(props.item, 4))
 const tags = computed(() => splitTags([props.item.tags, props.item.ai_tags].filter(Boolean).join(',' )).slice(0, 4))
-const usage = computed(() => componentOneLineUsage(props.item))
+const usage = computed(() => props.item.card_usage || componentOneLineUsage(props.item))
 const packageStyle = computed(() => packageTagStyle(props.item.package))
 const syncLabel = computed(() => {
   if (!props.item.sync_status) return ''

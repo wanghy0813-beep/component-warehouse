@@ -19,6 +19,7 @@ from app.main import (
     delete_component_lot,
     increment_component_quantity,
     list_component_lots,
+    list_component_cards_page,
     record_usage_event,
     sync_bom_solder_points,
     update_equipment_occupancy,
@@ -146,6 +147,57 @@ def test_solder_loss_inventory_identity_and_usage_records(inventory_env):
     assert records[0]["project_name"] == "焊接测试"
     assert records[0]["project_code"] == "PJ-00000001"
     assert records[0]["designators"] == ["R2"]
+
+
+def test_component_card_page_is_compact_and_pages_by_category(inventory_env):
+    db = inventory_env["db"]
+    capacitor = Category(name="电容", color="#ecfeff")
+    db.add(capacitor)
+    db.flush()
+    db.add_all([
+        Component(
+            owner_user_id=1,
+            name="100nF 电容",
+            normalized_spec="100nF",
+            category_id=capacitor.id,
+            quantity=10,
+            warehouse_code="CAP-00000001",
+            description="卡片流不应携带详情正文",
+        ),
+        Component(
+            owner_user_id=1,
+            name="1uF 电容",
+            normalized_spec="1uF",
+            category_id=capacitor.id,
+            quantity=8,
+            warehouse_code="CAP-00000002",
+        ),
+    ])
+    db.commit()
+
+    common = {
+        "auth": inventory_env["auth"],
+        "db": db,
+        "page_size": 1,
+        "keyword": None,
+        "category_id": None,
+        "status": None,
+        "ai_status": None,
+        "stock": None,
+    }
+    first = list_component_cards_page(page=1, **common)
+    second = list_component_cards_page(page=2, **common)
+
+    assert first["total"] == 3
+    assert first["category_total"] == 2
+    assert first["has_more"] is True
+    assert first["groups"][0]["category"].name == "电阻"
+    assert second["groups"][0]["category"].name == "电容"
+    assert len(second["groups"][0]["items"]) == 2
+    assert "description" not in second["groups"][0]["items"][0]
+    assert "ai_usage" not in second["groups"][0]["items"][0]
+    assert "card_chips" in second["groups"][0]["items"][0]
+    assert "card_usage" in second["groups"][0]["items"][0]
 
 
 def test_usage_event_writes_owner_scoped_activity_log(inventory_env):

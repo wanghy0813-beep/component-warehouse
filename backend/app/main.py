@@ -127,6 +127,7 @@ from .schemas import (
     CategoryPrefixUpdate,
     ComponentCreate,
     ComponentAiOut,
+    ComponentCardGroupPage,
     ComponentExportRequest,
     ComponentGroup,
     ComponentGroupPage,
@@ -212,6 +213,7 @@ from .services.lcsc_lookup import (
 )
 from .services.category_governance import ai_category_allowed
 from .services.inventory import (
+    category_sort_key,
     component_available_quantity,
     equipment_occupied_quantity,
     is_durable_equipment,
@@ -322,12 +324,14 @@ def retired_contest_api_root():
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    started = time.perf_counter()
     response: Response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
     response.headers.setdefault("Cache-Control", "no-store" if request.url.path.startswith("/api/") else "no-cache")
+    response.headers.setdefault("Server-Timing", f"app;dur={(time.perf_counter() - started) * 1000:.1f}")
     return response
 
 
@@ -1971,6 +1975,100 @@ def component_out(component: Component, reserved: int = 0, search_keyword: str |
     }
 
 
+def component_card_out(component: Component, reserved: int = 0, search_keyword: str | None = None) -> dict:
+    quantity = component.quantity or 0
+    occupied = equipment_occupied_quantity(component)
+    available = component_available_quantity(component, reserved)
+    safety_quantity = max(0, int(component.safety_quantity or 0))
+    warning_threshold = safety_quantity if safety_quantity > 0 else 5
+    return {
+        "id": component.id,
+        "warehouse_code": component.warehouse_code,
+        "name": component.name,
+        "model": component.model,
+        "category_id": component.category_id,
+        "category": component.category,
+        "parameters": component.parameters,
+        "package": component.package,
+        "quantity": quantity,
+        "average_unit_price": component.average_unit_price,
+        "source": component.source,
+        "lcsc_number": component.lcsc_number,
+        "tags": component.tags,
+        "source_title": component.source_title,
+        "part_family": component.part_family or "component",
+        "normalized_spec": component.normalized_spec,
+        "status": normalize_inventory_status(component.status, location=component.location),
+        "location": normalize_inventory_location(component.location),
+        "buy_url": component.buy_url,
+        "reserved_quantity": reserved,
+        "occupied_quantity": occupied,
+        "available_quantity": available,
+        "low_stock_warning": bool(
+            component.is_common
+            and not component.low_stock_exempt
+            and available <= warning_threshold
+        ),
+        "card_chips": component_card_chips(component),
+        "card_usage": component_card_usage(component),
+        "ai_tags": component.ai_tags,
+        "ai_status": component.ai_status or "pending",
+        "search_unit_conversion": find_unit_conversion_match(
+            search_keyword,
+            (
+                component.name,
+                component.warehouse_code,
+                component.model,
+                component.parameters,
+                component.package,
+                component.lcsc_number,
+                component.location,
+                component.ai_summary,
+                component.ai_tags,
+                component.tags,
+                component.normalized_spec,
+                component.source_title,
+            ),
+        ),
+    }
+
+
+def component_card_chips(component: Component) -> list[dict]:
+    usage = parse_json_value(component.ai_usage)
+    specs = usage.get("key_specs") if isinstance(usage, dict) else []
+    chips = []
+    seen = set()
+    for spec in specs if isinstance(specs, list) else []:
+        if not isinstance(spec, dict):
+            continue
+        value = str(spec.get("value") or "").strip()
+        if not value or re.fullmatch(r"\d+(?:\.\d+)?", value):
+            continue
+        label = str(spec.get("name") or "参数").strip() or "参数"
+        key = re.sub(r"[,，;；\s_/-]+", "", value).casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        chips.append({
+            "label": label,
+            "value": value,
+            "tone": "amber" if spec.get("confidence") == "low" else "indigo",
+        })
+        if len(chips) >= 4:
+            break
+    return chips
+
+
+def component_card_usage(component: Component) -> str | None:
+    usage = parse_json_value(component.ai_usage)
+    text_value = usage.get("usage") if isinstance(usage, dict) else usage if isinstance(usage, str) else None
+    text_value = str(text_value or component.ai_summary or "").strip()
+    if not text_value:
+        return None
+    first = next((part.strip() for part in re.split(r"[。；;\n]", text_value) if part.strip()), "")
+    return None if first.startswith(("{", "[")) else first or None
+
+
 def inventory_lot_out(
     lot: InventoryLot,
     db: Session | None = None,
@@ -3377,9 +3475,11 @@ def group_component_page(
     page: int,
     page_size: int,
     search_keyword: str | None = None,
+    compact: bool = False,
 ) -> dict:
     reserved = reserved_quantities(db, [item.id for item in components])
-    items = [component_out(item, reserved.get(item.id, 0), search_keyword) for item in components]
+    serializer = component_card_out if compact else component_out
+    items = [serializer(item, reserved.get(item.id, 0), search_keyword) for item in components]
     by_category: dict[int | None, dict] = {}
     for item in items:
         category = item["category"]
@@ -3389,6 +3489,45 @@ def group_component_page(
         by_category[key]["items"].append(item)
         by_category[key]["total"] += 1
     return {"groups": list(by_category.values()), "total": total, "page": page, "page_size": page_size}
+
+
+def paginate_component_categories(
+    db: Session,
+    query,
+    *,
+    stock: str | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[Component], int, int, bool]:
+    """Page by category without materializing every matching component on each request."""
+    start = (page - 1) * page_size
+    if stock == "low":
+        all_components = sort_components_by_value(filter_low_stock_components(db, query.all(), stock))
+        grouped_components: dict[int | None, list[Component]] = {}
+        for component in all_components:
+            grouped_components.setdefault(component.category_id, []).append(component)
+        category_groups = list(grouped_components.values())
+        components = [component for group in category_groups[start : start + page_size] for component in group]
+        return components, len(all_components), len(category_groups), start + page_size < len(category_groups)
+
+    category_rows = (
+        query.enable_eagerloads(False)
+        .with_entities(Component.category_id, Category.name, func.count(Component.id))
+        .group_by(Component.category_id, Category.name)
+        .all()
+    )
+    category_rows = sorted(category_rows, key=lambda row: category_sort_key(row[1]))
+    selected_rows = category_rows[start : start + page_size]
+    category_filters = []
+    category_ids = [row[0] for row in selected_rows if row[0] is not None]
+    if category_ids:
+        category_filters.append(Component.category_id.in_(category_ids))
+    if any(row[0] is None for row in selected_rows):
+        category_filters.append(Component.category_id.is_(None))
+    components = sort_components_by_value(query.filter(or_(*category_filters)).all()) if category_filters else []
+    total = sum(int(row[2] or 0) for row in category_rows)
+    category_total = len(category_rows)
+    return components, total, category_total, start + page_size < category_total
 
 
 def component_label_title(component: Component) -> str:
@@ -3866,22 +4005,43 @@ def list_components_grouped_page(
         is_high_current=is_high_current,
         is_high_voltage=is_high_voltage,
     )
-    all_components = sort_components_by_value(filter_low_stock_components(db, query.all(), stock))
-    total = len(all_components)
-    grouped_components: dict[int | None, list[Component]] = {}
-    for component in all_components:
-        grouped_components.setdefault(component.category_id, []).append(component)
-    category_groups = list(grouped_components.values())
-    category_total = len(category_groups)
-    start = (page - 1) * page_size
-    components = [
-        component
-        for group in category_groups[start : start + page_size]
-        for component in group
-    ]
+    components, total, category_total, has_more = paginate_component_categories(
+        db, query, stock=stock, page=page, page_size=page_size
+    )
     result = group_component_page(db, components, total, page, page_size, keyword)
     result["category_total"] = category_total
-    result["has_more"] = start + page_size < category_total
+    result["has_more"] = has_more
+    return result
+
+
+@app.get("/api/components/card-page", response_model=ComponentCardGroupPage)
+def list_component_cards_page(
+    auth: Protected,
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(3, ge=1, le=10),
+    keyword: str | None = None,
+    category_id: int | None = None,
+    status: str | None = None,
+    ai_status: str | None = None,
+    stock: str | None = None,
+):
+    query = db.query(Component).outerjoin(Category).options(joinedload(Component.category))
+    query = filter_owner(query, Component, auth)
+    query = apply_component_filters(
+        query,
+        category_id=category_id,
+        status=status,
+        keyword=keyword,
+        ai_status=ai_status,
+        stock=stock,
+    )
+    components, total, category_total, has_more = paginate_component_categories(
+        db, query, stock=stock, page=page, page_size=page_size
+    )
+    result = group_component_page(db, components, total, page, page_size, keyword, compact=True)
+    result["category_total"] = category_total
+    result["has_more"] = has_more
     return result
 
 
