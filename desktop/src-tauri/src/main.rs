@@ -83,7 +83,10 @@ struct PollResult {
 }
 
 fn now_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn config_path(data_dir: &Path) -> PathBuf {
@@ -107,8 +110,11 @@ fn load_config(data_dir: &Path) -> Result<ShellConfig, String> {
 fn save_config(data_dir: &Path, config: &ShellConfig) -> Result<(), String> {
     let path = config_path(data_dir);
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     fs::rename(temporary, path).map_err(|error| error.to_string())
 }
 
@@ -117,12 +123,19 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
 }
 
 async fn refresh_access(state: &RuntimeState) -> Result<String, String> {
-    if let Some(token) = state.access_token.lock().map_err(|_| "token lock failed")?.clone() {
+    if let Some(token) = state
+        .access_token
+        .lock()
+        .map_err(|_| "token lock failed")?
+        .clone()
+    {
         if token.expires_at > now_seconds() + 60 {
             return Ok(token.value);
         }
     }
-    let refresh_token = keyring_entry()?.get_password().map_err(|_| "账号需要重新绑定".to_string())?;
+    let refresh_token = keyring_entry()?
+        .get_password()
+        .map_err(|_| "账号需要重新绑定".to_string())?;
     let response = reqwest::Client::new()
         .post(format!("{ACCOUNT_DEVICE_BASE}/token"))
         .form(&[
@@ -130,38 +143,68 @@ async fn refresh_access(state: &RuntimeState) -> Result<String, String> {
             ("client_id", CLIENT_ID),
             ("refresh_token", refresh_token.as_str()),
         ])
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         return Err("账号需要重新绑定".to_string());
     }
     let tokens: TokenWire = response.json().await.map_err(|error| error.to_string())?;
-    keyring_entry()?.set_password(&tokens.refresh_token).map_err(|error| error.to_string())?;
-    let access = AccessToken { value: tokens.access_token.clone(), expires_at: now_seconds() + tokens.expires_in };
+    keyring_entry()?
+        .set_password(&tokens.refresh_token)
+        .map_err(|error| error.to_string())?;
+    let access = AccessToken {
+        value: tokens.access_token.clone(),
+        expires_at: now_seconds() + tokens.expires_in,
+    };
     *state.access_token.lock().map_err(|_| "token lock failed")? = Some(access);
     Ok(tokens.access_token)
 }
 
-async fn local_post(state: &RuntimeState, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn local_post(
+    state: &RuntimeState,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let response = reqwest::Client::new()
-        .post(format!("{}/{}", state.api_base, path.trim_start_matches('/')))
+        .post(format!(
+            "{}/{}",
+            state.api_base,
+            path.trim_start_matches('/')
+        ))
         .header("X-WXY-Desktop-Session", &state.session_key)
         .json(&body)
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(response.text().await.unwrap_or_else(|_| "本地服务请求失败".to_string()));
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "本地服务请求失败".to_string()));
     }
     response.json().await.map_err(|error| error.to_string())
 }
 
 async fn run_sync(state: &RuntimeState) -> Result<serde_json::Value, String> {
     let access = refresh_access(state).await?;
-    let device_id = state.config.lock().map_err(|_| "config lock failed")?.device_id.clone()
+    let device_id = state
+        .config
+        .lock()
+        .map_err(|_| "config lock failed")?
+        .device_id
+        .clone()
         .ok_or_else(|| "账号需要重新绑定".to_string())?;
-    local_post(state, "desktop/v1/sync-now", serde_json::json!({
-        "remote_base": HARDWARE_BASE,
-        "access_token": access,
-        "device_id": device_id,
-    })).await
+    local_post(
+        state,
+        "desktop/v1/sync-now",
+        serde_json::json!({
+            "remote_base": HARDWARE_BASE,
+            "access_token": access,
+            "device_id": device_id,
+        }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -174,8 +217,15 @@ fn desktop_context(state: State<'_, RuntimeState>) -> DesktopContext {
 }
 
 #[tauri::command]
-async fn start_device_authorization(state: State<'_, RuntimeState>) -> Result<DeviceAuthorizationView, String> {
-    let installation_id = state.config.lock().map_err(|_| "config lock failed")?.installation_id.clone();
+async fn start_device_authorization(
+    state: State<'_, RuntimeState>,
+) -> Result<DeviceAuthorizationView, String> {
+    let installation_id = state
+        .config
+        .lock()
+        .map_err(|_| "config lock failed")?
+        .installation_id
+        .clone();
     let response = reqwest::Client::new()
         .post(format!("{ACCOUNT_DEVICE_BASE}/authorize"))
         .json(&serde_json::json!({
@@ -187,12 +237,20 @@ async fn start_device_authorization(state: State<'_, RuntimeState>) -> Result<De
             "platform": "windows",
             "scope": "account.profile.read hardware.sync.read hardware.sync.write"
         }))
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(response.text().await.unwrap_or_else(|_| "无法开始账号授权".to_string()));
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法开始账号授权".to_string()));
     }
     let wire: DeviceAuthorizationWire = response.json().await.map_err(|error| error.to_string())?;
-    *state.device_code.lock().map_err(|_| "device code lock failed")? = Some(wire.device_code);
+    *state
+        .device_code
+        .lock()
+        .map_err(|_| "device code lock failed")? = Some(wire.device_code);
     Ok(DeviceAuthorizationView {
         user_code: wire.user_code,
         verification_uri: wire.verification_uri,
@@ -204,7 +262,11 @@ async fn start_device_authorization(state: State<'_, RuntimeState>) -> Result<De
 
 #[tauri::command]
 async fn poll_device_authorization(state: State<'_, RuntimeState>) -> Result<PollResult, String> {
-    let device_code = state.device_code.lock().map_err(|_| "device code lock failed")?.clone()
+    let device_code = state
+        .device_code
+        .lock()
+        .map_err(|_| "device code lock failed")?
+        .clone()
         .ok_or_else(|| "请重新开始账号授权".to_string())?;
     let response = reqwest::Client::new()
         .post(format!("{ACCOUNT_DEVICE_BASE}/token"))
@@ -213,75 +275,128 @@ async fn poll_device_authorization(state: State<'_, RuntimeState>) -> Result<Pol
             ("client_id", CLIENT_ID),
             ("device_code", device_code.as_str()),
         ])
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        let retry_after = response.headers().get("retry-after")
+        let retry_after = response
+            .headers()
+            .get("retry-after")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
         let body: serde_json::Value = response.json().await.unwrap_or_default();
-        let code = body.get("error").and_then(|value| value.as_str())
-            .or_else(|| body.pointer("/error/code").and_then(|value| value.as_str())).unwrap_or("authorization_failed");
+        let code = body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .or_else(|| body.pointer("/error/code").and_then(|value| value.as_str()))
+            .unwrap_or("authorization_failed");
         if code == "authorization_pending" || code == "slow_down" {
             return Ok(PollResult {
-                status: if code == "authorization_pending" { "pending" } else { code }.to_string(),
+                status: if code == "authorization_pending" {
+                    "pending"
+                } else {
+                    code
+                }
+                .to_string(),
                 retry_after,
             });
         }
         return Err(body.to_string());
     }
     let tokens: TokenWire = response.json().await.map_err(|error| error.to_string())?;
-    keyring_entry()?.set_password(&tokens.refresh_token).map_err(|error| error.to_string())?;
+    keyring_entry()?
+        .set_password(&tokens.refresh_token)
+        .map_err(|error| error.to_string())?;
     *state.access_token.lock().map_err(|_| "token lock failed")? = Some(AccessToken {
         value: tokens.access_token.clone(),
         expires_at: now_seconds() + tokens.expires_in,
     });
 
-    let installation_id = state.config.lock().map_err(|_| "config lock failed")?.installation_id.clone();
+    let installation_id = state
+        .config
+        .lock()
+        .map_err(|_| "config lock failed")?
+        .installation_id
+        .clone();
     let client = reqwest::Client::new();
-    let registration = client.post(format!("{HARDWARE_BASE}/api/sync/v1/devices"))
+    let registration = client
+        .post(format!("{HARDWARE_BASE}/api/sync/v1/devices"))
         .bearer_auth(&tokens.access_token)
         .json(&serde_json::json!({
             "installation_id": installation_id,
             "name": "WXY LAB Hardware Windows",
             "platform": "windows-x64"
         }))
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !registration.status().is_success() {
-        return Err(registration.text().await.unwrap_or_else(|_| "服务器拒绝设备登记".to_string()));
+        return Err(registration
+            .text()
+            .await
+            .unwrap_or_else(|_| "服务器拒绝设备登记".to_string()));
     }
-    let registration: serde_json::Value = registration.json().await.map_err(|error| error.to_string())?;
-    let device_id = registration.get("device_id").and_then(|value| value.as_str())
-        .ok_or_else(|| "设备登记响应缺少 device_id".to_string())?.to_string();
+    let registration: serde_json::Value = registration
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let device_id = registration
+        .get("device_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "设备登记响应缺少 device_id".to_string())?
+        .to_string();
 
     let staging = state.data_dir.join("staging");
     fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
     let package_path = staging.join("personal-bootstrap.zip");
-    let response = client.get(format!("{HARDWARE_BASE}/api/sync/v1/bootstrap"))
+    let response = client
+        .get(format!("{HARDWARE_BASE}/api/sync/v1/bootstrap"))
         .bearer_auth(&tokens.access_token)
         .query(&[("device_id", device_id.as_str())])
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(response.text().await.unwrap_or_else(|_| "个人数据下载失败".to_string()));
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "个人数据下载失败".to_string()));
     }
-    let mut output = tokio::fs::File::create(&package_path).await.map_err(|error| error.to_string())?;
+    let mut output = tokio::fs::File::create(&package_path)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut stream = response.bytes_stream();
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
-        output.write_all(&chunk.map_err(|error| error.to_string())?).await.map_err(|error| error.to_string())?;
+        output
+            .write_all(&chunk.map_err(|error| error.to_string())?)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     output.flush().await.map_err(|error| error.to_string())?;
-    local_post(&state, "desktop/v1/bootstrap/import", serde_json::json!({
-        "path": package_path,
-        "device_id": device_id,
-    })).await?;
+    local_post(
+        &state,
+        "desktop/v1/bootstrap/import",
+        serde_json::json!({
+            "path": package_path,
+            "device_id": device_id,
+        }),
+    )
+    .await?;
     let _ = fs::remove_file(&package_path);
     {
         let mut config = state.config.lock().map_err(|_| "config lock failed")?;
         config.device_id = Some(device_id);
         save_config(&state.data_dir, &config)?;
     }
-    *state.device_code.lock().map_err(|_| "device code lock failed")? = None;
-    Ok(PollResult { status: "complete".to_string(), retry_after: None })
+    *state
+        .device_code
+        .lock()
+        .map_err(|_| "device code lock failed")? = None;
+    Ok(PollResult {
+        status: "complete".to_string(),
+        retry_after: None,
+    })
 }
 
 #[tauri::command]
@@ -303,9 +418,14 @@ async fn desktop_conflicts(state: State<'_, RuntimeState>) -> Result<serde_json:
     let response = reqwest::Client::new()
         .get(format!("{HARDWARE_BASE}/api/sync/v1/conflicts"))
         .bearer_auth(access)
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(response.text().await.unwrap_or_else(|_| "无法读取同步冲突".to_string()));
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法读取同步冲突".to_string()));
     }
     response.json().await.map_err(|error| error.to_string())
 }
@@ -321,12 +441,19 @@ async fn resolve_desktop_conflict(
     }
     let access = refresh_access(&state).await?;
     let response = reqwest::Client::new()
-        .post(format!("{HARDWARE_BASE}/api/sync/v1/conflicts/{conflict_id}/resolve"))
+        .post(format!(
+            "{HARDWARE_BASE}/api/sync/v1/conflicts/{conflict_id}/resolve"
+        ))
         .bearer_auth(access)
         .json(&serde_json::json!({ "resolution": resolution }))
-        .send().await.map_err(|error| error.to_string())?;
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(response.text().await.unwrap_or_else(|_| "冲突处理失败".to_string()));
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "冲突处理失败".to_string()));
     }
     let resolved = response.json().await.map_err(|error| error.to_string())?;
     run_sync(&state).await?;
@@ -352,19 +479,31 @@ fn main() {
             resolve_desktop_conflict
         ])
         .setup(|app| {
-            let local_app_data = std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA is unavailable")?;
+            let local_app_data =
+                std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA is unavailable")?;
             let data_dir = PathBuf::from(local_app_data).join("WXY LAB Hardware");
             fs::create_dir_all(&data_dir)?;
-            let session_key = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+            let session_key = format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
             let config = load_config(&data_dir).map_err(std::io::Error::other)?;
-            let (mut receiver, child) = app.shell().sidecar("wxy-hardware-api")?
+            let (mut receiver, child) = app
+                .shell()
+                .sidecar("wxy-hardware-api")?
                 .env("DESKTOP_SESSION_KEY", &session_key)
                 .env("DESKTOP_API_PORT", API_PORT.to_string())
-                .env("LOCALAPPDATA", data_dir.parent().unwrap_or(&data_dir).to_string_lossy().to_string())
+                .env(
+                    "LOCALAPPDATA",
+                    data_dir
+                        .parent()
+                        .unwrap_or(&data_dir)
+                        .to_string_lossy()
+                        .to_string(),
+                )
                 .spawn()?;
-            tauri::async_runtime::spawn(async move {
-                while receiver.recv().await.is_some() {}
-            });
+            tauri::async_runtime::spawn(async move { while receiver.recv().await.is_some() {} });
             app.manage(RuntimeState {
                 session_key: session_key.clone(),
                 api_base: format!("http://127.0.0.1:{API_PORT}/api"),
@@ -377,7 +516,9 @@ fn main() {
             let mut sidecar_healthy = false;
             for _ in 0..100 {
                 if reqwest::blocking::get(format!("http://127.0.0.1:{API_PORT}/health"))
-                    .map(|response| response.status().is_success()).unwrap_or(false) {
+                    .map(|response| response.status().is_success())
+                    .unwrap_or(false)
+                {
                     sidecar_healthy = true;
                     break;
                 }
@@ -393,13 +534,20 @@ fn main() {
                         let state = handle.state::<RuntimeState>();
                         run_sync(&state).await.is_ok()
                     };
-                    tokio::time::sleep(if succeeded { Duration::from_secs(300) } else { Duration::from_secs(60) }).await;
+                    tokio::time::sleep(if succeeded {
+                        Duration::from_secs(300)
+                    } else {
+                        Duration::from_secs(60)
+                    })
+                    .await;
                 }
             });
             Ok(())
         });
 
-    builder.build(tauri::generate_context!()).expect("failed to build desktop app")
+    builder
+        .build(tauri::generate_context!())
+        .expect("failed to build desktop app")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<RuntimeState>();
