@@ -5,10 +5,6 @@ description = "WXY LAB Hardware Windows offline workspace"
 authors = ["WXY LAB"]
 edition = "2021"
 
-[lib]
-name = "wxy_lab_hardware_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [[bin]]
 name = "wxy-lab-hardware"
 path = "src/main.rs"
