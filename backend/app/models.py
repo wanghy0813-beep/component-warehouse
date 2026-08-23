@@ -1533,9 +1533,6 @@ class SyncDevice(Base):
 class SyncEntity(Base):
     __tablename__ = "sync_entities"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "entity_type", "local_id", name="uq_sync_entity_local_mapping"),
-    )
-    __table_args__ = (
         UniqueConstraint("owner_user_id", "entity_type", "local_id", name="uq_sync_entity_local"),
     )
 
