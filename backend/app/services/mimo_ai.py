@@ -204,6 +204,55 @@ def _system_prompt() -> str:
     )
 
 
+def suggest_fabrication_mapping(files: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return advisory file/column mapping for BOM and placement tables.
+
+    Callers deliberately provide table text only. Gerber artwork, inventory and
+    account data must never be included in ``files``.
+    """
+    return _chat_json(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "你是 PCB 制造文件映射助手。只分析 BOM/CPL/Pick-and-Place 表格，"
+                    "不得猜测元器件替代关系，不得声明已修改项目。输出严格 JSON。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "map_fabrication_tables",
+                        "files": files,
+                        "required_output": {
+                            "bom_file": "string|null",
+                            "cpl_file": "string|null",
+                            "units": "mm|inch|null",
+                            "columns": {
+                                "designator": "string|null",
+                                "value": "string|null",
+                                "model": "string|null",
+                                "footprint": "string|null",
+                                "x": "string|null",
+                                "y": "string|null",
+                                "rotation": "string|null",
+                                "side": "string|null",
+                                "dnp": "string|null",
+                            },
+                            "confidence": "high|medium|low",
+                            "reason": "string",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        max_tokens=2200,
+        web_search="off",
+    )
+
+
 def _terms_from_requirement(requirement: str) -> list[str]:
     text = requirement.lower()
     terms = set(re.findall(r"[a-z0-9.+_-]{2,}", text))

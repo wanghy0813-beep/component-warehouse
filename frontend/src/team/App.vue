@@ -1,207 +1,77 @@
 <template>
   <el-config-provider>
-    <div v-if="checking" class="team-boot notranslate" lang="zh-CN" translate="no">正在连接 {{ BRAND_NAME }}…</div>
-    <div v-else-if="route.meta.authCallback" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
-      <router-view />
-      <app-footer />
-    </div>
-    <div v-else-if="route.meta.publicJoin && !token" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
-      <router-view @authenticated="handleAuthenticated" />
-      <app-footer />
-    </div>
-    <div v-else-if="!token" class="team-standalone-shell notranslate" lang="zh-CN" translate="no">
-      <auth-panel
-        :eyebrow="BRAND_NAME"
-        title="团队版"
-        subtitle="团队器件、PCB、成员协作与操作记录"
-        @authenticated="handleAuthenticated"
-      />
-      <app-footer />
-    </div>
-    <div v-else class="team-app notranslate" lang="zh-CN" translate="no">
-      <header class="team-header">
-        <router-link class="team-brand" to="/">
+    <main class="maintenance-shell notranslate" lang="zh-CN" translate="no">
+      <section class="maintenance-card" role="status" aria-labelledby="maintenance-title">
+        <div class="brand-lockup">
           <img class="brand-icon" :src="appIcon" alt="" />
-          <img v-if="BRAND_SHOW_LOGO" :src="logo" :alt="BRAND_SHORT" />
-          <span><strong>{{ BRAND_NAME }}</strong><small>团队版</small></span>
-        </router-link>
-        <nav v-if="libraryId" class="desktop-nav">
-          <router-link :to="libraryPath('components')" @click="trackTeamNav('components')">元器件</router-link>
-          <router-link :to="libraryPath('pcbs')" @click="trackTeamNav('pcbs')">PCB</router-link>
-          <router-link :to="libraryPath('projects')" @click="trackTeamNav('projects')">项目</router-link>
-          <router-link v-if="FEATURE_EDA_ENABLED" :to="libraryPath('eda')" @click="trackTeamNav('eda')">EDA 库</router-link>
-          <router-link :to="libraryPath('purchases')" @click="trackTeamNav('purchases')">采购</router-link>
-          <router-link :to="libraryPath('risks')" @click="trackTeamNav('risks')">风险</router-link>
-          <router-link :to="libraryPath('members')" @click="trackTeamNav('members')">成员</router-link>
-          <router-link :to="libraryPath('logs')" @click="trackTeamNav('logs')">日志</router-link>
-          <router-link :to="libraryPath('manual')" @click="trackTeamNav('manual')">手册</router-link>
-        </nav>
-        <div class="header-actions">
-          <el-tag v-if="teamState.authDegraded && !teamState.offlineReadonly" type="warning">身份缓冲</el-tag>
-          <el-tag v-if="teamState.offlineReadonly" type="danger">离线只读</el-tag>
-          <account-popover
-            :user="teamState.user"
-            @logout="logout"
-            @user-updated="handleProfileUpdated"
-          />
+          <img v-if="BRAND_SHOW_LOGO" class="brand-logo" :src="logo" :alt="BRAND_SHORT" />
+          <div><strong>{{ BRAND_NAME }}</strong><small>团队工作区</small></div>
         </div>
-      </header>
-
-      <main class="team-main">
-        <router-view />
-        <app-footer />
-      </main>
-
-      <nav v-if="libraryId" class="mobile-nav">
-        <router-link :to="libraryPath('components')"><Box />元器件</router-link>
-        <router-link :to="libraryPath('projects')"><Files />项目</router-link>
-        <router-link v-if="FEATURE_EDA_ENABLED" :to="libraryPath('eda')"><Cpu />EDA</router-link>
-        <router-link :to="libraryPath('members')"><UserFilled />成员</router-link>
-        <router-link :to="libraryPath('risks')"><WarningFilled />风险</router-link>
-      </nav>
-      <back-to-top @click="trackTeamBackToTop" />
-    </div>
+        <span class="maintenance-kicker">TEMPORARILY PAUSED</span>
+        <h1 id="maintenance-title">团队版暂停维护</h1>
+        <p>当前研发能力集中在个人硬件研发工作台。团队数据和服务接口均已保留，团队页面暂不接受新的操作。</p>
+        <div class="maintenance-note">
+          <strong>现有数据不会删除</strong>
+          <span>后续恢复团队版时，可继续沿用已有团队库、成员与记录。</span>
+        </div>
+        <a href="/component-warehouse/personal/">进入个人硬件研发工作台</a>
+      </section>
+      <app-footer />
+    </main>
   </el-config-provider>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from '../shared/elementApi'
-import { useRoute, useRouter } from 'vue-router'
-import { Box, Cpu, Files, UserFilled, WarningFilled } from '@element-plus/icons-vue'
 import logo from '../assets/brand-logo.png'
 import appIcon from '../assets/generated/cw-app-icon.png'
 import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
-import { FEATURE_EDA_ENABLED } from '../shared/features'
-import AuthPanel from '../components/AuthPanel.vue'
-import AccountPopover from '../shared/components/AccountPopover.vue'
 import AppFooter from '../shared/components/AppFooter.vue'
-import BackToTop from '../shared/components/BackToTop.vue'
-import { setupPwaInstallPrompt } from '../shared/pwaInstall'
-import { authConfig } from '../api/client'
-import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth, setupAuthActivityTracking } from '../api/authSessionApi'
-import { clearAccountSnapshots } from './cache'
-import { recordTeamUsageEvent, teamSession } from './api'
-import { teamState, setNetworkOnline, setSession } from './store'
-import { trackUsage } from '../shared/usageTracker'
-
-const route = useRoute()
-const router = useRouter()
-const checking = ref(true)
-const token = ref(getAuthToken())
-const libraryId = computed(() => route.params.libraryId || '')
-
-function libraryPath(page) {
-  return `/library/${libraryId.value}/${page}`
-}
-
-async function loadSession() {
-  if (!token.value) return
-  try {
-    const session = await teamSession()
-    setSession(session)
-    localStorage.setItem('cw_team_user', JSON.stringify(session.user || null))
-  } catch (error) {
-    if (error?.response?.status === 401) {
-      token.value = ''
-      setSession(null)
-    } else if (!error?.response || error?.response?.status === 503) {
-      let stored = null
-      try {
-        stored = JSON.parse(localStorage.getItem('cw_team_user') || 'null') || getStoredUser()
-      } catch {
-        stored = getStoredUser()
-      }
-      if (stored) {
-        teamState.user = stored
-        teamState.offlineReadonly = true
-      } else {
-        token.value = ''
-        setSession(null)
-      }
-    } else {
-      token.value = ''
-      setSession(null)
-      ElMessage.error('无法验证登录状态，请重新登录')
-    }
-  }
-}
-
-async function handleAuthenticated(data) {
-  token.value = data.token
-  await loadSession()
-  if (route.meta.publicJoin) return
-  router.replace('/')
-}
-
-async function logout() {
-  const userId = teamState.user?.id
-  await logoutAuthSession()
-  if (userId) await clearAccountSnapshots(userId)
-  token.value = ''
-  setSession(null)
-  localStorage.removeItem('cw_team_user')
-  router.replace('/')
-  ElMessage.success('已退出登录')
-}
-
-async function handleAuthCleared() {
-  const userId = teamState.user?.id
-  if (userId) await clearAccountSnapshots(userId)
-  token.value = ''
-  setSession(null)
-  localStorage.removeItem('cw_team_user')
-}
-
-function handleProfileUpdated(user) {
-  teamState.user = { ...teamState.user, ...user }
-}
-
-function handleProfileEvent(event) {
-  if (event.detail) handleProfileUpdated(event.detail)
-}
-
-async function handleNativeAuthSession(event) {
-  const session = rememberAuth(event.detail || {})
-  if (!session.token) return
-  await handleAuthenticated(session)
-}
-
-onMounted(async () => {
-  setupPwaInstallPrompt()
-  setupAuthActivityTracking()
-  window.addEventListener('online', () => setNetworkOnline(true))
-  window.addEventListener('offline', () => setNetworkOnline(false))
-  window.addEventListener('cw-auth-cleared', handleAuthCleared)
-  window.addEventListener('cw-profile-updated', handleProfileEvent)
-  window.addEventListener('cw-native-auth-session', handleNativeAuthSession)
-  await authConfig()
-  await loadSession()
-  checking.value = false
-})
-
-watch(
-  () => route.fullPath,
-  () => {
-    if (token.value && libraryId.value) {
-      trackUsage((payload) => recordTeamUsageEvent(libraryId.value, payload), 'ui.page.view', { entry: 'team-router' })
-    }
-  }
-)
-
-function trackTeamNav(entry) {
-  if (!libraryId.value) return
-  trackUsage((payload) => recordTeamUsageEvent(libraryId.value, payload), 'ui.nav.click', { entry, target_type: 'team_library', target_id: libraryId.value })
-}
-
-function trackTeamBackToTop() {
-  if (!libraryId.value) return
-  trackUsage((payload) => recordTeamUsageEvent(libraryId.value, payload), 'ui.back_to_top.click', { entry: 'team-app', target_type: 'team_library', target_id: libraryId.value })
-}
-
-onBeforeUnmount(() => {
-  window.removeEventListener('cw-auth-cleared', handleAuthCleared)
-  window.removeEventListener('cw-profile-updated', handleProfileEvent)
-  window.removeEventListener('cw-native-auth-session', handleNativeAuthSession)
-})
 </script>
+
+<style scoped>
+.maintenance-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  place-items: center;
+  gap: 28px;
+  padding: 40px 20px 20px;
+  color: #102a32;
+  background:
+    radial-gradient(circle at 16% 10%, rgba(50, 122, 130, .16), transparent 34%),
+    radial-gradient(circle at 88% 82%, rgba(174, 94, 43, .12), transparent 32%),
+    #edf2f3;
+}
+.maintenance-card {
+  width: min(680px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(27, 76, 84, .2);
+  border-radius: 28px;
+  padding: clamp(28px, 6vw, 58px);
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 24px 70px rgba(21, 53, 60, .14), inset 0 1px 0 #fff;
+}
+.brand-lockup { min-width: 0; display: flex; align-items: center; gap: 12px; margin-bottom: 48px; }
+.brand-icon { width: 42px; height: 42px; border-radius: 12px; }
+.brand-logo { width: 108px; max-height: 38px; object-fit: contain; }
+.brand-lockup div { min-width: 0; display: grid; gap: 2px; }
+.brand-lockup strong, .brand-lockup small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand-lockup strong { font-size: 16px; }
+.brand-lockup small { color: #5b6e75; }
+.maintenance-kicker { color: #1b6974; font-size: 12px; font-weight: 800; letter-spacing: .16em; }
+h1 { margin: 12px 0 14px; font-size: clamp(34px, 7vw, 54px); line-height: 1.08; letter-spacing: -.04em; }
+p { max-width: 570px; margin: 0; color: #4d626a; font-size: 17px; line-height: 1.75; }
+.maintenance-note { display: grid; gap: 5px; margin: 30px 0; border-left: 4px solid #b4632f; border-radius: 0 13px 13px 0; padding: 14px 17px; background: #f8eee6; }
+.maintenance-note strong { color: #753d1d; }
+.maintenance-note span { color: #5b5149; line-height: 1.55; }
+a { display: inline-flex; min-height: 46px; align-items: center; justify-content: center; border-radius: 13px; padding: 0 20px; color: #fff; background: #0f6570; box-shadow: 0 9px 22px rgba(15, 101, 112, .2); font-weight: 750; text-decoration: none; }
+a:hover { background: #0b5660; }
+@media (max-width: 560px) {
+  .maintenance-shell { padding: 14px; }
+  .maintenance-card { border-radius: 20px; }
+  .brand-lockup { margin-bottom: 34px; flex-wrap: wrap; }
+  .brand-lockup div { width: 100%; }
+  .brand-lockup strong, .brand-lockup small { white-space: normal; }
+  a { width: 100%; box-sizing: border-box; text-align: center; }
+}
+</style>

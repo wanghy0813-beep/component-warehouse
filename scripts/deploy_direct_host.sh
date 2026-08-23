@@ -22,9 +22,11 @@ NGINX_ENABLED="/etc/nginx/sites-enabled/component-warehouse-direct-8080"
 NGINX_PREVIEW_AVAILABLE="/etc/nginx/sites-available/component-warehouse-direct-preview"
 NGINX_PREVIEW_ENABLED="/etc/nginx/sites-enabled/component-warehouse-direct-preview"
 PUBLISH_ROOT="/var/www/component-warehouse"
+HARDWARE_ROOT="/var/www/hardware"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3.10 || command -v python3)}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-http://mirrors.tencentyun.com/pypi/simple}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.tencentyun.com}"
+PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
 
 log() {
   printf '[direct-host] %s\n' "$*"
@@ -81,7 +83,7 @@ write_backend_env() {
       {
         key=$1
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-        if (key ~ /^(DATABASE_URL|TEAM_MEDIA_ROOT|CUSTOM_LABEL_STORAGE_ROOT|TEAM_SECRET_FILE)$/) next
+        if (key ~ /^(DATABASE_URL|TEAM_MEDIA_ROOT|CUSTOM_LABEL_STORAGE_ROOT|TEAM_SECRET_FILE|EDA_STORAGE_ROOT|PROJECT_V2_FILE_ROOT|RETIRE_LEGACY_PERSONAL_PROJECT_API)$/) next
         print
       }
     ' "${REPO_DIR}/.env" > "${tmp_env}"
@@ -92,6 +94,9 @@ write_backend_env() {
     printf 'TEAM_MEDIA_ROOT=/opt/ComponentWarehouse/data/contest-media\n'
     printf 'CUSTOM_LABEL_STORAGE_ROOT=/opt/ComponentWarehouse/data/custom-labels\n'
     printf 'TEAM_SECRET_FILE=/opt/ComponentWarehouse/data/.contest-invite-secret\n'
+    printf 'EDA_STORAGE_ROOT=/opt/ComponentWarehouse/data/eda-library\n'
+    printf 'PROJECT_V2_FILE_ROOT=/opt/ComponentWarehouse/data/project-v2-files\n'
+    printf 'RETIRE_LEGACY_PERSONAL_PROJECT_API=1\n'
   } >> "${tmp_env}"
   run sudo -n install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${ENV_DIR}"
   run sudo -n install -m 0640 -o root -g "${SERVICE_GROUP}" "${tmp_env}" "${ENV_FILE}"
@@ -102,7 +107,7 @@ record_baseline() {
   mkdir -p "${BACKUP_DIR}"
   chmod 700 "${BACKUP_DIR}"
   {
-    printf '# Component Warehouse direct-host deploy baseline %s UTC\n' "${STAMP}"
+    printf '# WXY LAB Hardware direct-host deploy baseline %s UTC\n' "${STAMP}"
     printf '\n## git status\n'
     git -C "${REPO_DIR}" status --short --branch || true
     printf '\n## docker compose ps\n'
@@ -118,6 +123,12 @@ record_baseline() {
   if [[ -f "${DATA_DIR}/component_warehouse.db" ]]; then
     cp -a "${DATA_DIR}/component_warehouse.db" "${BACKUP_DIR}/component_warehouse.db"
   fi
+  if [[ -d "${DATA_DIR}/eda-library" ]]; then
+    cp -a "${DATA_DIR}/eda-library" "${BACKUP_DIR}/eda-library"
+  fi
+  if [[ -d "${BACKEND_DIR}/data/eda-library" ]]; then
+    cp -a "${BACKEND_DIR}/data/eda-library" "${BACKUP_DIR}/legacy-backend-eda-library"
+  fi
   if [[ -f "${REPO_DIR}/.env" ]]; then
     cp -a "${REPO_DIR}/.env" "${BACKUP_DIR}/env"
     chmod 600 "${BACKUP_DIR}/env"
@@ -131,9 +142,9 @@ prepare_backend() {
     run "${PYTHON_BIN}" -m venv "${BACKEND_DIR}/.venv"
   fi
   run "${BACKEND_DIR}/.venv/bin/python" -m pip install --upgrade pip \
-    -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}"
+    -i "${PIP_INDEX_URL}" --extra-index-url "${PIP_EXTRA_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}"
   run "${BACKEND_DIR}/.venv/bin/python" -m pip install \
-    -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
+    -i "${PIP_INDEX_URL}" --extra-index-url "${PIP_EXTRA_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
     -r "${BACKEND_DIR}/requirements.txt"
   write_backend_env
   run sudo -n install -m 0644 "${REPO_DIR}/deploy/component-warehouse-backend.service" "/etc/systemd/system/${SERVICE_NAME}.service"
@@ -158,6 +169,15 @@ prepare_frontend() {
     log "Reusing existing published downloads"
     cp -a "${PUBLISH_ROOT}/downloads/." "${stage_dir}/downloads/"
   fi
+  if [[ -f "${REPO_DIR}/artifacts/windows-x64/WXY-LAB-Hardware-Setup-x64.exe" ]]; then
+    cp -a "${REPO_DIR}/artifacts/windows-x64/WXY-LAB-Hardware-Setup-x64.exe" "${stage_dir}/downloads/"
+    cp -a "${REPO_DIR}/artifacts/windows-x64/WXY-LAB-Hardware-Setup-x64.exe.sha256" "${stage_dir}/downloads/"
+  fi
+  if [[ ! -f "${stage_dir}/downloads/WXY-LAB-Hardware-Setup-x64.exe" || ! -f "${stage_dir}/downloads/WXY-LAB-Hardware-Setup-x64.exe.sha256" ]]; then
+    printf 'Windows installer and SHA256 are required before publishing v%s\n' "$(cat "${REPO_DIR}/VERSION")" >&2
+    rm -rf "${stage_dir}"
+    return 1
+  fi
 
   run sudo -n mkdir -p "${PUBLISH_ROOT}"
   run sudo -n rm -rf "${PUBLISH_ROOT}/personal" "${PUBLISH_ROOT}/team"
@@ -170,6 +190,14 @@ prepare_frontend() {
   fi
   run sudo -n chown -R root:root "${PUBLISH_ROOT}"
   run sudo -n chmod -R a+rX "${PUBLISH_ROOT}"
+  run sudo -n rm -rf "${HARDWARE_ROOT}"
+  run sudo -n cp -a "${stage_dir}/personal" "${HARDWARE_ROOT}"
+  run sudo -n mkdir -p "${HARDWARE_ROOT}/downloads"
+  if find "${stage_dir}/downloads" -mindepth 1 -maxdepth 1 | grep -q .; then
+    run sudo -n cp -a "${stage_dir}/downloads/." "${HARDWARE_ROOT}/downloads/"
+  fi
+  run sudo -n chown -R root:root "${HARDWARE_ROOT}"
+  run sudo -n chmod -R a+rX "${HARDWARE_ROOT}"
   rm -rf "${stage_dir}"
 }
 
@@ -185,7 +213,7 @@ prepare_nginx() {
 }
 
 prepare_data_permissions() {
-  run sudo -n mkdir -p "${DATA_DIR}/contest-media" "${DATA_DIR}/custom-labels" "${DATA_DIR}/backups"
+  run sudo -n mkdir -p "${DATA_DIR}/contest-media" "${DATA_DIR}/custom-labels" "${DATA_DIR}/eda-library" "${DATA_DIR}/project-v2-files" "${DATA_DIR}/sync-blobs" "${DATA_DIR}/backups"
   run sudo -n chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${DATA_DIR}"
   if [[ -f "${DATA_DIR}/.contest-invite-secret" ]]; then
     run chmod 600 "${DATA_DIR}/.contest-invite-secret"
@@ -202,17 +230,22 @@ start_preview() {
 
 verify() {
   wait_for_url "http://127.0.0.1:${BACKEND_PORT}/health" "direct backend"
-  wait_for_url "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/health" "direct preview"
+  wait_for_url "http://127.0.0.1:${PREVIEW_PORT}/hardware/health" "direct preview"
   wait_for_url "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health" "public runtime"
   run systemctl --no-pager --full status "${SERVICE_NAME}"
   run curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health"
-  run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/health"
+  run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/hardware/health"
   run curl -fsS "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health"
   run curl -kfsS https://wxylab.ltd/component-warehouse/health
-  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/personal/" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/hardware/" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/hardware/projects" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/hardware/sw.js" >/dev/null
   run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/team/" >/dev/null
   run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/team/team-sw.js" >/dev/null
-  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/downloads/WXYLAB-AD-Sync-latest-win-x64.zip.sha256" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/personal/projects" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/hardware/downloads/WXYLAB-AD-Sync-latest-win-x64.zip.sha256" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PREVIEW_PORT}/hardware/downloads/WXY-LAB-Hardware-Setup-x64.exe" >/dev/null
+  run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/hardware/downloads/WXY-LAB-Hardware-Setup-x64.exe.sha256" >/dev/null
 }
 
 main() {
@@ -229,7 +262,7 @@ main() {
   prepare_data_permissions
   start_preview
   verify
-  log "Direct-host build and preview complete on http://127.0.0.1:${PREVIEW_PORT}/component-warehouse/ ; public runtime is healthy on ${PUBLIC_PROXY_PORT}"
+  log "Direct-host build and preview complete on http://127.0.0.1:${PREVIEW_PORT}/hardware/ ; public runtime is healthy on ${PUBLIC_PROXY_PORT}"
 }
 
 main "$@"

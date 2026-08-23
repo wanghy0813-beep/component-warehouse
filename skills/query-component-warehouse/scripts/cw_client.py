@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic stdlib client for the Component Warehouse Codex API."""
+"""Deterministic stdlib client for the WXY LAB Hardware Codex API."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from typing import Any
 
 
 DEFAULT_CONFIG = Path(os.environ.get("CW_CODEX_CONFIG", "~/.config/component-warehouse/codex.json")).expanduser()
-USER_AGENT = "query-component-warehouse-skill/1.0"
+USER_AGENT = "query-component-warehouse-skill/1.3"
 
 
 class ClientError(RuntimeError):
@@ -179,13 +179,19 @@ def _request(
         message = detail.get("detail") if isinstance(detail, dict) else str(detail)
         raise ClientError(message or f"HTTP {exc.code}", status=exc.code, detail=detail) from exc
     except urllib.error.URLError as exc:
-        raise ClientError(f"无法连接 Component Warehouse：{exc.reason}") from exc
+        raise ClientError(f"无法连接 WXY LAB Hardware：{exc.reason}") from exc
     try:
         result = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ClientError("服务返回了无效 JSON") from exc
     if isinstance(result, dict) and result.get("approval_url"):
-        result["approval_url"] = urllib.parse.urljoin(config["service_url"] + "/", result["approval_url"].lstrip("/"))
+        approval_url = str(result["approval_url"])
+        if approval_url.startswith("/"):
+            parsed_root = urllib.parse.urlsplit(config["service_url"])
+            origin = urllib.parse.urlunsplit((parsed_root.scheme, parsed_root.netloc, "/", "", ""))
+            result["approval_url"] = urllib.parse.urljoin(origin, approval_url.lstrip("/"))
+        else:
+            result["approval_url"] = urllib.parse.urljoin(config["service_url"] + "/", approval_url)
     return result
 
 
@@ -222,12 +228,12 @@ def _configure(args: argparse.Namespace) -> Any:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="查询 Component Warehouse 个人库并生成网页审批单")
+    parser = argparse.ArgumentParser(description="查询 WXY LAB 个人硬件研发工作台并生成网页审批单")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
     configure = sub.add_parser("configure", help="通过隐藏输入保存令牌并验证连接")
-    configure.add_argument("--url", required=True, help="Component Warehouse 服务根地址")
+    configure.add_argument("--url", required=True, help="WXY LAB Hardware 服务根地址")
 
     search = sub.add_parser("search", help="搜索个人元器件库存")
     search.add_argument("query", nargs="?", default="")
@@ -245,9 +251,14 @@ def _build_parser() -> argparse.ArgumentParser:
     match.add_argument("input", help="JSON 文件路径，或 - 从标准输入读取")
     match.add_argument("--top-n", type=int, default=5)
 
-    sub.add_parser("projects", help="列出个人项目及 BOM/缺料上下文")
+    sub.add_parser("projects", help="列出个人 Project V2 项目及单板 BOM 可用性")
+    sub.add_parser("project-dashboard", help="读取 Project V2 仪表盘摘要、版本与成本异常")
     project = sub.add_parser("project", help="读取一个个人项目")
     project.add_argument("project_id")
+    versions = sub.add_parser("project-versions", help="读取一个项目的 PCB 版本链")
+    versions.add_argument("project_id")
+    costs = sub.add_parser("project-costs", help="读取一个项目的综合成本口径")
+    costs.add_argument("project_id")
     sub.add_parser("risks", help="读取个人库开放风险")
     sub.add_parser("purchases", help="读取个人采购上下文")
 
@@ -288,8 +299,14 @@ def run(args: argparse.Namespace) -> Any:
         return _request(config, "POST", "v1/components/match", payload=payload)
     if args.command == "projects":
         return _request(config, "GET", "v1/projects")
+    if args.command == "project-dashboard":
+        return _request(config, "GET", "v1/projects/overview")
     if args.command == "project":
         return _request(config, "GET", f"v1/projects/{urllib.parse.quote(args.project_id, safe='')}")
+    if args.command == "project-versions":
+        return _request(config, "GET", f"v1/projects/{urllib.parse.quote(args.project_id, safe='')}/versions")
+    if args.command == "project-costs":
+        return _request(config, "GET", f"v1/projects/{urllib.parse.quote(args.project_id, safe='')}/costs")
     if args.command == "risks":
         return _request(config, "GET", "v1/risks")
     if args.command == "purchases":

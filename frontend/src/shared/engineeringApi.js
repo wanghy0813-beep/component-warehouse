@@ -6,6 +6,16 @@ const scopeBase = (libraryId, module) =>
     ? `${TEAM_API_PREFIX}/libraries/${encodeURIComponent(libraryId)}/${module}`
     : `/${module}`
 
+const projectBase = (projectId, libraryId = '') =>
+  libraryId
+    ? `${TEAM_API_PREFIX}/libraries/${encodeURIComponent(libraryId)}/projects/${projectId}`
+    : `/projects/${projectId}`
+
+const assemblyProjectBase = (projectId, libraryId = '', workspaceVersionId = '') =>
+  workspaceVersionId
+    ? `/project-workspace/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(workspaceVersionId)}`
+    : projectBase(projectId, libraryId)
+
 export const engineeringSummary = (libraryId = '') =>
   api.get(`${scopeBase(libraryId, 'eda')}/summary`).then((response) => response.data)
 
@@ -167,3 +177,74 @@ export const commitTeamBom = (libraryId, projectId, batchId, items) =>
     `${TEAM_API_PREFIX}/libraries/${libraryId}/projects/${projectId}/bom/import/${batchId}/commit`,
     { items }
   ).then((response) => response.data)
+
+export async function uploadFabricationRevision(projectId, file, libraryId = '', workspaceVersionId = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions`, form, {
+    timeout: 10 * 60 * 1000
+  })
+  return data
+}
+
+export const listFabricationRevisions = (projectId, libraryId = '', workspaceVersionId = '') =>
+  api.get(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions`).then((response) => response.data)
+
+export const getFabricationRevision = (projectId, revisionId, libraryId = '', workspaceVersionId = '') =>
+  api.get(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}`).then((response) => response.data)
+
+export const getFabricationRevisionDiff = (projectId, revisionId, libraryId = '', workspaceVersionId = '') =>
+  api.get(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/diff`).then((response) => response.data)
+
+export const submitFabricationMapping = (projectId, revisionId, mapping, libraryId = '', workspaceVersionId = '') =>
+  api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/mapping`, { mapping }).then((response) => response.data)
+
+export async function uploadFabricationSupplement(projectId, revisionId, file, libraryId = '', workspaceVersionId = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post(
+    `${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/supplements`,
+    form,
+    { timeout: 120000 }
+  )
+  return data
+}
+
+export const activateFabricationRevision = (projectId, revisionId, acceptConflicts = false, libraryId = '', workspaceVersionId = '') =>
+  api.post(
+    `${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/commit`,
+    { accept_conflicts: acceptConflicts }
+  ).then((response) => response.data)
+
+export const archiveFabricationRevision = (projectId, revisionId, libraryId = '', workspaceVersionId = '') =>
+  api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/archive`).then((response) => response.data)
+
+export const getAssemblyView = (projectId, params = {}, libraryId = '', workspaceVersionId = '') =>
+  api.get(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/assembly-view`, { params }).then((response) => response.data)
+
+export const saveAssemblyCalibration = (projectId, revisionId, payload, libraryId = '', workspaceVersionId = '') =>
+  api.patch(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/calibration`, payload).then((response) => response.data)
+
+export const saveAssemblyPlacement = (projectId, revisionId, placementId, payload, libraryId = '', workspaceVersionId = '') =>
+  api.patch(
+    `${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/fabrication-revisions/${revisionId}/placements/${placementId}`,
+    payload
+  ).then((response) => response.data)
+
+export const createAssemblyBoards = (projectId, payload, libraryId = '', workspaceVersionId = '') =>
+  api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/boards/batch`, payload).then((response) => response.data)
+
+export const updateAssemblyBoard = (projectId, boardId, payload, libraryId = '', workspaceVersionId = '') =>
+  api.patch(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/boards/${boardId}${workspaceVersionId ? '/assembly' : ''}`, payload).then((response) => response.data)
+
+export const performAssemblyAction = (projectId, payload, libraryId = '', workspaceVersionId = '') =>
+  api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/assembly-actions`, payload).then((response) => response.data)
+
+export const undoAssemblyAction = (projectId, operationId, payload = {}, libraryId = '', workspaceVersionId = '') =>
+  api.post(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/assembly-actions/${operationId}/undo`, payload).then((response) => response.data)
+
+export const updateAssemblyActionNote = (projectId, operationId, note, libraryId = '', workspaceVersionId = '') =>
+  api.patch(`${assemblyProjectBase(projectId, libraryId, workspaceVersionId)}/assembly-actions/${operationId}/note`, { note }).then((response) => response.data)
+
+export const setPublicAssemblyView = (projectId, enabled, libraryId = '') =>
+  api.patch(`${projectBase(projectId, libraryId)}/assembly-public-setting`, { enabled }).then((response) => response.data)

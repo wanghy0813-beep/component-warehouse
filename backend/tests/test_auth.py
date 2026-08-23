@@ -149,6 +149,19 @@ def test_invalid_remote_payload_is_rejected(db, monkeypatch):
     assert error.value.status_code == 502
 
 
+def test_desktop_sync_token_is_isolated_from_web_client(db, monkeypatch):
+    enable_remote_auth(monkeypatch)
+    payload = user_payload()
+    payload["clientId"] = "componentwarehouse-desktop-v1"
+    payload["scope"] = "account.profile.read hardware.sync.read hardware.sync.write"
+    monkeypatch.setattr(auth.httpx, "post", lambda *args, **kwargs: FakeResponse(200, payload))
+    context = auth.verify_desktop_sync_token(db, "desktop-token", "hardware.sync.read")
+    assert context.user_id == 7
+    with pytest.raises(HTTPException) as error:
+        auth.verify_remote_token(db, "desktop-token")
+    assert error.value.status_code == 401
+
+
 def test_sso_token_request_validates_required_parameters(monkeypatch):
     monkeypatch.setattr(auth, "AUTH_MODE", "account-v1")
     monkeypatch.setattr(auth, "ACCOUNT_SSO_TOKEN_URL", "https://account.example.test/sso/token")
@@ -175,7 +188,8 @@ def test_sso_start_sets_cookie_and_sanitizes_return_to(monkeypatch):
     )
 
     assert "code_challenge_method=S256" in started["authorizeUrl"]
-    assert started["returnTo"] == "https://wxylab.ltd/component-warehouse/personal/"
+    assert started["returnTo"] == "https://wxylab.ltd/hardware/"
+    assert "Path=/hardware" in response.headers["set-cookie"]
     cookie = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
     payload = main_app.parse_sso_cookie(cookie)
     assert payload["state"] == started["state"]
@@ -191,7 +205,7 @@ def test_sso_token_request_uses_cookie_verifier_and_clears_cookie(monkeypatch):
     monkeypatch.setattr(auth, "ACCOUNT_SSO_REDIRECT_URI", "https://wxylab.ltd/component-warehouse/personal/auth/callback")
     response = Response()
     started = main_app.account_sso_start(
-        {"returnTo": "https://wxylab.ltd/component-warehouse/team/library/abc/components"},
+        {"returnTo": "https://wxylab.ltd/hardware/projects"},
         make_request(),
         response,
     )
@@ -221,7 +235,7 @@ def test_sso_token_request_uses_cookie_verifier_and_clears_cookie(monkeypatch):
 
     assert captured["json"]["code_verifier"]
     assert captured["json"]["redirect_uri"] == "https://wxylab.ltd/component-warehouse/personal/auth/callback"
-    assert result["returnTo"] == "https://wxylab.ltd/component-warehouse/team/library/abc/components"
+    assert result["returnTo"] == "https://wxylab.ltd/hardware/projects"
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(main_app.account_sso_token_request(

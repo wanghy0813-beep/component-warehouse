@@ -1,0 +1,49 @@
+name: Windows Desktop x64
+
+on:
+  push:
+    branches:
+      - codex/windows-offline-sync
+  workflow_dispatch:
+    inputs:
+      webview2_fixed_runtime_url:
+        description: Official Microsoft WebView2 Fixed Version x64 CAB URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Download official fixed WebView2 runtime
+        shell: pwsh
+        run: |
+          $RuntimeUrl = '${{ inputs.webview2_fixed_runtime_url }}'
+          if ([string]::IsNullOrWhiteSpace($RuntimeUrl)) {
+            $RuntimeUrl = 'https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d480b710-fe1e-4e4d-ae99-5b62e6391fd3/Microsoft.WebView2.FixedVersionRuntime.151.0.4129.101.x64.cab'
+          }
+          Invoke-WebRequest $RuntimeUrl -OutFile webview2-fixed-x64.cab
+          New-Item -ItemType Directory -Force webview2-fixed-x64 | Out-Null
+          expand.exe webview2-fixed-x64.cab -F:* webview2-fixed-x64
+      - name: Build sidecar, NSIS, SBOM and SHA256
+        shell: pwsh
+        run: ./build.ps1 -WebView2FixedRuntimePath ./webview2-fixed-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WXY-LAB-Hardware-v1.4.0-windows-x64
+          path: artifacts/windows-x64/*
+          if-no-files-found: error

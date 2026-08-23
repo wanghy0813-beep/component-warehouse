@@ -1,15 +1,15 @@
 {
   "id": "/component-warehouse/team/",
-  "name": "WXY LAB 器件管理团队版",
-  "short_name": "器件管理团队",
-  "description": "WXY LAB 器件管理团队版",
+  "name": "WXY LAB Hardware Workspace 团队版",
+  "short_name": "团队版维护中",
+  "description": "团队工作区当前暂停维护",
   "start_url": "/component-warehouse/team/",
   "scope": "/",
   "display": "standalone",
   "lang": "zh-CN",
   "categories": ["productivity", "utilities"],
-  "background_color": "#fff7ed",
-  "theme_color": "#0e74ff",
+  "background_color": "#edf2f3",
+  "theme_color": "#0f5863",
   "icons": [
     {
       "src": "icons/cw-app-icon-192.png",

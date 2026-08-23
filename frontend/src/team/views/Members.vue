@@ -150,7 +150,7 @@ function openInvite() {
 
 async function shareInvite() {
   await navigator.share({
-    title: `${library.value?.name || 'Component Warehouse'} 团队邀请`,
+    title: `${library.value?.name || 'WXY LAB Hardware Workspace'} 团队邀请`,
     text: `邀请你加入 ${library.value?.name || '团队器件库'}`,
     url: invite.url
   })

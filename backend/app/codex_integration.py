@@ -5,7 +5,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from uuid import uuid4
@@ -31,9 +31,19 @@ from .models import (
     IntegrationAccessToken,
     IntegrationOperation,
     InventoryLot,
+    PersonalProjectBomItemV2,
+    PersonalProjectExpenseV2,
+    PersonalProjectRiskV2,
+    PersonalProjectStatusEventV2,
+    PersonalProjectV2,
+    PersonalProjectVersionV2,
     Project,
     ProjectBoard,
     ProjectBomItem,
+    ProjectCodeAlias,
+    ProjectExpense,
+    ProjectPcbVersion,
+    ProjectStatusEvent,
     PurchaseLine,
     PurchaseOrder,
     PurchaseReceipt,
@@ -51,11 +61,45 @@ from .services.inventory import (
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import record_stock_delta
+from .services.project_tracking import (
+    EXPENSE_CATEGORY_LABELS,
+    PCB_VERSION_STATUS_LABELS,
+    PROJECT_STATUS_LABELS,
+    active_version as active_project_version,
+    assert_project_code_available,
+    cost_summary as project_cost_summary,
+    create_initial_version,
+    create_version as create_project_version,
+    expense_out,
+    normalize_project_code,
+    normalize_version_code,
+    project_by_code_or_alias,
+    project_period,
+    shanghai_today,
+    version_stats,
+)
 from .risks import RiskScope, list_risks_impl
+from .personal_projects_v2 import (
+    EXPENSE_CATEGORIES as WORKSPACE_EXPENSE_CATEGORIES,
+    PROJECT_STATUSES as WORKSPACE_PROJECT_STATUSES,
+    VERSION_STATUSES as WORKSPACE_VERSION_STATUSES,
+    add_actual_timeline_events as add_workspace_actual_timeline_events,
+    add_initial_timeline_events as add_workspace_initial_timeline_events,
+    cost_summary as workspace_cost_summary,
+    lifecycle_out as workspace_lifecycle_out,
+    normalize_code as normalize_workspace_code,
+    normalize_version as normalize_workspace_version,
+    normalized_actual_lifecycle_dates as normalize_workspace_actual_lifecycle_dates,
+    period_out as workspace_period_out,
+    project_out as workspace_project_summary,
+    status_history_out as workspace_status_history_out,
+    today as workspace_today,
+    version_out as workspace_version_out,
+)
 
 
 router = APIRouter(tags=["codex-integration"])
-SERVICE_VERSION = "2026-07-19"
+SERVICE_VERSION = "2026-08-18-project-v2"
 TOKEN_PREFIX = "cw_codex_"
 READ_SCOPE = "inventory:read"
 APPROVAL_TTL = timedelta(minutes=10)
@@ -135,9 +179,22 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def _date_value(value: Any, default: date | None = None) -> date | None:
+    if value in {None, ""}:
+        return default
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="日期必须使用 YYYY-MM-DD 格式") from error
+
+
 def _json_default(value: Any):
     if isinstance(value, datetime):
         return value.isoformat() + "Z"
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
     raise TypeError(f"不能序列化 {type(value).__name__}")
@@ -185,7 +242,7 @@ def _operation_out(operation: IntegrationOperation, include_sensitive: bool = Fa
         "executed_at": operation.executed_at,
         "failure_message": operation.failure_message,
         "created_at": operation.created_at,
-        "approval_url": f"/personal/integrations/codex/operations/{operation.id}",
+        "approval_url": f"/hardware/integrations/codex/operations/{operation.id}",
     }
     if include_sensitive:
         data.update(
@@ -564,11 +621,13 @@ def match_components(
 
 
 def _project_out(db: Session, project: Project) -> dict[str, Any]:
+    version = active_project_version(db, project)
     bom_rows = (
         db.query(ProjectBomItem)
         .options(joinedload(ProjectBomItem.component))
         .join(Component, Component.id == ProjectBomItem.component_id)
         .filter(ProjectBomItem.project_id == project.id, ProjectBomItem.status != "archived")
+        .filter(ProjectBomItem.pcb_version_id == version.id if version else ProjectBomItem.pcb_version_id.is_(None))
         .filter(Component.owner_user_id == project.owner_user_id, Component.revoked_at.is_(None))
         .order_by(ProjectBomItem.id.asc())
         .all()
@@ -596,6 +655,7 @@ def _project_out(db: Session, project: Project) -> dict[str, Any]:
         bom.append(
             {
                 "id": row.id,
+                "pcb_version_id": row.pcb_version_id,
                 "component_id": row.component_id,
                 "warehouse_code": row.component.warehouse_code,
                 "name": row.component.name,
@@ -615,12 +675,24 @@ def _project_out(db: Session, project: Project) -> dict[str, Any]:
                 "remark": row.remark,
             }
         )
+    versions = db.query(ProjectPcbVersion).filter(ProjectPcbVersion.project_id == project.id).order_by(
+        ProjectPcbVersion.sequence_number.desc()
+    ).all()
     return {
         "id": project.id,
         "project_code": project.project_code,
         "name": project.name,
         "description": project.description,
         "status": project.status,
+        "status_label": PROJECT_STATUS_LABELS.get(project.status, project.status),
+        "start_date": project.start_date,
+        "end_date": project.end_date,
+        "period": project_period(project),
+        "archived": project.archived_at is not None,
+        "current_version_id": version.id if version else None,
+        "current_version_code": version.version_code if version else None,
+        "versions": [version_stats(db, project, item) for item in versions],
+        "cost_summary": project_cost_summary(db, project),
         "created_at": project.created_at,
         "updated_at": project.updated_at,
         "bom": bom,
@@ -630,14 +702,88 @@ def _project_out(db: Session, project: Project) -> dict[str, Any]:
 def _owned_project(db: Session, owner_user_id: int, project_id: str | int, include_archived: bool = False) -> Project:
     query = db.query(Project).filter(Project.scope_type == "personal", Project.owner_user_id == owner_user_id)
     if not include_archived:
-        query = query.filter(Project.status != "archived")
+        query = query.filter(Project.archived_at.is_(None))
     text = str(project_id or "").strip()
-    project = query.filter(Project.project_code == text).first()
+    project = query.filter(Project.project_code == text.upper()).first()
+    if not project:
+        alias = db.query(ProjectCodeAlias).filter(ProjectCodeAlias.old_code == text.upper()).first()
+        if alias:
+            project = query.filter(Project.id == alias.project_id).first()
     if not project and text.isdigit():
         project = query.filter(Project.id == int(text)).first()
     if not project:
         raise HTTPException(status_code=404, detail="个人项目不存在")
     return project
+
+
+def _workspace_owned_project(
+    db: Session,
+    owner_user_id: int,
+    project_reference: str,
+    include_archived: bool = False,
+) -> PersonalProjectV2:
+    query = db.query(PersonalProjectV2).filter(PersonalProjectV2.owner_user_id == owner_user_id)
+    if not include_archived:
+        query = query.filter(PersonalProjectV2.archived_at.is_(None))
+    reference = str(project_reference or "").strip()
+    project = query.filter(
+        or_(PersonalProjectV2.id == reference, PersonalProjectV2.project_code == reference.upper())
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="个人 Project V2 项目不存在")
+    return project
+
+
+def _workspace_project_out(db: Session, project: PersonalProjectV2) -> dict[str, Any]:
+    result = workspace_project_summary(db, project)
+    history = db.query(PersonalProjectStatusEventV2).filter(
+        PersonalProjectStatusEventV2.project_id == project.id
+    ).order_by(PersonalProjectStatusEventV2.created_at.desc()).limit(100).all()
+    versions = db.query(PersonalProjectVersionV2).filter(
+        PersonalProjectVersionV2.project_id == project.id
+    ).order_by(PersonalProjectVersionV2.sequence_number.desc()).all()
+    bom = []
+    if project.current_version_id:
+        rows = db.query(PersonalProjectBomItemV2, Component).join(
+            Component, Component.id == PersonalProjectBomItemV2.component_id
+        ).filter(
+            PersonalProjectBomItemV2.version_id == project.current_version_id,
+            PersonalProjectBomItemV2.archived_at.is_(None),
+            Component.owner_user_id == project.owner_user_id,
+            Component.revoked_at.is_(None),
+        ).order_by(PersonalProjectBomItemV2.created_at.asc()).all()
+        for item, component in rows:
+            required = int(item.quantity_per_board or 0)
+            available = component_available_quantity(component, 0)
+            bom.append({
+                "id": item.id,
+                "version_id": item.version_id,
+                "component_id": component.id,
+                "warehouse_code": component.warehouse_code,
+                "name": component.name,
+                "model": component.model,
+                "quantity_per_board": required,
+                "designators": [part for part in str(item.designators or "").split(",") if part],
+                "stock_quantity": int(component.quantity or 0),
+                "available_quantity": available,
+                "shortage_quantity": max(0, required - available),
+                "enough": available >= required,
+                "average_unit_price": component.average_unit_price,
+                "price_currency": "CNY",
+                "unpriced": component.average_unit_price is None,
+                "note": item.note,
+            })
+    return {
+        **result,
+        "schema_version": "project-workspace-v2",
+        "current_version_id": project.current_version_id,
+        "current_version_code": result.get("current_version", {}).get("version_code") if result.get("current_version") else None,
+        "versions": [workspace_version_out(db, row) for row in versions],
+        "cost_summary": result["cost"],
+        "lifecycle": workspace_lifecycle_out(project, history),
+        "status_history": workspace_status_history_out(history),
+        "bom": bom,
+    }
 
 
 @router.get("/api/integrations/codex/v1/projects")
@@ -646,12 +792,82 @@ def list_projects(
     db: Session = Depends(get_db),
 ):
     rows = (
-        db.query(Project)
-        .filter(Project.scope_type == "personal", Project.owner_user_id == principal.owner_user_id, Project.status != "archived")
-        .order_by(Project.updated_at.desc())
+        db.query(PersonalProjectV2)
+        .filter(
+            PersonalProjectV2.owner_user_id == principal.owner_user_id,
+            PersonalProjectV2.archived_at.is_(None),
+        )
+        .order_by(PersonalProjectV2.updated_at.desc())
         .all()
     )
-    return {"items": [_project_out(db, row) for row in rows], "count": len(rows), "scope": "personal"}
+    return {"items": [_workspace_project_out(db, row) for row in rows], "count": len(rows), "scope": "personal", "schema_version": "project-workspace-v2"}
+
+
+@router.get("/api/integrations/codex/v1/projects/overview")
+def get_projects_overview(
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(PersonalProjectV2).filter(
+        PersonalProjectV2.owner_user_id == principal.owner_user_id,
+        PersonalProjectV2.archived_at.is_(None),
+    ).order_by(PersonalProjectV2.updated_at.desc()).all()
+    projects = []
+    for project in rows:
+        version = db.get(PersonalProjectVersionV2, project.current_version_id) if project.current_version_id else None
+        costs = workspace_cost_summary(db, project)
+        projects.append(
+            {
+                "id": project.id,
+                "project_code": project.project_code,
+                "name": project.name,
+                "status": project.status,
+                "status_label": WORKSPACE_PROJECT_STATUSES.get(project.status, project.status),
+                "period": workspace_period_out(project),
+                "current_version_id": version.id if version else None,
+                "current_version_code": version.version_code if version else None,
+                "actual_material_cost": costs["actual_material_cost"],
+                "direct_expense": costs["direct_expense"],
+                "comprehensive_cost": costs["comprehensive_cost"],
+                "unpriced_count": costs["unpriced_count"],
+                "updated_at": project.updated_at,
+            }
+        )
+    return {
+        "items": projects,
+        "count": len(projects),
+        "currency": "CNY",
+        "cost_definition": "comprehensive_cost = actual_material_cost + direct_expense; purchases are excluded",
+        "unpriced_policy": "missing average prices are reported as unpriced and never treated as zero",
+        "schema_version": "project-workspace-v2",
+    }
+
+
+@router.get("/api/integrations/codex/v1/projects/{project_id}/versions")
+def get_project_versions(
+    project_id: str,
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    project = _workspace_owned_project(db, principal.owner_user_id, project_id)
+    rows = db.query(PersonalProjectVersionV2).filter(PersonalProjectVersionV2.project_id == project.id).order_by(
+        PersonalProjectVersionV2.sequence_number.desc()
+    ).all()
+    return {"project_code": project.project_code, "schema_version": "project-workspace-v2", "items": [workspace_version_out(db, row) for row in rows]}
+
+
+@router.get("/api/integrations/codex/v1/projects/{project_id}/costs")
+def get_project_costs(
+    project_id: str,
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    project = _workspace_owned_project(db, principal.owner_user_id, project_id)
+    return workspace_cost_summary(db, project) | {
+        "currency": "CNY",
+        "cost_definition": "comprehensive_cost = actual_material_cost + direct_expense; purchases are excluded",
+        "schema_version": "project-workspace-v2",
+    }
 
 
 @router.get("/api/integrations/codex/v1/projects/{project_id}")
@@ -660,7 +876,7 @@ def get_project(
     principal: CodexPrincipal = Depends(require_codex_token),
     db: Session = Depends(get_db),
 ):
-    return _project_out(db, _owned_project(db, principal.owner_user_id, project_id))
+    return _workspace_project_out(db, _workspace_owned_project(db, principal.owner_user_id, project_id))
 
 
 @router.get("/api/integrations/codex/v1/risks")
@@ -669,6 +885,28 @@ def get_risks(
     db: Session = Depends(get_db),
 ):
     result = list_risks_impl(db, RiskScope("personal", principal.owner_user_id, None))
+    project_ids = {
+        row.id: row.project_code
+        for row in db.query(PersonalProjectV2).filter(PersonalProjectV2.owner_user_id == principal.owner_user_id).all()
+    }
+    workspace_risks = db.query(PersonalProjectRiskV2).filter(
+        PersonalProjectRiskV2.project_id.in_(list(project_ids) or [""])
+    ).order_by(PersonalProjectRiskV2.status.asc(), PersonalProjectRiskV2.created_at.desc()).all()
+    result["items"] = [
+        {
+            "risk_code": f"PV2-{row.id[:8].upper()}",
+            "source": "project-workspace-v2",
+            "project_id": row.project_id,
+            "project_code": project_ids.get(row.project_id),
+            "severity": row.severity,
+            "status": row.status,
+            "title": row.title,
+            "detail": row.detail,
+            "created_at": row.created_at,
+        }
+        for row in workspace_risks
+    ] + result["items"]
+    result["count"] = len(result["items"])
     for row in result["items"]:
         if row.get("component_id") and not row.get("warehouse_code"):
             component = db.get(Component, row["component_id"])
@@ -759,7 +997,7 @@ COMPONENT_FIELDS = {
     "safety_quantity",
     "low_stock_exempt",
 }
-PROJECT_FIELDS = {"name", "description", "status"}
+PROJECT_FIELDS = {"name", "description", "start_date", "end_date"}
 ORDER_FIELDS = {"order_number", "platform", "status", "currency", "note"}
 SUPPORTED_ACTIONS = {
     "component.create",
@@ -767,13 +1005,19 @@ SUPPORTED_ACTIONS = {
     "component.archive",
     "component.restore",
     "stock.adjust",
-    "project.create",
-    "project.update",
-    "project.archive",
-    "project.restore",
-    "bom.upsert",
-    "bom.archive",
-    "bom.restore",
+    "workspace.project.create",
+    "workspace.project.update",
+    "workspace.project.archive",
+    "workspace.project.restore",
+    "workspace.project.status",
+    "workspace.version.create",
+    "workspace.version.status",
+    "workspace.expense.create",
+    "workspace.expense.archive",
+    "workspace.expense.restore",
+    "workspace.bom.upsert",
+    "workspace.bom.archive",
+    "workspace.bom.restore",
     "purchase.create",
     "purchase.update",
     "purchase.cancel",
@@ -812,8 +1056,125 @@ def _snapshot_project(project: Project) -> dict[str, Any]:
         "name": project.name,
         "description": project.description,
         "status": project.status,
+        "start_date": project.start_date,
+        "end_date": project.end_date,
+        "archived_at": project.archived_at,
+        "active_pcb_version_id": project.active_pcb_version_id,
         "updated_at": project.updated_at,
     }
+
+
+def _owned_version(db: Session, owner_user_id: int, version_id: str | int) -> tuple[Project, ProjectPcbVersion]:
+    text = str(version_id or "").strip()
+    if not text.isdigit():
+        raise HTTPException(status_code=422, detail="PCB 版本目标必须是数字 ID")
+    version = db.get(ProjectPcbVersion, int(text))
+    project = db.get(Project, version.project_id) if version else None
+    if not version or not project or project.scope_type != "personal" or project.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail="个人项目中没有该 PCB 版本")
+    return project, version
+
+
+def _snapshot_version(version: ProjectPcbVersion) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "project_id": version.project_id,
+        "version_code": version.version_code,
+        "status": version.status,
+        "change_summary": version.change_summary,
+        "archived_at": version.archived_at,
+    }
+
+
+def _owned_expense(db: Session, owner_user_id: int, expense_id: str) -> tuple[Project, ProjectExpense]:
+    expense = db.get(ProjectExpense, str(expense_id))
+    project = db.get(Project, expense.project_id) if expense else None
+    if not expense or not project or project.scope_type != "personal" or project.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail="个人项目中没有该费用记录")
+    return project, expense
+
+
+def _snapshot_expense(expense: ProjectExpense) -> dict[str, Any]:
+    return {
+        "id": expense.id,
+        "project_id": expense.project_id,
+        "pcb_version_id": expense.pcb_version_id,
+        "category": expense.category,
+        "amount": expense.amount,
+        "occurred_on": expense.occurred_on,
+        "vendor": expense.vendor,
+        "note": expense.note,
+        "attachment_asset_id": expense.attachment_asset_id,
+        "archived_at": expense.archived_at,
+    }
+
+
+def _snapshot_workspace_project(project: PersonalProjectV2) -> dict[str, Any]:
+    return {
+        "id": project.id,
+        "project_code": project.project_code,
+        "name": project.name,
+        "description": project.description,
+        "status": project.status,
+        "start_date": project.start_date,
+        "end_date": project.end_date,
+        "archived_at": project.archived_at,
+        "current_version_id": project.current_version_id,
+        "updated_at": project.updated_at,
+        "schema_version": "project-workspace-v2",
+    }
+
+
+def _workspace_owned_version(
+    db: Session, owner_user_id: int, version_id: str
+) -> tuple[PersonalProjectV2, PersonalProjectVersionV2]:
+    version = db.get(PersonalProjectVersionV2, str(version_id))
+    project = db.get(PersonalProjectV2, version.project_id) if version else None
+    if not version or not project or project.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail="Project V2 中没有该 PCB 版本")
+    return project, version
+
+
+def _snapshot_workspace_version(version: PersonalProjectVersionV2) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "project_id": version.project_id,
+        "version_code": version.version_code,
+        "status": version.status,
+        "change_summary": version.change_summary,
+    }
+
+
+def _workspace_owned_expense(
+    db: Session, owner_user_id: int, expense_id: str
+) -> tuple[PersonalProjectV2, PersonalProjectExpenseV2]:
+    expense = db.get(PersonalProjectExpenseV2, str(expense_id))
+    project = db.get(PersonalProjectV2, expense.project_id) if expense else None
+    if not expense or not project or project.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail="Project V2 中没有该费用")
+    return project, expense
+
+
+def _snapshot_workspace_expense(expense: PersonalProjectExpenseV2) -> dict[str, Any]:
+    return {
+        "id": expense.id,
+        "project_id": expense.project_id,
+        "version_id": expense.version_id,
+        "category": expense.category,
+        "amount": expense.amount,
+        "occurred_on": expense.occurred_on,
+        "vendor": expense.vendor,
+        "note": expense.note,
+        "archived_at": expense.archived_at,
+    }
+
+
+def _workspace_owned_bom(db: Session, owner_user_id: int, bom_id: str) -> PersonalProjectBomItemV2:
+    row = db.get(PersonalProjectBomItemV2, str(bom_id))
+    project = db.get(PersonalProjectV2, row.project_id) if row else None
+    if not row or not project or project.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail="Project V2 中没有该 BOM 行")
+    return row
 
 
 def _owned_bom(db: Session, owner_user_id: int, bom_id: str | int) -> ProjectBomItem:
@@ -904,13 +1265,189 @@ def _prepare_action(
             risk = "high" if delta < 0 else "normal"
         elif action_name in {"component.archive", "component.restore"}:
             risk = "high"
+    elif action_name == "workspace.project.create":
+        if not str(payload.get("name") or "").strip():
+            raise HTTPException(status_code=422, detail="新建 Project V2 项目必须提供 name")
+        code = normalize_workspace_code(payload.get("project_code"))
+        if db.query(PersonalProjectV2.id).filter(PersonalProjectV2.project_code == code).first():
+            raise HTTPException(status_code=409, detail="项目编号已存在")
+        status_value = str(payload.get("status") or "planning")
+        if status_value not in WORKSPACE_PROJECT_STATUSES:
+            raise HTTPException(status_code=422, detail="不支持的 Project V2 状态")
+        start_date_value = _date_value(payload.get("start_date"), workspace_today())
+        if start_date_value > workspace_today():
+            raise HTTPException(status_code=422, detail="开始日期不能晚于今天")
+        lifecycle_dates = payload.get("lifecycle_dates")
+        normalized_dates = None
+        if lifecycle_dates is not None:
+            if not isinstance(lifecycle_dates, dict):
+                raise HTTPException(status_code=422, detail="lifecycle_dates 必须是阶段与日期的映射")
+            normalized_dates = {
+                key: _date_value(value).isoformat() for key, value in lifecycle_dates.items()
+            }
+            normalize_workspace_actual_lifecycle_dates(
+                status_value,
+                start_date_value,
+                {key: _date_value(value) for key, value in normalized_dates.items()},
+            )
+        payload = {
+            "project_code": code,
+            "name": str(payload["name"]).strip()[:200],
+            "description": str(payload.get("description") or "")[:5000] or None,
+            "status": status_value,
+            "start_date": start_date_value.isoformat(),
+            "lifecycle_dates": normalized_dates,
+        }
+        before = {"project_code": code, "exists": False, "schema_version": "project-workspace-v2"}
+        label = f"新建 Project V2 项目 {code} · {payload['name']}"
+    elif action_name.startswith("workspace.project."):
+        project = _workspace_owned_project(
+            db, owner_user_id, target_id, include_archived=action_name == "workspace.project.restore"
+        )
+        before = _snapshot_workspace_project(project)
+        target_id = project.project_code
+        label = f"{action_name} {project.project_code} · {project.name}"
+        if action_name == "workspace.project.update":
+            payload = {key: value for key, value in payload.items() if key in PROJECT_FIELDS}
+            if not payload:
+                raise HTTPException(status_code=422, detail="项目更新没有有效字段")
+        elif action_name == "workspace.project.status":
+            status_value = str(payload.get("status") or "")
+            if status_value not in WORKSPACE_PROJECT_STATUSES:
+                raise HTTPException(status_code=422, detail="不支持的 Project V2 状态")
+            payload = {
+                "status": status_value,
+                "note": str(payload.get("note") or "")[:1000] or None,
+                "clear_end_date": bool(payload.get("clear_end_date")),
+                "restore_end_date": payload.get("restore_end_date"),
+            }
+        else:
+            payload = {}
+            risk = "high"
+    elif action_name == "workspace.version.create":
+        reference = str(target_id or "").strip().upper()
+        project = None
+        try:
+            project = _workspace_owned_project(db, owner_user_id, reference)
+        except HTTPException:
+            if reference not in (pending_project_codes or set()):
+                raise
+        sequence = (
+            (db.query(PersonalProjectVersionV2.id).filter(PersonalProjectVersionV2.project_id == project.id).count() + 1)
+            if project else 2
+        )
+        version_code = normalize_workspace_version(payload.get("version_code") or f"V{sequence}")
+        change_summary = str(payload.get("change_summary") or "").strip() or None
+        if sequence > 1 and not change_summary:
+            raise HTTPException(status_code=422, detail="V2 及后续版本必须填写变更说明")
+        payload = {"version_code": version_code, "change_summary": change_summary}
+        before = {"project_code": reference, "exists": False, "schema_version": "project-workspace-v2"}
+        label = f"为 {reference} 建立 PCB {version_code}"
+    elif action_name == "workspace.version.status":
+        project, version = _workspace_owned_version(db, owner_user_id, str(target_id))
+        before = _snapshot_workspace_version(version)
+        status_value = str(payload.get("status") or "")
+        if status_value not in WORKSPACE_VERSION_STATUSES:
+            raise HTTPException(status_code=422, detail="不支持的 PCB 版本状态")
+        payload = {"status": status_value}
+        label = f"更新 {project.project_code}/{version.version_code} 状态"
+    elif action_name == "workspace.expense.create":
+        reference = str(target_id or "").strip().upper()
+        project = None
+        try:
+            project = _workspace_owned_project(db, owner_user_id, reference)
+        except HTTPException:
+            if reference not in (pending_project_codes or set()):
+                raise
+        category = str(payload.get("category") or "")
+        if category not in WORKSPACE_EXPENSE_CATEGORIES:
+            raise HTTPException(status_code=422, detail="不支持的费用分类")
+        try:
+            amount = Decimal(str(payload.get("amount"))).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail="费用金额必须是有效数字") from error
+        if amount <= 0:
+            raise HTTPException(status_code=422, detail="费用金额必须大于 0")
+        version_id = payload.get("version_id")
+        if version_id and project:
+            version_project, _ = _workspace_owned_version(db, owner_user_id, str(version_id))
+            if version_project.id != project.id:
+                raise HTTPException(status_code=422, detail="费用关联版本不属于目标项目")
+        payload = {
+            "version_id": version_id,
+            "category": category,
+            "amount": amount,
+            "occurred_on": payload.get("occurred_on"),
+            "vendor": str(payload.get("vendor") or "")[:200] or None,
+            "note": str(payload.get("note") or "")[:2000] or None,
+        }
+        before = {"project_code": reference, "exists": False, "schema_version": "project-workspace-v2"}
+        label = f"为 {reference} 记录 {amount} CNY 费用"
+    elif action_name in {"workspace.expense.archive", "workspace.expense.restore"}:
+        project, expense = _workspace_owned_expense(db, owner_user_id, str(target_id))
+        before = _snapshot_workspace_expense(expense)
+        payload = {}
+        label = f"{action_name} {project.project_code}/{expense.id}"
+        risk = "high"
+    elif action_name == "workspace.bom.upsert":
+        if target_id is None:
+            reference = str(payload.get("project_code") or payload.get("project_id") or "").strip().upper()
+            project = None
+            try:
+                project = _workspace_owned_project(db, owner_user_id, reference)
+            except HTTPException:
+                if reference not in (pending_project_codes or set()):
+                    raise
+            component = _owned_component_by_code(db, owner_user_id, payload.get("warehouse_code") or payload.get("component_id"))
+            quantity = max(1, int(payload.get("quantity_per_board") or payload.get("required_quantity") or 1))
+            version_id = payload.get("version_id")
+            if version_id and project:
+                version_project, _ = _workspace_owned_version(db, owner_user_id, str(version_id))
+                if version_project.id != project.id:
+                    raise HTTPException(status_code=422, detail="BOM 版本不属于目标项目")
+            payload = {
+                "project_code": reference,
+                "component_id": component.id,
+                "version_id": version_id,
+                "quantity_per_board": quantity,
+                "designators": str(payload.get("designators") or "")[:10000] or None,
+                "note": str(payload.get("note") or payload.get("remark") or "")[:2000] or None,
+            }
+            before = {"exists": False, "project_code": reference, "component_id": component.id}
+            label = f"向 {reference} BOM 添加 {component.warehouse_code}"
+        else:
+            bom = _workspace_owned_bom(db, owner_user_id, str(target_id))
+            before = {
+                "id": bom.id, "quantity_per_board": bom.quantity_per_board,
+                "designators": bom.designators, "note": bom.note,
+            }
+            payload = {
+                key: value for key, value in payload.items()
+                if key in {"quantity_per_board", "designators", "note", "archived_at"}
+            }
+            label = f"更新 Project V2 BOM {bom.id}"
+    elif action_name in {"workspace.bom.archive", "workspace.bom.restore"}:
+        bom = _workspace_owned_bom(db, owner_user_id, str(target_id))
+        before = {
+            "id": bom.id, "project_id": bom.project_id, "version_id": bom.version_id,
+            "component_id": bom.component_id, "archived_at": bom.archived_at,
+        }
+        payload = {}
+        label = f"{action_name} {bom.id}"
+        risk = "high"
     elif action_name == "project.create":
         if not str(payload.get("name") or "").strip():
             raise HTTPException(status_code=422, detail="新建项目必须提供 name")
-        project_code = str(payload.get("project_code") or f"PRJ-{uuid4().hex[:8].upper()}").strip()
-        if db.query(Project).filter(Project.scope_type == "personal", Project.owner_user_id == owner_user_id, Project.project_code == project_code).first():
-            raise HTTPException(status_code=409, detail="项目编号已存在")
+        try:
+            project_code = normalize_project_code(payload.get("project_code"))
+            assert_project_code_available(db, project_code)
+        except ValueError as error:
+            raise HTTPException(status_code=409 if "存在" in str(error) else 422, detail=str(error)) from error
         payload["project_code"] = project_code
+        status_value = str(payload.get("status") or "planning")
+        if status_value not in PROJECT_STATUS_LABELS or status_value in {"active", "completed", "archived"}:
+            raise HTTPException(status_code=422, detail="不支持的项目状态")
+        payload["status"] = status_value
         before = {"project_code": project_code, "exists": False}
         label = f"新建项目 {payload['name']}"
     elif action_name.startswith("project."):
@@ -922,7 +1459,113 @@ def _prepare_action(
             payload = {key: value for key, value in payload.items() if key in PROJECT_FIELDS}
             if not payload:
                 raise HTTPException(status_code=422, detail="项目更新没有有效字段")
+        elif action_name == "project.status":
+            status_value = str(payload.get("status") or "")
+            if status_value not in PROJECT_STATUS_LABELS or status_value == "archived":
+                raise HTTPException(status_code=422, detail="不支持的项目状态")
+            payload = {
+                "status": status_value,
+                "note": str(payload.get("note") or "")[:1000] or None,
+                "clear_end_date": bool(payload.get("clear_end_date")),
+                "restore_end_date": payload.get("restore_end_date"),
+            }
+        elif action_name == "project.code_change":
+            try:
+                new_code = normalize_project_code(payload.get("project_code"))
+                assert_project_code_available(db, new_code, project.id)
+            except ValueError as error:
+                raise HTTPException(status_code=409 if "存在" in str(error) else 422, detail=str(error)) from error
+            payload = {"project_code": new_code}
+            risk = "high"
         else:
+            risk = "high"
+    elif action_name == "version.create":
+        project = _owned_project(db, owner_user_id, target_id)
+        before = {"project_id": project.id, "project_code": project.project_code, "exists": False}
+        status_value = str(payload.get("status") or "designing")
+        if status_value not in PCB_VERSION_STATUS_LABELS:
+            raise HTTPException(status_code=422, detail="不支持的 PCB 版本状态")
+        payload = {
+            "version_code": payload.get("version_code"),
+            "status": status_value,
+            "change_summary": str(payload.get("change_summary") or "").strip() or None,
+            "copy_from_version_id": payload.get("copy_from_version_id"),
+        }
+        label = f"为 {project.project_code} 新建 PCB 版本"
+    elif action_name.startswith("version."):
+        project, version = _owned_version(db, owner_user_id, target_id)
+        before = _snapshot_version(version)
+        before["project_active_pcb_version_id"] = project.active_pcb_version_id
+        target_id = version.id
+        label = f"{action_name} {project.project_code}/{version.version_code}"
+        if action_name == "version.update":
+            payload = {key: value for key, value in payload.items() if key in {"version_code", "change_summary", "make_active"}}
+            if "version_code" in payload:
+                try:
+                    payload["version_code"] = normalize_version_code(payload["version_code"])
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from error
+        elif action_name == "version.status":
+            status_value = str(payload.get("status") or "")
+            if status_value not in PCB_VERSION_STATUS_LABELS:
+                raise HTTPException(status_code=422, detail="不支持的 PCB 版本状态")
+            payload = {"status": status_value}
+        elif action_name == "version.retire":
+            payload = {}
+            risk = "high"
+        else:
+            payload = {
+                "status": str(payload.get("status") or "designing"),
+                "archived_at": payload.get("archived_at"),
+            }
+            risk = "high"
+    elif action_name == "expense.create":
+        project = _owned_project(db, owner_user_id, target_id)
+        before = {"project_id": project.id, "project_code": project.project_code, "exists": False}
+        category = str(payload.get("category") or "")
+        if category not in EXPENSE_CATEGORY_LABELS:
+            raise HTTPException(status_code=422, detail="不支持的费用分类")
+        try:
+            amount = Decimal(str(payload.get("amount")))
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail="费用金额必须是有效数字") from error
+        if amount <= 0:
+            raise HTTPException(status_code=422, detail="费用金额必须大于 0")
+        version_id = payload.get("pcb_version_id")
+        if version_id is not None:
+            version_project, _ = _owned_version(db, owner_user_id, version_id)
+            if version_project.id != project.id:
+                raise HTTPException(status_code=422, detail="费用关联版本不属于目标项目")
+        payload = {
+            "pcb_version_id": version_id,
+            "category": category,
+            "amount": amount.quantize(Decimal("0.01")),
+            "occurred_on": payload.get("occurred_on"),
+            "vendor": str(payload.get("vendor") or "")[:200] or None,
+            "note": str(payload.get("note") or "")[:2000] or None,
+        }
+        label = f"为 {project.project_code} 新增费用 {amount} CNY"
+    elif action_name.startswith("expense."):
+        project, expense = _owned_expense(db, owner_user_id, str(target_id))
+        before = _snapshot_expense(expense)
+        label = f"{action_name} {project.project_code}/{expense.id}"
+        if action_name == "expense.update":
+            payload = {key: value for key, value in payload.items() if key in {"pcb_version_id", "category", "amount", "occurred_on", "vendor", "note"}}
+            if "category" in payload and payload["category"] not in EXPENSE_CATEGORY_LABELS:
+                raise HTTPException(status_code=422, detail="不支持的费用分类")
+            if "amount" in payload:
+                try:
+                    payload["amount"] = Decimal(str(payload["amount"])).quantize(Decimal("0.01"))
+                except (InvalidOperation, TypeError, ValueError) as error:
+                    raise HTTPException(status_code=422, detail="费用金额必须是有效数字") from error
+                if payload["amount"] <= 0:
+                    raise HTTPException(status_code=422, detail="费用金额必须大于 0")
+            if payload.get("pcb_version_id") is not None:
+                version_project, _ = _owned_version(db, owner_user_id, payload["pcb_version_id"])
+                if version_project.id != project.id:
+                    raise HTTPException(status_code=422, detail="费用关联版本不属于目标项目")
+        else:
+            payload = {}
             risk = "high"
     elif action_name == "bom.upsert" and target_id is None:
         project_reference = payload.get("project_id") or payload.get("project_code")
@@ -937,6 +1580,14 @@ def _prepare_action(
         payload.update({"component_id": component.id})
         if project:
             payload["project_id"] = project.id
+            if payload.get("pcb_version_id") is not None:
+                version_project, version = _owned_version(db, owner_user_id, payload["pcb_version_id"])
+                if version_project.id != project.id:
+                    raise HTTPException(status_code=422, detail="BOM 版本不属于目标项目")
+                payload["pcb_version_id"] = version.id
+            else:
+                version = active_project_version(db, project, create_if_missing=True)
+                payload["pcb_version_id"] = version.id
         else:
             payload.pop("project_id", None)
             payload["project_code"] = str(project_reference)
@@ -1021,10 +1672,10 @@ def _prepare_action(
 def _prepare_actions(db: Session, owner_user_id: int, actions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any], str]:
     pending_project_codes: set[str] = set()
     for action in actions:
-        if action.get("action") != "project.create":
+        if action.get("action") != "workspace.project.create":
             continue
         payload = action.setdefault("payload", {})
-        code = str(payload.get("project_code") or f"PRJ-{uuid4().hex[:8].upper()}").strip()
+        code = normalize_workspace_code(payload.get("project_code"))
         payload["project_code"] = code
         pending_project_codes.add(code)
     normalized = []
@@ -1115,45 +1766,363 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
             }
         db.flush()
         result = _snapshot_component(component)
-    elif name == "project.create":
-        code = str(payload.get("project_code") or f"PRJ-{uuid4().hex[:8].upper()}").strip()
-        if db.query(Project).filter(Project.scope_type == "personal", Project.owner_user_id == owner_user_id, Project.project_code == code).first():
+    elif name == "workspace.project.create":
+        code = normalize_workspace_code(payload.get("project_code"))
+        if db.query(PersonalProjectV2.id).filter(PersonalProjectV2.project_code == code).first():
             raise HTTPException(status_code=409, detail="项目编号已存在")
+        project = PersonalProjectV2(
+            id=str(uuid4()), owner_user_id=owner_user_id, project_code=code,
+            name=str(payload["name"]).strip(), description=payload.get("description"),
+            status=payload.get("status") or "planning",
+            start_date=_date_value(payload.get("start_date"), workspace_today()),
+        )
+        db.add(project)
+        db.flush()
+        version = PersonalProjectVersionV2(
+            id=str(uuid4()), project_id=project.id, sequence_number=1,
+            version_code="V1", status="designing",
+        )
+        db.add(version)
+        db.flush()
+        project.current_version_id = version.id
+        if payload.get("lifecycle_dates"):
+            add_workspace_actual_timeline_events(
+                db,
+                project,
+                owner_user_id,
+                {key: _date_value(value) for key, value in payload["lifecycle_dates"].items()},
+            )
+        else:
+            add_workspace_initial_timeline_events(
+                db, project, owner_user_id, source="chatgpt_approval"
+            )
+        inverse = {"action": "workspace.project.archive", "target_id": code, "payload": {}}
+        result = _snapshot_workspace_project(project)
+    elif name in {
+        "workspace.project.update", "workspace.project.archive", "workspace.project.restore", "workspace.project.status"
+    }:
+        project = _workspace_owned_project(
+            db, owner_user_id, target_id, include_archived=name == "workspace.project.restore"
+        )
+        before = _snapshot_workspace_project(project)
+        if name == "workspace.project.update":
+            for key, value in payload.items():
+                setattr(project, key, _date_value(value) if key in {"start_date", "end_date"} else value)
+            inverse = {"action": name, "target_id": project.project_code, "payload": {key: before[key] for key in payload}}
+        elif name == "workspace.project.archive":
+            project.archived_at = now
+            inverse = {"action": "workspace.project.restore", "target_id": project.project_code, "payload": {}}
+        elif name == "workspace.project.restore":
+            project.archived_at = None
+            inverse = {"action": "workspace.project.archive", "target_id": project.project_code, "payload": {}}
+        else:
+            previous = project.status
+            previous_end = project.end_date
+            project.status = payload["status"]
+            if project.status == "validated" and not project.end_date:
+                project.end_date = workspace_today()
+            elif payload.get("clear_end_date"):
+                project.end_date = None
+            if payload.get("restore_end_date"):
+                project.end_date = _date_value(payload["restore_end_date"])
+            db.add(PersonalProjectStatusEventV2(
+                id=str(uuid4()), project_id=project.id, from_status=previous, to_status=project.status,
+                note=payload.get("note"), source="chatgpt_approval", created_by_user_id=owner_user_id,
+            ))
+            inverse = {
+                "action": "workspace.project.status", "target_id": project.project_code,
+                "payload": {"status": previous, "clear_end_date": previous_end is None, "restore_end_date": previous_end, "note": "撤销状态变更"},
+            }
+        db.flush()
+        result = _snapshot_workspace_project(project)
+    elif name == "workspace.version.create":
+        project = _workspace_owned_project(db, owner_user_id, target_id)
+        sequence = (db.query(PersonalProjectVersionV2.id).filter(PersonalProjectVersionV2.project_id == project.id).count() + 1)
+        code = normalize_workspace_version(payload.get("version_code") or f"V{sequence}")
+        version = PersonalProjectVersionV2(
+            id=str(uuid4()), project_id=project.id, sequence_number=sequence,
+            version_code=code, status="designing", change_summary=payload.get("change_summary"),
+        )
+        db.add(version)
+        db.flush()
+        if project.current_version_id:
+            source_rows = db.query(PersonalProjectBomItemV2).filter(
+                PersonalProjectBomItemV2.version_id == project.current_version_id,
+                PersonalProjectBomItemV2.archived_at.is_(None),
+            ).all()
+            for row in source_rows:
+                db.add(PersonalProjectBomItemV2(
+                    id=str(uuid4()), project_id=project.id, version_id=version.id,
+                    component_id=row.component_id, quantity_per_board=row.quantity_per_board,
+                    designators=row.designators, note=row.note,
+                ))
+        project.current_version_id = version.id
+        inverse = {"action": "workspace.version.status", "target_id": version.id, "payload": {"status": "retired"}}
+        result = workspace_version_out(db, version)
+    elif name == "workspace.version.status":
+        project, version = _workspace_owned_version(db, owner_user_id, str(target_id))
+        previous = version.status
+        version.status = payload["status"]
+        project.current_version_id = version.id if version.status != "retired" else project.current_version_id
+        inverse = {"action": name, "target_id": version.id, "payload": {"status": previous}}
+        db.flush()
+        result = workspace_version_out(db, version)
+    elif name == "workspace.expense.create":
+        project = _workspace_owned_project(db, owner_user_id, target_id)
+        expense = PersonalProjectExpenseV2(
+            id=str(uuid4()), project_id=project.id, version_id=payload.get("version_id"),
+            category=payload["category"], amount=payload["amount"],
+            occurred_on=_date_value(payload.get("occurred_on"), workspace_today()),
+            vendor=payload.get("vendor"), note=payload.get("note"), created_by_user_id=owner_user_id,
+        )
+        db.add(expense)
+        db.flush()
+        inverse = {"action": "workspace.expense.archive", "target_id": expense.id, "payload": {}}
+        result = _snapshot_workspace_expense(expense)
+    elif name in {"workspace.expense.archive", "workspace.expense.restore"}:
+        _, expense = _workspace_owned_expense(db, owner_user_id, str(target_id))
+        expense.archived_at = now if name.endswith("archive") else None
+        inverse = {
+            "action": "workspace.expense.restore" if name.endswith("archive") else "workspace.expense.archive",
+            "target_id": expense.id, "payload": {},
+        }
+        result = _snapshot_workspace_expense(expense)
+    elif name == "workspace.bom.upsert":
+        if target_id is None:
+            project = _workspace_owned_project(db, owner_user_id, payload["project_code"])
+            component = _owned_component_by_code(db, owner_user_id, payload["component_id"])
+            version = (
+                _workspace_owned_version(db, owner_user_id, str(payload["version_id"]))[1]
+                if payload.get("version_id") else db.get(PersonalProjectVersionV2, project.current_version_id)
+            )
+            if not version or version.project_id != project.id:
+                raise HTTPException(status_code=422, detail="BOM 版本不属于目标项目")
+            existing = db.query(PersonalProjectBomItemV2).filter(
+                PersonalProjectBomItemV2.version_id == version.id,
+                PersonalProjectBomItemV2.component_id == component.id,
+            ).first()
+            if existing:
+                bom = existing
+                previous = {"quantity_per_board": bom.quantity_per_board, "designators": bom.designators, "note": bom.note, "archived_at": bom.archived_at}
+                bom.quantity_per_board = payload["quantity_per_board"]
+                bom.designators = payload.get("designators")
+                bom.note = payload.get("note")
+                bom.archived_at = None
+                inverse = {"action": "workspace.bom.upsert", "target_id": bom.id, "payload": previous}
+            else:
+                bom = PersonalProjectBomItemV2(
+                    id=str(uuid4()), project_id=project.id, version_id=version.id,
+                    component_id=component.id, quantity_per_board=payload["quantity_per_board"],
+                    designators=payload.get("designators"), note=payload.get("note"),
+                )
+                db.add(bom)
+                db.flush()
+                inverse = {"action": "workspace.bom.archive", "target_id": bom.id, "payload": {}}
+        else:
+            bom = _workspace_owned_bom(db, owner_user_id, str(target_id))
+            previous = {key: getattr(bom, key) for key in payload}
+            for key, value in payload.items():
+                setattr(bom, key, value)
+            inverse = {"action": name, "target_id": bom.id, "payload": previous}
+        result = {
+            "id": bom.id, "project_id": bom.project_id, "version_id": bom.version_id,
+            "component_id": bom.component_id, "quantity_per_board": bom.quantity_per_board,
+            "designators": bom.designators, "note": bom.note, "archived_at": bom.archived_at,
+        }
+    elif name in {"workspace.bom.archive", "workspace.bom.restore"}:
+        bom = _workspace_owned_bom(db, owner_user_id, str(target_id))
+        bom.archived_at = now if name.endswith("archive") else None
+        inverse = {
+            "action": "workspace.bom.restore" if name.endswith("archive") else "workspace.bom.archive",
+            "target_id": bom.id, "payload": {},
+        }
+        result = {"id": bom.id, "archived_at": bom.archived_at}
+    elif name == "project.create":
+        code = normalize_project_code(payload.get("project_code"))
+        try:
+            assert_project_code_available(db, code)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         project = Project(
             scope_type="personal",
             owner_user_id=owner_user_id,
             project_code=code,
             name=str(payload["name"]).strip(),
             description=payload.get("description"),
-            status=payload.get("status") or "active",
+            status=payload.get("status") or "planning",
+            start_date=_date_value(payload.get("start_date"), shanghai_today()),
+            end_date=_date_value(payload.get("end_date")),
         )
         db.add(project)
         db.flush()
-        db.add(ProjectBoard(project_id=project.id, board_index=1, name="主板", status="active"))
+        create_initial_version(db, project, owner_user_id)
+        db.add(
+            ProjectStatusEvent(
+                id=str(uuid4()),
+                project_id=project.id,
+                from_status=None,
+                to_status=project.status,
+                note="通过 ChatGPT 网页审批创建项目",
+                source="chatgpt_approval",
+                created_by_user_id=owner_user_id,
+            )
+        )
         inverse = {"action": "project.archive", "target_id": code, "payload": {}}
         result = _snapshot_project(project)
-    elif name in {"project.update", "project.archive", "project.restore"}:
+    elif name in {"project.update", "project.archive", "project.restore", "project.status", "project.code_change"}:
         project = _owned_project(db, owner_user_id, target_id, include_archived=name == "project.restore")
         before = _snapshot_project(project)
         if name == "project.update":
             for key, value in payload.items():
-                setattr(project, key, value)
+                setattr(project, key, _date_value(value) if key in {"start_date", "end_date"} else value)
             inverse = {"action": "project.update", "target_id": project.project_code or project.id, "payload": {key: before[key] for key in payload}}
         elif name == "project.archive":
-            previous = project.status
-            project.status = "archived"
-            inverse = {"action": "project.restore", "target_id": project.project_code or project.id, "payload": {"status": previous}}
-        else:
-            project.status = payload.get("status") or "active"
+            project.archived_at = now
+            inverse = {"action": "project.restore", "target_id": project.project_code or project.id, "payload": {}}
+        elif name == "project.restore":
+            project.archived_at = None
             inverse = {"action": "project.archive", "target_id": project.project_code or project.id, "payload": {}}
+        elif name == "project.status":
+            previous = project.status
+            previous_end_date = project.end_date
+            project.status = payload["status"]
+            if project.status == "validated" and not project.end_date:
+                project.end_date = shanghai_today()
+            elif payload.get("clear_end_date"):
+                project.end_date = None
+            if payload.get("restore_end_date"):
+                project.end_date = _date_value(payload["restore_end_date"])
+            db.add(
+                ProjectStatusEvent(
+                    id=str(uuid4()),
+                    project_id=project.id,
+                    from_status=previous,
+                    to_status=project.status,
+                    note=payload.get("note"),
+                    source="chatgpt_approval",
+                    created_by_user_id=owner_user_id,
+                )
+            )
+            inverse = {
+                "action": "project.status",
+                "target_id": project.project_code or project.id,
+                "payload": {
+                    "status": previous,
+                    "clear_end_date": previous_end_date is None,
+                    "restore_end_date": previous_end_date,
+                    "note": "撤销状态变更",
+                },
+            }
+        else:
+            old_code = project.project_code
+            new_code = normalize_project_code(payload["project_code"])
+            if not db.query(ProjectCodeAlias.id).filter(ProjectCodeAlias.old_code == old_code).first():
+                db.add(ProjectCodeAlias(project_id=project.id, old_code=old_code, created_by_user_id=owner_user_id))
+            project.project_code = new_code
+            inverse = {"action": "project.code_change", "target_id": new_code, "payload": {"project_code": old_code}}
         db.flush()
         result = _snapshot_project(project)
+    elif name == "version.create":
+        project = _owned_project(db, owner_user_id, target_id)
+        try:
+            version = create_project_version(
+                db,
+                project,
+                owner_user_id,
+                version_code=payload.get("version_code"),
+                status=payload.get("status") or "designing",
+                change_summary=payload.get("change_summary"),
+                copy_from_version_id=payload.get("copy_from_version_id"),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        inverse = {"action": "version.retire", "target_id": version.id, "payload": {}}
+        result = version_stats(db, project, version)
+    elif name in {"version.update", "version.status", "version.retire", "version.restore"}:
+        project, version = _owned_version(db, owner_user_id, target_id)
+        before = _snapshot_version(version)
+        if name == "version.update":
+            previous_active_version_id = project.active_pcb_version_id
+            if "version_code" in payload:
+                version.version_code = normalize_version_code(payload["version_code"])
+            if "change_summary" in payload:
+                version.change_summary = str(payload.get("change_summary") or "").strip() or None
+            if payload.get("make_active"):
+                project.active_pcb_version_id = version.id
+                project.active_fabrication_revision_id = version.active_fabrication_revision_id
+            inverse_payload = {key: before[key] for key in payload if key in before}
+            if payload.get("make_active"):
+                inverse_payload = {"make_active": True}
+            inverse = {
+                "action": "version.update",
+                "target_id": previous_active_version_id if payload.get("make_active") and previous_active_version_id else version.id,
+                "payload": inverse_payload,
+            }
+        elif name == "version.status":
+            previous = version.status
+            version.status = payload["status"]
+            version.validated_at = now if version.status == "passed" else version.validated_at
+            version.archived_at = now if version.status == "retired" else None
+            inverse = {"action": "version.status", "target_id": version.id, "payload": {"status": previous}}
+        elif name == "version.retire":
+            version.status = "retired"
+            version.archived_at = now
+            if project.active_pcb_version_id == version.id:
+                raise HTTPException(status_code=409, detail="当前 PCB 版本不能停用，请先切换版本")
+            inverse = {"action": "version.restore", "target_id": version.id, "payload": {"status": before["status"], "archived_at": before["archived_at"]}}
+        else:
+            version.status = payload.get("status") or "designing"
+            version.archived_at = None
+            inverse = {"action": "version.retire", "target_id": version.id, "payload": {}}
+        db.flush()
+        result = version_stats(db, project, version)
+    elif name == "expense.create":
+        project = _owned_project(db, owner_user_id, target_id)
+        expense = ProjectExpense(
+            id=str(uuid4()),
+            project_id=project.id,
+            pcb_version_id=payload.get("pcb_version_id"),
+            category=payload["category"],
+            amount=payload["amount"],
+            currency="CNY",
+            occurred_on=_date_value(payload.get("occurred_on"), shanghai_today()),
+            vendor=payload.get("vendor"),
+            note=payload.get("note"),
+            created_by_user_id=owner_user_id,
+        )
+        db.add(expense)
+        db.flush()
+        inverse = {"action": "expense.archive", "target_id": expense.id, "payload": {}}
+        result = expense_out(expense, db.get(ProjectPcbVersion, expense.pcb_version_id) if expense.pcb_version_id else None)
+    elif name in {"expense.update", "expense.archive", "expense.restore"}:
+        project, expense = _owned_expense(db, owner_user_id, str(target_id))
+        before = _snapshot_expense(expense)
+        if name == "expense.update":
+            for key, value in payload.items():
+                setattr(expense, key, _date_value(value) if key == "occurred_on" else value)
+            inverse = {"action": "expense.update", "target_id": expense.id, "payload": {key: before[key] for key in payload}}
+        elif name == "expense.archive":
+            expense.archived_at = now
+            inverse = {"action": "expense.restore", "target_id": expense.id, "payload": {}}
+        else:
+            expense.archived_at = None
+            inverse = {"action": "expense.archive", "target_id": expense.id, "payload": {}}
+        db.flush()
+        result = expense_out(expense, db.get(ProjectPcbVersion, expense.pcb_version_id) if expense.pcb_version_id else None)
     elif name == "bom.upsert":
         if target_id is None:
             project = _owned_project(db, owner_user_id, payload.get("project_id") or payload.get("project_code"))
             component = _owned_component_by_code(db, owner_user_id, payload["component_id"])
+            version = (
+                _owned_version(db, owner_user_id, payload["pcb_version_id"])[1]
+                if payload.get("pcb_version_id") is not None
+                else active_project_version(db, project, create_if_missing=True)
+            )
+            if version.project_id != project.id:
+                raise HTTPException(status_code=422, detail="BOM 版本不属于目标项目")
             bom = ProjectBomItem(
                 project_id=project.id,
+                pcb_version_id=version.id,
                 component_id=component.id,
                 required_quantity=max(1, int(payload.get("required_quantity") or 1)),
                 status=payload.get("status") or "reserved",

@@ -37,7 +37,7 @@ CUSTOM_FONT_STACKS = {
 }
 CSS_PX_PER_MM = 96 / 25.4
 FONT_ASSET_ROOT = os.path.join(os.path.dirname(__file__), "assets", "fonts")
-FONT_ASSET_WEB_BASE = "/component-warehouse/personal/fonts"
+FONT_ASSET_WEB_BASE = "/hardware/fonts"
 LABEL_LOGO_URL = "/component-warehouse/api/assets/brand-logo-label.png?v=20260702b"
 LABEL_LOGO_FILE = os.path.join(os.path.dirname(__file__), "assets", "brand-logo-label.png")
 SERVER_RENDER_DPI = 300

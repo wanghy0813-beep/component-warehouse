@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { clearStoredAuth, getValidAuthToken, refreshAuthSession, setAuthRuntimeConfig } from './authSessionApi'
 import { API_BASE } from '../shared/appPaths'
+import { IS_DESKTOP, desktopRequestConfig } from '../shared/desktopBridge'
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || API_BASE,
@@ -8,6 +9,11 @@ export const api = axios.create({
 })
 
 api.interceptors.request.use(async (config) => {
+  if (IS_DESKTOP) {
+    const desktop = await desktopRequestConfig()
+    config.baseURL = desktop.baseURL
+    Object.assign(config.headers, desktop.headers)
+  }
   if (String(config.url || '').endsWith('/auth/config')) return config
   const token = await getValidAuthToken()
   if (token) {
@@ -40,13 +46,16 @@ export async function authConfig() {
   return data
 }
 
+export const getDesktopState = () =>
+  api.get('/desktop/v1/state').then((response) => response.data)
+
 export async function getPublicComponent(code) {
   const { data } = await api.get(`/public/components/${encodeURIComponent(code)}`)
   return data
 }
 
-export async function getPublicProject(code) {
-  const { data } = await api.get(`/public/projects/${encodeURIComponent(code)}`)
+export async function getPublicAssemblyView(code, params = {}) {
+  const { data } = await api.get(`/public/projects/${encodeURIComponent(code)}/assembly-view`, { params })
   return data
 }
 
@@ -294,6 +303,11 @@ export async function getDataBackups() {
   return data
 }
 
+export async function cleanupOldDataBackups(previewId, confirmText) {
+  const { data } = await api.post('/admin/backups/cleanup', { preview_id: previewId, confirm_text: confirmText })
+  return data
+}
+
 export async function inspectDataBackup(file) {
   const formData = new FormData()
   formData.append('file', file)
@@ -328,135 +342,89 @@ export async function dashboardSummary() {
   return data
 }
 
-export async function getProjects() {
-  const { data } = await api.get('/projects')
-  return data
+const projectWorkspacePath = (projectId, suffix = '') =>
+  `/project-workspace/projects/${encodeURIComponent(projectId)}${suffix}`
+
+export const getProjectWorkspaceBootstrap = (params = {}) =>
+  api.get('/project-workspace/bootstrap', { params }).then((response) => response.data)
+
+export const createWorkspaceProject = (payload) =>
+  api.post('/project-workspace/projects', payload).then((response) => response.data)
+
+export const getWorkspaceProject = (projectId) =>
+  api.get(projectWorkspacePath(projectId)).then((response) => response.data)
+
+export const replaceWorkspaceProjectTimeline = (projectId, lifecycleDates) =>
+  api.put(projectWorkspacePath(projectId, '/timeline/actual'), { lifecycle_dates: lifecycleDates }).then((response) => response.data)
+
+export const updateWorkspaceProject = (projectId, payload) =>
+  api.patch(projectWorkspacePath(projectId), payload).then((response) => response.data)
+
+export const changeWorkspaceProjectStatus = (projectId, payload) =>
+  api.post(projectWorkspacePath(projectId, '/status'), payload).then((response) => response.data)
+
+export const archiveWorkspaceProject = (projectId) =>
+  api.post(projectWorkspacePath(projectId, '/archive')).then((response) => response.data)
+
+export const restoreWorkspaceProject = (projectId) =>
+  api.post(projectWorkspacePath(projectId, '/restore')).then((response) => response.data)
+
+export const createWorkspaceVersion = (projectId, payload) =>
+  api.post(projectWorkspacePath(projectId, '/versions'), payload).then((response) => response.data)
+
+export const updateWorkspaceVersion = (projectId, versionId, payload) =>
+  api.patch(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}`), payload).then((response) => response.data)
+
+export const getWorkspaceVersion = (projectId, versionId) =>
+  api.get(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/workspace`)).then((response) => response.data)
+
+export const searchWorkspaceComponents = (params = {}) =>
+  api.get('/project-workspace/components', { params }).then((response) => response.data)
+
+export const addWorkspaceBomItem = (projectId, versionId, payload) =>
+  api.post(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/bom`), payload).then((response) => response.data)
+
+export const deleteWorkspaceBomItem = (projectId, versionId, itemId) =>
+  api.delete(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/bom/${encodeURIComponent(itemId)}`)).then((response) => response.data)
+
+export const importWorkspaceBom = (projectId, versionId, file) => {
+  const body = new FormData()
+  body.append('file', file)
+  return api.post(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/bom/import`), body).then((response) => response.data)
 }
 
-export async function saveProject(project) {
-  if (project.id) {
-    const { data } = await api.put(`/projects/${project.id}`, project)
-    return data
-  }
-  const { data } = await api.post('/projects', project)
-  return data
+export const createWorkspaceBoard = (projectId, versionId, payload = {}) =>
+  api.post(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/boards`), payload).then((response) => response.data)
+
+export const updateWorkspaceBoard = (projectId, versionId, boardId, payload) =>
+  api.patch(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/boards/${encodeURIComponent(boardId)}`), payload).then((response) => response.data)
+
+export const changeWorkspaceSolderPoint = (projectId, versionId, boardId, pointId, payload) =>
+  api.post(projectWorkspacePath(projectId, `/versions/${encodeURIComponent(versionId)}/boards/${encodeURIComponent(boardId)}/points/${encodeURIComponent(pointId)}/action`), payload).then((response) => response.data)
+
+export const addWorkspaceExpense = (projectId, payload) =>
+  api.post(projectWorkspacePath(projectId, '/expenses'), payload).then((response) => response.data)
+
+export const archiveWorkspaceExpense = (projectId, expenseId) =>
+  api.post(projectWorkspacePath(projectId, `/expenses/${encodeURIComponent(expenseId)}/archive`)).then((response) => response.data)
+
+export const fillWorkspaceUnpriced = (projectId) =>
+  api.post(projectWorkspacePath(projectId, '/cost/fill-unpriced')).then((response) => response.data)
+
+export const addWorkspaceRisk = (projectId, payload) =>
+  api.post(projectWorkspacePath(projectId, '/risks'), payload).then((response) => response.data)
+
+export const updateWorkspaceRisk = (projectId, riskId, payload) =>
+  api.patch(projectWorkspacePath(projectId, `/risks/${encodeURIComponent(riskId)}`), payload).then((response) => response.data)
+
+export const uploadWorkspaceFile = (projectId, file, versionId = null) => {
+  const body = new FormData()
+  body.append('file', file)
+  return api.post(projectWorkspacePath(projectId, '/files'), body, { params: versionId ? { version_id: versionId } : {} }).then((response) => response.data)
 }
 
-export async function deleteProject(id) {
-  const { data } = await api.delete(`/projects/${id}`)
-  return data
-}
-
-export async function createProjectBoard(projectId) {
-  const { data } = await api.post(`/projects/${projectId}/boards`)
-  return data
-}
-
-export async function addBomItem(projectId, item) {
-  const { data } = await api.post(`/projects/${projectId}/bom`, item)
-  return data
-}
-
-export async function updateBomItem(projectId, itemId, item) {
-  const { data } = await api.put(`/projects/${projectId}/bom/${itemId}`, item)
-  return data
-}
-
-export async function deleteBomItem(projectId, itemId) {
-  const { data } = await api.delete(`/projects/${projectId}/bom/${itemId}`)
-  return data
-}
-
-export async function updateBomItemStatus(projectId, itemId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/bom/${itemId}/status`, payload)
-  return data
-}
-
-export async function updateBomSolderPoint(projectId, itemId, pointId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/bom/${itemId}/solder-points/${pointId}`, payload)
-  return data
-}
-
-export async function updateBomSolderPointsBulk(projectId, itemId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/bom/${itemId}/solder-points/bulk`, payload)
-  return data
-}
-
-export async function updateBoardBomSolderPoint(projectId, boardId, itemId, pointId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/boards/${boardId}/bom/${itemId}/solder-points/${pointId}`, payload)
-  return data
-}
-
-export async function updateBoardBomSolderPointsBulk(projectId, boardId, itemId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/boards/${boardId}/bom/${itemId}/solder-points/bulk`, payload)
-  return data
-}
-
-export async function updateBoardBomSolderPointLoss(projectId, boardId, itemId, pointId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/boards/${boardId}/bom/${itemId}/solder-points/${pointId}/loss`, payload)
-  return data
-}
-
-export async function inspectBomFields(file) {
-  const formData = new FormData()
-  formData.append('file', file)
-  const { data } = await api.post('/ai/bom-match/inspect', formData)
-  return data
-}
-
-export async function previewBomMatch(file, projectId, fieldMapping = null) {
-  const formData = new FormData()
-  formData.append('file', file)
-  if (projectId) formData.append('project_id', projectId)
-  if (fieldMapping) formData.append('field_mapping_json', JSON.stringify(fieldMapping))
-  const { data } = await api.post('/ai/bom-match/preview', formData)
-  return data
-}
-
-export async function getLatestBomImportBatch(projectId) {
-  const { data } = await api.get(`/projects/${projectId}/bom/import-batch/latest`)
-  return data
-}
-
-export async function importMatchedBomItems(projectId, items) {
-  const { data } = await api.post(`/projects/${projectId}/bom/import-matches`, { items })
-  return data
-}
-
-export async function ignoreBomImportRow(projectId, rowId) {
-  const { data } = await api.post(`/projects/${projectId}/bom/import-rows/${rowId}/ignore`)
-  return data
-}
-
-export async function updateBomImportRowSelection(projectId, rowId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/bom/import-rows/${rowId}/selection`, payload)
-  return data
-}
-
-export async function createPendingComponentFromBomRow(projectId, rowId) {
-  const { data } = await api.post(`/projects/${projectId}/bom/import-rows/${rowId}/pending-component`)
-  return data
-}
-
-export async function exportBom(projectId, projectName) {
-  const { data } = await api.get(`/projects/${projectId}/export`, { responseType: 'blob' })
-  const url = URL.createObjectURL(data)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${projectName || `project-${projectId}`}-bom.csv`
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
-export async function exportPurchaseBom(projectId, projectName) {
-  const { data } = await api.get(`/projects/${projectId}/purchase-bom/export`, { responseType: 'blob' })
-  const url = URL.createObjectURL(data)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${projectName || `project-${projectId}`}-purchase-bom.xlsx`
-  link.click()
-  URL.revokeObjectURL(url)
-}
+export const downloadWorkspaceFile = (projectId, fileId) =>
+  api.get(projectWorkspacePath(projectId, `/files/${encodeURIComponent(fileId)}`), { responseType: 'blob' }).then((response) => response.data)
 
 export async function aiClassify(payload) {
   const { data } = await api.post('/ai/classify', payload)
@@ -549,20 +517,5 @@ export async function startAiTasks() {
 
 export async function pauseAiTasks() {
   const { data } = await api.post('/ai/tasks/pause')
-  return data
-}
-
-export async function analyzeProjectBom(projectId, force = false) {
-  const { data } = await api.post(`/projects/${projectId}/ai/analyze-bom`, null, { params: { force } })
-  return data
-}
-
-export async function planProject(projectId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/ai/plan`, payload)
-  return data
-}
-
-export async function consultProject(projectId, payload) {
-  const { data } = await api.post(`/projects/${projectId}/ai/consult`, payload, { timeout: 60000 })
   return data
 }

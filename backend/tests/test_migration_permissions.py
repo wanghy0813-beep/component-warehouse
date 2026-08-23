@@ -12,14 +12,19 @@ from app.main import (
     V041_CONTEST_LIVE_INVENTORY,
     V070_EDA_ENGINEERING,
     V072_LCSC_SOURCE_NORMALIZATION,
+    V110_PROJECT_ASSEMBLY,
+    V120_PROJECT_LIFECYCLE_COSTS,
     ensure_v04_migration_backup,
     ensure_v041_migration_backup,
+    ensure_v120_migration_backup,
     filter_owner,
     remove_legacy_component_lcsc_unique,
     run_v04_account_migration,
     run_v041_inventory_migration,
     run_v070_eda_migration,
     run_v072_lcsc_source_normalization,
+    run_v110_project_assembly_migration,
+    run_v120_project_lifecycle_migration,
     undo_latest_component_ai_change,
 )
 from app.models import (
@@ -31,9 +36,102 @@ from app.models import (
     Component,
     InventoryLot,
     Project,
+    ProjectAssemblyLossEvent,
+    ProjectMaterialCostEvent,
+    ProjectPcbVersion,
+    ProjectBoard,
     ProjectBomItem,
+    ProjectBomSolderPoint,
     User,
 )
+
+
+def test_v120_project_lifecycle_migration_creates_personal_v1_without_stock_or_cost(tmp_path, monkeypatch):
+    path = tmp_path / "v120.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add(User(id=1, phone="13800000001", nickname="项目用户"))
+    component = Component(id=1, owner_user_id=1, name="迁移器件", quantity=99)
+    personal = Project(id=1, scope_type="personal", owner_user_id=1, project_code="PJ-00000004", name="旧个人项目", status="active")
+    team = Project(id=2, scope_type="team", project_code="TPJ-OLD", name="旧团队项目", status="active")
+    db.add_all([component, personal, team])
+    db.flush()
+    board = ProjectBoard(project_id=personal.id, board_index=1, name="旧板")
+    bom = ProjectBomItem(project_id=personal.id, component_id=component.id, required_quantity=2)
+    db.add_all([board, bom])
+    db.flush()
+    db.add(ProjectBomSolderPoint(bom_item_id=bom.id, board_id=board.id, designator="R1", soldered=True))
+    db.commit()
+    stock_before = component.quantity
+
+    monkeypatch.setattr("app.main.DATABASE_URL", f"sqlite:///{path}")
+    backup = ensure_v120_migration_backup()
+    assert backup and backup.exists()
+    run_v120_project_lifecycle_migration(db)
+    run_v120_project_lifecycle_migration(db)
+
+    version = db.query(ProjectPcbVersion).filter(ProjectPcbVersion.project_id == personal.id).one()
+    assert version.version_code == "V1"
+    assert personal.active_pcb_version_id == version.id
+    assert board.pcb_version_id == version.id
+    assert bom.pcb_version_id == version.id
+    assert personal.project_code == "PJ-00000004"
+    assert personal.status == "active"
+    assert personal.start_date is not None
+    assert db.query(ProjectPcbVersion).filter(ProjectPcbVersion.project_id == team.id).count() == 0
+    assert component.quantity == stock_before
+    assert db.query(ProjectMaterialCostEvent).count() == 0
+    migration = db.get(AppMigration, V120_PROJECT_LIFECYCLE_COSTS)
+    assert migration
+    assert "关联 2 条" in migration.detail
+    db.close()
+    engine.dispose()
+
+
+def test_v110_migration_preserves_366_point_state_and_inventory(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'v110.db'}")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add(User(id=1, phone="13800000001", nickname="装配用户"))
+    db.add(Component(id=1, owner_user_id=1, name="迁移器件", quantity=731))
+    db.add(Project(id=1, owner_user_id=1, scope_type="personal", name="旧项目"))
+    db.add(ProjectBoard(id=1, project_id=1, board_index=1, name="第 1 板"))
+    db.add(ProjectBomItem(id=1, project_id=1, component_id=1, required_quantity=366))
+    db.flush()
+    db.add_all(
+        [
+            ProjectBomSolderPoint(
+                id=index,
+                bom_item_id=1,
+                board_id=1,
+                designator=f"R{index}",
+                soldered=index <= 224,
+                stock_applied=index <= 224,
+                lost=index <= 4,
+                loss_stock_applied=index in {1, 2},
+            )
+            for index in range(1, 367)
+        ]
+    )
+    db.commit()
+    stock_before = db.get(Component, 1).quantity
+
+    run_v110_project_assembly_migration(db)
+    run_v110_project_assembly_migration(db)
+
+    assert db.query(ProjectBomSolderPoint).count() == 366
+    assert db.query(ProjectBomSolderPoint).filter(ProjectBomSolderPoint.soldered.is_(True)).count() == 224
+    assert db.query(ProjectBomSolderPoint).filter(ProjectBomSolderPoint.lost.is_(True)).count() == 4
+    assert db.get(Component, 1).quantity == stock_before
+    events = db.query(ProjectAssemblyLossEvent).order_by(ProjectAssemblyLossEvent.solder_point_id).all()
+    assert len(events) == 4
+    assert [event.inventory_delta for event in events] == [-1, -1, 0, 0]
+    assert db.get(AppMigration, V110_PROJECT_ASSEMBLY)
+    db.close()
+    engine.dispose()
 
 
 def test_v04_migration_is_idempotent_and_isolates_owners(tmp_path, monkeypatch):

@@ -1,6 +1,11 @@
 <template>
   <el-config-provider>
-    <div v-if="checking" class="boot notranslate" lang="zh-CN" translate="no">正在加载...</div>
+    <desktop-setup v-if="desktopNeedsSetup" @complete="handleDesktopSetupComplete" />
+    <div v-if="checking" class="boot notranslate" lang="zh-CN" translate="no" role="status" aria-live="polite">
+      <span class="boot-spinner" aria-hidden="true" />
+      <strong>正在加载 {{ BRAND_NAME }}</strong>
+      <small>正在验证个人硬件研发工作台</small>
+    </div>
     <div v-else-if="isPublicRoute" class="standalone-shell notranslate" lang="zh-CN" translate="no">
       <router-view />
       <app-footer />
@@ -9,8 +14,8 @@
       <auth-panel
         class="standalone-auth"
         :eyebrow="BRAND_NAME"
-        title="个人版"
-        subtitle="个人器件库存、项目 BOM 与 AI 工程知识"
+        title="个人硬件研发工作台"
+        subtitle="从元器件库存到 PCB 版本、装配与项目成本的完整研发链路"
         @authenticated="handleAuthenticated"
       />
       <app-footer />
@@ -20,7 +25,7 @@
         <router-link class="personal-brand" to="/">
           <img class="brand-icon" :src="appIcon" alt="" />
           <img v-if="BRAND_SHOW_LOGO" :src="logo" :alt="BRAND_SHORT" />
-          <span><strong>{{ BRAND_NAME }}</strong><small>个人版</small></span>
+          <span><strong>{{ BRAND_NAME }}</strong><small>个人硬件研发工作台</small></span>
         </router-link>
         <nav class="personal-desktop-nav" aria-label="个人版主导航">
           <router-link to="/" @click="trackNav('dashboard')"><DataBoard />仪表盘</router-link>
@@ -31,6 +36,9 @@
           <router-link to="/about" @click="trackNav('management')"><InfoFilled />管理</router-link>
         </nav>
         <div class="personal-header-actions">
+          <button v-if="IS_DESKTOP" class="desktop-sync-state" type="button" :disabled="desktopSyncing" @click="runDesktopSync">
+            <span :class="desktopStateClass"></span>{{ desktopStatusLabel }}
+          </button>
           <account-popover
             v-if="authRequired"
             :user="currentUser"
@@ -64,7 +72,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Box, Cpu, DataBoard, Files, InfoFilled, Monitor } from '@element-plus/icons-vue'
 import logo from '../assets/brand-logo.png'
 import appIcon from '../assets/generated/cw-app-icon.png'
-import { authConfig, getCurrentUser, recordUsageEvent } from '../api/client'
+import { authConfig, getCurrentUser, getDesktopState, recordUsageEvent } from '../api/client'
 import { getAuthToken, getStoredUser, logoutAuthSession, rememberAuth, setupAuthActivityTracking } from '../api/authSessionApi'
 import { BRAND_NAME, BRAND_SHORT, BRAND_SHOW_LOGO } from '../shared/branding'
 import { FEATURE_EDA_ENABLED } from '../shared/features'
@@ -72,6 +80,8 @@ import AuthPanel from '../components/AuthPanel.vue'
 import AccountPopover from '../shared/components/AccountPopover.vue'
 import AppFooter from '../shared/components/AppFooter.vue'
 import BackToTop from '../shared/components/BackToTop.vue'
+import DesktopSetup from '../shared/components/DesktopSetup.vue'
+import { IS_DESKTOP, syncDesktopNow } from '../shared/desktopBridge'
 import { setupPwaInstallPrompt } from '../shared/pwaInstall'
 import { trackUsage } from '../shared/usageTracker'
 
@@ -82,6 +92,10 @@ const authRequired = ref(true)
 const accessToken = ref(getAuthToken())
 const currentUser = ref(getStoredUser())
 const sessionVerified = ref(false)
+const desktopNeedsSetup = ref(false)
+const desktopSyncing = ref(false)
+const desktopState = ref({})
+let desktopStatusTimer = null
 localStorage.removeItem('personal_sidebar_collapsed')
 localStorage.removeItem('cw_sidebar_collapsed')
 
@@ -94,6 +108,11 @@ onMounted(async () => {
   window.addEventListener('cw-profile-updated', handleProfileEvent)
   window.addEventListener('cw-native-auth-session', handleNativeAuthSession)
   try {
+    if (IS_DESKTOP) {
+      desktopState.value = await getDesktopState()
+      desktopNeedsSetup.value = !desktopState.value.bootstrap_complete
+      desktopStatusTimer = window.setInterval(refreshDesktopState, 30000)
+    }
     const config = await authConfig()
     authRequired.value = config.auth_required
     if (authRequired.value && accessToken.value) {
@@ -132,7 +151,45 @@ onBeforeUnmount(() => {
   window.removeEventListener('cw-auth-cleared', handleAuthCleared)
   window.removeEventListener('cw-profile-updated', handleProfileEvent)
   window.removeEventListener('cw-native-auth-session', handleNativeAuthSession)
+  if (desktopStatusTimer) window.clearInterval(desktopStatusTimer)
 })
+
+const desktopStatusLabel = computed(() => {
+  if (desktopSyncing.value) return '同步中'
+  if (desktopState.value.conflicts) return `存在冲突 ${desktopState.value.conflicts}`
+  if (desktopState.value.pending_upload) return `待上传 ${desktopState.value.pending_upload}`
+  if (desktopState.value.last_error) return '仅本地'
+  if (desktopState.value.last_success_at) return '已同步'
+  return '仅本地'
+})
+const desktopStateClass = computed(() => desktopState.value.conflicts ? 'conflict' : (desktopState.value.last_error ? 'local' : 'online'))
+
+async function refreshDesktopState() {
+  if (!IS_DESKTOP) return
+  try { desktopState.value = await getDesktopState() } catch { /* sidecar restart is handled by Tauri */ }
+}
+
+function handleDesktopSetupComplete() {
+  window.location.reload()
+}
+
+async function runDesktopSync() {
+  if (desktopState.value.conflicts) {
+    router.push('/sync-conflicts')
+    return
+  }
+  desktopSyncing.value = true
+  try {
+    await syncDesktopNow()
+    await refreshDesktopState()
+    ElMessage.success('同步完成')
+  } catch (error) {
+    await refreshDesktopState()
+    ElMessage.warning(error?.message || '当前离线，本地改动已保留')
+  } finally {
+    desktopSyncing.value = false
+  }
+}
 
 function handleAuthCleared() {
   accessToken.value = ''
@@ -188,6 +245,9 @@ async function handleLogout() {
 </script>
 
 <style scoped>
+.desktop-sync-state { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--cw-border); border-radius: 999px; color: var(--cw-muted); background: var(--cw-surface); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.desktop-sync-state span { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; }
+.desktop-sync-state span.local { background: #d97706; }.desktop-sync-state span.conflict { background: #dc2626; }
 .boot,
 .login-page {
   min-height: 100vh;

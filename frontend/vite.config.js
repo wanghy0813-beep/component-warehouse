@@ -5,10 +5,11 @@ import { API_BASE, HEALTH_URL, PERSONAL_BASE, TEAM_BASE } from './src/shared/app
 
 const target = process.env.VITE_APP_TARGET || 'personal'
 const isTeam = target === 'team'
-const personalTitle = process.env.VITE_BRAND_PERSONAL_TITLE || 'Component Warehouse · Personal'
-const teamTitle = process.env.VITE_BRAND_TEAM_TITLE || 'Component Warehouse · Team'
-const personalAppName = process.env.VITE_PWA_PERSONAL_NAME || 'WXY LAB 器件管理'
-const teamAppName = process.env.VITE_PWA_TEAM_NAME || 'WXY LAB 器件管理团队版'
+const isDesktop = process.env.VITE_DESKTOP === '1'
+const personalTitle = process.env.VITE_BRAND_PERSONAL_TITLE || 'WXY LAB Hardware · 个人硬件研发工作台'
+const teamTitle = process.env.VITE_BRAND_TEAM_TITLE || 'WXY LAB Hardware Workspace · 团队版暂停维护'
+const personalAppName = process.env.VITE_PWA_PERSONAL_NAME || 'WXY LAB Hardware'
+const teamAppName = process.env.VITE_PWA_TEAM_NAME || 'WXY LAB Hardware Workspace 团队版'
 const elementName = (name) => name
   .replace(/^El/, '')
   .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
@@ -54,7 +55,7 @@ const directElementPlusDirectiveResolver = {
 }
 
 export default defineConfig({
-  base: isTeam ? TEAM_BASE : PERSONAL_BASE,
+  base: isDesktop ? './' : (isTeam ? TEAM_BASE : PERSONAL_BASE),
   plugins: [
     vue(),
     Components({
@@ -68,9 +69,9 @@ export default defineConfig({
         handler(html) {
           const appName = isTeam ? teamAppName : personalAppName
           const titledHtml = html
-            .replace('<title>Component Warehouse · Personal</title>', `<title>${isTeam ? teamTitle : personalTitle}</title>`)
-            .replace('<meta name="application-name" content="Component Warehouse" />', `<meta name="application-name" content="${appName}" />`)
-            .replace('<meta name="apple-mobile-web-app-title" content="Component Warehouse" />', `<meta name="apple-mobile-web-app-title" content="${appName}" />`)
+            .replace('<title>WXY LAB Hardware · 个人硬件研发工作台</title>', `<title>${isTeam ? teamTitle : personalTitle}</title>`)
+            .replace('<meta name="application-name" content="WXY LAB Hardware" />', `<meta name="application-name" content="${appName}" />`)
+            .replace('<meta name="apple-mobile-web-app-title" content="WXY LAB Hardware" />', `<meta name="apple-mobile-web-app-title" content="${appName}" />`)
           if (!isTeam) return titledHtml
           return titledHtml
             .replace('/src/personal/main.js', '/src/team/main.js')
@@ -80,7 +81,7 @@ export default defineConfig({
     }
   ],
   build: {
-    outDir: `dist/${target}`,
+    outDir: isDesktop ? 'dist/desktop' : `dist/${target}`,
     emptyOutDir: false,
     rollupOptions: {
       output: {

@@ -3,7 +3,7 @@
     <div class="page-header management-hero">
       <div>
         <h1 class="page-title">管理</h1>
-        <p class="page-subtitle">导入、AI、备份、日志和危险操作</p>
+        <p class="page-subtitle">{{ IS_DESKTOP ? '本地导入、操作日志与数据管理' : '导入、AI、备份、日志和危险操作' }}</p>
       </div>
       <div class="management-actions">
         <install-app-button />
@@ -33,7 +33,7 @@
         </div>
       </section>
 
-      <section class="panel ai-panel">
+      <section v-if="!IS_DESKTOP" class="panel ai-panel">
         <div class="section-head">
           <h2>AI 维护</h2>
           <span>后台队列</span>
@@ -56,17 +56,18 @@
         </div>
       </section>
 
-      <section class="panel backup-panel">
+      <section v-if="!IS_DESKTOP" class="panel backup-panel">
         <div class="section-head">
           <h2>数据备份</h2>
           <span>{{ backups.length }} 个</span>
         </div>
         <div class="backup-actions">
-          <el-button type="primary" plain :loading="backupLoading" @click="downloadBackup">导出备份</el-button>
           <el-upload :show-file-list="false" accept=".zip" :http-request="inspectBackupUpload">
             <el-button plain :loading="restoreInspecting">预览恢复</el-button>
           </el-upload>
+          <el-button plain type="warning" :disabled="!cleanupPreview.candidate_count" @click="cleanupBackups">清理旧备份</el-button>
         </div>
+        <small class="cleanup-preview">可回收 {{ formatBytes(cleanupPreview.reclaimable_bytes) }}；{{ cleanupPreview.preserved || '会保留新版备份和最近检查点' }}</small>
         <div class="backup-list">
           <div v-for="item in backups.slice(0, 4)" :key="item.filename">
             <strong>{{ backupTypeLabel(item.type) }}</strong>
@@ -76,7 +77,7 @@
         </div>
       </section>
 
-      <section class="panel codex-panel">
+      <section v-if="!IS_DESKTOP" class="panel codex-panel">
         <div class="section-head">
           <h2>Codex 接入</h2>
           <el-tag type="success" effect="plain">查询 + 审批草案</el-tag>
@@ -86,6 +87,15 @@
           <span>个人库隔离</span><span>逐单审批</span><span>30 天可撤销</span>
         </div>
         <el-button type="primary" plain @click="$router.push('/integrations/codex')">管理 Codex 接入</el-button>
+      </section>
+
+      <section v-else class="panel online-only-panel">
+        <div class="section-head">
+          <h2>在线专属功能</h2>
+          <el-tag type="info" effect="plain">网页端</el-tag>
+        </div>
+        <p>AI、Codex 接入、账号安全、团队工作区和服务器备份管理仅在在线网页使用。</p>
+        <small>离线不影响库存、项目、EDA、标签和文件操作。</small>
       </section>
 
       <section class="panel danger-panel">
@@ -98,7 +108,7 @@
       </section>
     </div>
 
-    <section v-if="isAdmin" class="panel admin-panel">
+    <section v-if="isAdmin && !IS_DESKTOP" class="panel admin-panel">
       <div class="section-head">
         <h2>用户统计</h2>
         <span>近 30 天</span>
@@ -189,7 +199,7 @@
       </el-table>
     </section>
 
-    <el-dialog v-model="restoreDialog" title="恢复数据库备份" width="560px" append-to-body>
+    <el-dialog v-if="!IS_DESKTOP" v-model="restoreDialog" title="恢复数据库备份" width="560px" append-to-body>
       <template v-if="restorePreview">
         <el-alert type="warning" show-icon :closable="false" title="恢复会覆盖当前 SQLite 数据库。系统会先自动生成 pre-restore 备份。" />
         <dl class="restore-preview">
@@ -200,11 +210,11 @@
           <div><dt>SHA256</dt><dd>{{ restorePreview.snapshot_sha256 }}</dd></div>
         </dl>
         <el-alert v-for="warning in restorePreview.warnings || []" :key="warning" type="info" show-icon :closable="false" :title="warning" />
-        <el-input v-model="restoreConfirm" placeholder="输入：恢复数据库" />
+        <el-input v-model="restoreConfirm" :placeholder="`输入：${restorePreview.required_confirm_text || '恢复数据库'}`" />
       </template>
       <template #footer>
         <el-button @click="restoreDialog = false">取消</el-button>
-        <el-button type="danger" :loading="restoreLoading" :disabled="restoreConfirm !== '恢复数据库'" @click="submitRestore">确认恢复</el-button>
+        <el-button type="danger" :loading="restoreLoading" :disabled="restoreConfirm !== (restorePreview?.required_confirm_text || '恢复数据库')" @click="submitRestore">确认恢复</el-button>
       </template>
     </el-dialog>
   </section>
@@ -215,10 +225,11 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from '../shared/elementApi'
 import { Refresh } from '@element-plus/icons-vue'
 import InstallAppButton from '../shared/components/InstallAppButton.vue'
+import { IS_DESKTOP } from '../shared/desktopBridge'
 import {
   clearDatabase,
+  cleanupOldDataBackups,
   enqueueOrganizeAiTasks,
-  exportDataBackup,
   getActivityLogs,
   getAdminUsageDashboard,
   getAiTaskSummary,
@@ -240,8 +251,8 @@ const taskSummary = ref({ pending: 0, stale: 0, completed: 0, failed: 0 })
 const logs = ref([])
 const importBatches = ref([])
 const backups = ref([])
+const cleanupPreview = ref({ candidate_count: 0, reclaimable_bytes: 0 })
 const adminData = ref({})
-const backupLoading = ref(false)
 const restoreDialog = ref(false)
 const restoreFile = ref(null)
 const restorePreview = ref(null)
@@ -283,6 +294,15 @@ function dayHeight(value) {
 }
 
 async function loadMaintenance() {
+  if (IS_DESKTOP) {
+    const [activity, batches] = await Promise.all([
+      getActivityLogs({ limit: 160 }),
+      getOrderImportBatches({ limit: 20 }),
+    ])
+    logs.value = activity
+    importBatches.value = batches
+    return
+  }
   const [tasks, activity, batches, backupResult] = await Promise.all([
     getAiTaskSummary(),
     getActivityLogs({ limit: 160 }),
@@ -293,10 +313,11 @@ async function loadMaintenance() {
   logs.value = activity
   importBatches.value = batches
   backups.value = backupResult.items || []
+  cleanupPreview.value = backupResult.cleanup || { candidate_count: 0, reclaimable_bytes: 0 }
 }
 
 async function loadAdmin() {
-  if (!isAdmin) return
+  if (!isAdmin || IS_DESKTOP) return
   try {
     adminData.value = await getAdminUsageDashboard()
   } catch (error) {
@@ -343,31 +364,6 @@ async function resetAi() {
   await load()
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-async function downloadBackup() {
-  backupLoading.value = true
-  try {
-    const blob = await exportDataBackup()
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    downloadBlob(blob, `component-warehouse-backup-${stamp}.zip`)
-    ElMessage.success('数据备份已开始下载')
-  } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '导出数据备份失败')
-  } finally {
-    backupLoading.value = false
-  }
-}
-
 async function inspectBackupUpload({ file }) {
   restoreInspecting.value = true
   try {
@@ -398,6 +394,21 @@ async function submitRestore() {
   } finally {
     restoreLoading.value = false
   }
+}
+
+async function cleanupBackups() {
+  const required = cleanupPreview.value.required_confirm_text || '清理旧备份'
+  const { value } = await ElMessageBox.prompt(
+    `将删除 ${cleanupPreview.value.candidate_count || 0} 个历史项并回收 ${formatBytes(cleanupPreview.value.reclaimable_bytes)}。该操作不可恢复，请输入“${required}”。`,
+    '清理旧备份',
+    {
+      type: 'warning',
+      inputValidator: (text) => String(text || '').trim() === required || `必须输入：${required}`,
+    },
+  )
+  const result = await cleanupOldDataBackups(cleanupPreview.value.preview_id, value)
+  ElMessage.success(`已清理 ${result.removed_count || 0} 项，回收 ${formatBytes(result.reclaimed_bytes)}`)
+  await load()
 }
 
 async function clearAllData() {
@@ -478,6 +489,8 @@ onMounted(load)
 .backup-actions :deep(.el-upload .el-button) {
   width: 100%;
 }
+
+.cleanup-preview { display: block; margin: 10px 0; color: var(--cw-muted); line-height: 1.5; }
 
 .management-grid {
   display: grid;

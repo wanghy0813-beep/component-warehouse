@@ -1,5 +1,5 @@
 [Unit]
-Description=Component Warehouse backend
+Description=WXY LAB Hardware backend
 After=network-online.target
 Wants=network-online.target
 

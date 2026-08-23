@@ -173,10 +173,11 @@ async def stage_upload(
     scope_type: str,
     owner_user_id: int | None,
     team_library_id: str | None,
+    maximum_bytes: int | None = None,
 ) -> dict:
     cleanup_expired_stages()
     suffix, asset_type = detect_asset_type(file.filename or "")
-    maximum = TYPE_LIMITS[asset_type]
+    maximum = min(TYPE_LIMITS[asset_type], maximum_bytes) if maximum_bytes else TYPE_LIMITS[asset_type]
     validate_disk_capacity()
     token = secrets.token_urlsafe(24)
     target = stage_dir() / f"{token}.bin"

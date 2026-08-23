@@ -1,14 +1,14 @@
 FROM node:22-alpine AS web-build
 
 WORKDIR /app
-ARG VITE_BRAND_NAME=Component Warehouse
-ARG VITE_BRAND_SHORT=Component Warehouse
-ARG VITE_BRAND_PERSONAL_TITLE=Component Warehouse · Personal
-ARG VITE_BRAND_TEAM_TITLE=Component Warehouse · Team
+ARG VITE_BRAND_NAME=WXY LAB Hardware
+ARG VITE_BRAND_SHORT=WXY LAB
+ARG VITE_BRAND_PERSONAL_TITLE=WXY LAB Hardware · 个人硬件研发工作台
+ARG VITE_BRAND_TEAM_TITLE=WXY LAB Hardware Workspace · 团队版暂停维护
 ARG VITE_BRAND_SHOW_LOGO=1
-ARG VITE_PWA_PERSONAL_NAME=WXY LAB 器件管理
-ARG VITE_PWA_TEAM_NAME=WXY LAB 器件管理团队版
-ARG VITE_COPYRIGHT_TEXT=© 2026 Component Warehouse contributors
+ARG VITE_PWA_PERSONAL_NAME=WXY LAB Hardware
+ARG VITE_PWA_TEAM_NAME=WXY LAB Hardware Workspace 团队版
+ARG VITE_COPYRIGHT_TEXT=© 2026 WXY LAB
 ARG VITE_ICP_RECORD_TEXT=ICP 备案号：冀ICP备2026009111号-1
 ARG VITE_ICP_RECORD_URL=https://beian.miit.gov.cn/
 ARG VITE_PUBLIC_SECURITY_RECORD_TEXT=冀公网安备13010402003414号
@@ -44,7 +44,9 @@ FROM nginx:1.27-alpine
 COPY frontend/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=web-build /app/dist/personal /usr/share/nginx/html/component-warehouse/personal
 COPY --from=web-build /app/dist/team /usr/share/nginx/html/component-warehouse/team
+COPY --from=web-build /app/dist/personal /usr/share/nginx/html/hardware
 COPY --from=existing-downloads /usr/share/nginx/html/component-warehouse/downloads/ /usr/share/nginx/html/component-warehouse/downloads/
-RUN chmod -R a+rX /usr/share/nginx/html/component-warehouse
+COPY --from=existing-downloads /usr/share/nginx/html/component-warehouse/downloads/ /usr/share/nginx/html/hardware/downloads/
+RUN chmod -R a+rX /usr/share/nginx/html/component-warehouse /usr/share/nginx/html/hardware
 
 EXPOSE 80

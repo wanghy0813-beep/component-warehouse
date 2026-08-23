@@ -18,7 +18,7 @@ services:
       LOCAL_AUTH_SECRET: ${LOCAL_AUTH_SECRET:-}
       LOCAL_AUTH_ALLOW_REGISTRATION: ${LOCAL_AUTH_ALLOW_REGISTRATION:-0}
       ADMIN_PHONE_NUMBERS: ${ADMIN_PHONE_NUMBERS:-}
-      APP_BRAND_NAME: ${APP_BRAND_NAME:-Component Warehouse}
+      APP_BRAND_NAME: ${APP_BRAND_NAME:-WXY LAB Hardware}
       APP_BACKUP_NAME: ${APP_BACKUP_NAME:-component-warehouse}
       APP_SHOW_BRAND_LOGO: ${APP_SHOW_BRAND_LOGO:-1}
       FEATURE_EDA_ENABLED: ${FEATURE_EDA_ENABLED:-0}
@@ -30,7 +30,7 @@ services:
       TEAM_MEDIA_ROOT: /app/data/contest-media
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-0}
-      PUBLIC_PERSONAL_BASE_URL: ${PUBLIC_PERSONAL_BASE_URL:-http://localhost:8080/component-warehouse/personal}
+      PUBLIC_PERSONAL_BASE_URL: ${PUBLIC_PERSONAL_BASE_URL:-http://localhost:8080/hardware}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-gpt-compatible-model}
@@ -60,14 +60,14 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        VITE_BRAND_NAME: ${VITE_BRAND_NAME:-Component Warehouse}
-        VITE_BRAND_SHORT: ${VITE_BRAND_SHORT:-Component Warehouse}
-        VITE_BRAND_PERSONAL_TITLE: ${VITE_BRAND_PERSONAL_TITLE:-Component Warehouse · Personal}
-        VITE_BRAND_TEAM_TITLE: ${VITE_BRAND_TEAM_TITLE:-Component Warehouse · Team}
+        VITE_BRAND_NAME: ${VITE_BRAND_NAME:-WXY LAB Hardware}
+        VITE_BRAND_SHORT: ${VITE_BRAND_SHORT:-WXY LAB}
+        VITE_BRAND_PERSONAL_TITLE: ${VITE_BRAND_PERSONAL_TITLE:-WXY LAB Hardware · 个人硬件研发工作台}
+        VITE_BRAND_TEAM_TITLE: ${VITE_BRAND_TEAM_TITLE:-WXY LAB Hardware Workspace · 团队版暂停维护}
         VITE_BRAND_SHOW_LOGO: ${VITE_BRAND_SHOW_LOGO:-1}
-        VITE_PWA_PERSONAL_NAME: ${VITE_PWA_PERSONAL_NAME:-WXY LAB 器件管理}
-        VITE_PWA_TEAM_NAME: ${VITE_PWA_TEAM_NAME:-WXY LAB 器件管理团队版}
-        VITE_COPYRIGHT_TEXT: ${VITE_COPYRIGHT_TEXT:-© 2026 Component Warehouse contributors}
+        VITE_PWA_PERSONAL_NAME: ${VITE_PWA_PERSONAL_NAME:-WXY LAB Hardware}
+        VITE_PWA_TEAM_NAME: ${VITE_PWA_TEAM_NAME:-WXY LAB Hardware Workspace 团队版}
+        VITE_COPYRIGHT_TEXT: ${VITE_COPYRIGHT_TEXT:-© 2026 WXY LAB}
         VITE_ICP_RECORD_TEXT: ${VITE_ICP_RECORD_TEXT:-ICP 备案号：冀ICP备2026009111号-1}
         VITE_ICP_RECORD_URL: ${VITE_ICP_RECORD_URL:-https://beian.miit.gov.cn/}
         VITE_PUBLIC_SECURITY_RECORD_TEXT: ${VITE_PUBLIC_SECURITY_RECORD_TEXT:-冀公网安备13010402003414号}

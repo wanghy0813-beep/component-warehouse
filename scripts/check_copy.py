@@ -23,6 +23,7 @@ FORBIDDEN = [
     "默认CW",
     "个人 CW",
 ]
+LITERAL_ARTIFACT_EXCEPTIONS = ["WXYLAB-AD-Sync-latest-win-x64.zip"]
 SUFFIXES = {".vue", ".js", ".css", ".html", ".json", ".webmanifest", ".md"}
 FORBIDDEN_PATH_PATTERNS = [
     re.compile(r"""["'`]\/personal\/"""),
@@ -45,8 +46,11 @@ def files():
 violations = []
 for path in files():
     text = path.read_text(encoding="utf-8")
+    checked_text = text
+    for artifact_name in LITERAL_ARTIFACT_EXCEPTIONS:
+        checked_text = checked_text.replace(artifact_name, "approved-download-artifact.zip")
     for phrase in FORBIDDEN:
-        if phrase in text:
+        if phrase in checked_text:
             violations.append(f"{path.relative_to(ROOT)}: {phrase}")
     if any(target in path.parents for target in PATH_TARGETS):
         for pattern in FORBIDDEN_PATH_PATTERNS:

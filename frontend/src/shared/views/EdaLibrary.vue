@@ -381,7 +381,7 @@ async function publishWorkspace() {
   await openPublish()
 }
 function downloadWindowsClient() {
-  window.location.href = '/component-warehouse/downloads/ComponentWarehouse-AD-Sync-latest-win-x64.zip'
+  window.location.href = '/hardware/downloads/WXYLAB-AD-Sync-latest-win-x64.zip'
 }
 function openGuide() {
   router.push(libraryId.value ? `/library/${libraryId.value}/eda-guide` : '/eda-guide')

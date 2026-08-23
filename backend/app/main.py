@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -16,7 +17,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
@@ -26,7 +27,8 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session, joinedload, object_session
 from openpyxl import Workbook
@@ -42,7 +44,7 @@ from .auth import (
     require_admin,
 )
 from .branding import APP_BACKUP_NAME, APP_BRAND_NAME, APP_SHOW_BRAND_LOGO
-from .team import clear_team_media, router as team_router
+from .team import TEAM_SECRET_FILE, clear_team_media, router as team_router
 from .mobile import router as mobile_router
 from .eda import purge_expired_assets, router as eda_router
 from .features import FEATURE_EDA_ENABLED
@@ -50,6 +52,15 @@ from .purchases import router as purchases_router
 from .risks import router as risks_router
 from .team_projects import router as team_projects_router
 from .codex_integration import prune_expired_operation_snapshots, router as codex_integration_router
+from .fabrication import assembly_action_impl, ensure_fabrication_worker, router as fabrication_router
+from .project_tracking import router as project_tracking_router
+from .personal_projects_v2 import router as personal_projects_v2_router
+from .sync import router as sync_router
+from .desktop import router as desktop_router
+from .workspace_fabrication import (
+    ensure_workspace_fabrication_worker,
+    router as workspace_fabrication_router,
+)
 from .database import Base, DATABASE_URL, SessionLocal, engine, get_db
 from .models import (
     ActivityLog,
@@ -87,6 +98,13 @@ from .models import (
     ProjectBomImportRow,
     ProjectBomItem,
     ProjectBomSolderPoint,
+    ProjectAssemblyLossEvent,
+    ProjectCodeAlias,
+    ProjectExpense,
+    ProjectFabricationRevision,
+    ProjectMaterialCostEvent,
+    ProjectPcbVersion,
+    ProjectStatusEvent,
     SupplierPart,
     User,
 )
@@ -152,6 +170,7 @@ from .schemas import (
     ProjectAiPlanRequest,
     ProjectAiConsultRequest,
     ProjectCreate,
+    ProjectBoardOut,
     ProjectOut,
     ProjectUpdate,
     UsageEventRequest,
@@ -224,6 +243,18 @@ from .services.inventory import (
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.substitutions import substitution_suggestions_for_bom_items
+from .services.project_tracking import (
+    PROJECT_STATUS_LABELS,
+    active_version as active_project_version,
+    assert_project_code_available,
+    cost_summary as project_cost_summary,
+    create_initial_version,
+    iso_week_label,
+    normalize_project_code as normalize_tracking_project_code,
+    project_period,
+    shanghai_today,
+    version_stats,
+)
 from .services.stock_ledger import (
     delete_unused_inventory_lot,
     ensure_component_lot,
@@ -232,7 +263,27 @@ from .services.stock_ledger import (
     reconcile_component_lots,
     record_stock_delta,
 )
-from .services.eda_storage import storage_root as eda_storage_root
+from .services.sync_journal import register_sync_journal
+from .services.backup_service import (
+    DATA_ROOT_NAMES as BACKUP_DATA_ROOT_NAMES,
+    BackupError,
+    copy_upload_to_temp,
+    create_backup_archive as create_backup_archive_v2,
+    extract_backup_archive,
+    inspect_backup_archive,
+    is_v2_archive,
+    cleanup_legacy_backups,
+    legacy_cleanup_preview,
+    prune_v2_backups,
+    sha256_file,
+    sqlite_database_path as backup_sqlite_database_path,
+    sqlite_snapshot,
+)
+from .services.personal_project_reset import (
+    V130_PERSONAL_PROJECT_V2_RESET,
+    is_legacy_personal_project_api,
+    run_personal_project_v2_reset,
+)
 from .labels import (
     custom_label_font_keys,
     category_package_summary_from_records,
@@ -249,10 +300,10 @@ from .labels import (
     render_custom_label_sheet,
     sanitize_svg_markup,
 )
+from .version import APP_VERSION
 
 
 ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "0") == "1"
-APP_VERSION = "0.7.1"
 PROCESS_STARTED_AT = time.monotonic()
 PUBLIC_STATUS_RANK = {
     "operational": 0,
@@ -291,6 +342,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def desktop_loopback_session_guard(request: Request, call_next):
+    if os.getenv("DESKTOP_MODE", "0") == "1" and request.url.path.startswith("/api/"):
+        expected = os.getenv("DESKTOP_SESSION_KEY", "")
+        provided = request.headers.get("X-WXY-Desktop-Session", "")
+        if not expected or not hmac.compare_digest(provided, expected):
+            return JSONResponse(status_code=403, content={"detail": "桌面会话无效"})
+    return await call_next(request)
+
+
 app.include_router(team_router)
 app.include_router(mobile_router)
 app.include_router(eda_router)
@@ -298,6 +361,29 @@ app.include_router(purchases_router)
 app.include_router(risks_router)
 app.include_router(team_projects_router)
 app.include_router(codex_integration_router)
+app.include_router(fabrication_router)
+app.include_router(project_tracking_router)
+app.include_router(personal_projects_v2_router)
+app.include_router(workspace_fabrication_router)
+app.include_router(sync_router)
+app.include_router(desktop_router)
+register_sync_journal()
+
+
+RETIRE_LEGACY_PERSONAL_PROJECT_API = os.getenv("RETIRE_LEGACY_PERSONAL_PROJECT_API", "0") == "1"
+
+
+@app.middleware("http")
+async def retire_legacy_personal_project_api(request: Request, call_next):
+    if RETIRE_LEGACY_PERSONAL_PROJECT_API and is_legacy_personal_project_api(request.url.path):
+        return JSONResponse(
+            status_code=410,
+            content={
+                "detail": "旧个人项目接口已停用，请使用 Project V2 工作区。",
+                "replacement": "/api/project-workspace",
+            },
+        )
+    return await call_next(request)
 
 
 @app.api_route(
@@ -418,7 +504,7 @@ def request_public_origin(request: Request) -> str:
 
 def safe_sso_return_to(value: object, request: Request) -> str:
     origin = request_public_origin(request)
-    default = f"{origin}/component-warehouse/personal/"
+    default = f"{origin}/hardware/"
     raw = auth_proxy_text(value, 1200)
     if not raw:
         return default
@@ -433,7 +519,8 @@ def safe_sso_return_to(value: object, request: Request) -> str:
         parsed = urlsplit(path)
         path = parsed.path
     if not (
-        path.startswith("/component-warehouse/personal/")
+        path.startswith("/hardware/")
+        or path.startswith("/component-warehouse/personal/")
         or path.startswith("/component-warehouse/team/")
     ):
         return default
@@ -463,7 +550,7 @@ def parse_sso_cookie(value: str | None) -> dict | None:
 
 
 def clear_sso_cookie(response: Response) -> None:
-    response.delete_cookie(SSO_STATE_COOKIE, path="/component-warehouse")
+    response.delete_cookie(SSO_STATE_COOKIE, path="/hardware")
 
 
 def set_sso_cookie(response: Response, request: Request, payload: dict) -> None:
@@ -474,7 +561,7 @@ def set_sso_cookie(response: Response, request: Request, payload: dict) -> None:
         httponly=True,
         secure=request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip() == "https",
         samesite="lax",
-        path="/component-warehouse",
+        path="/hardware",
     )
 
 
@@ -677,6 +764,31 @@ def ensure_database_schema(connection) -> None:
             "scope_type": "VARCHAR(20) DEFAULT 'personal'",
             "owner_user_id": "INTEGER",
             "team_library_id": "VARCHAR(36)",
+            "active_fabrication_revision_id": "VARCHAR(36)",
+            "public_assembly_view_enabled": "BOOLEAN DEFAULT 0",
+            "start_date": "DATE",
+            "end_date": "DATE",
+            "active_pcb_version_id": "INTEGER",
+            "archived_at": "DATETIME",
+        },
+    )
+    ensure_sqlite_columns(connection, "project_bom_items", {"pcb_version_id": "INTEGER"})
+    ensure_sqlite_columns(connection, "project_boards", {"pcb_version_id": "INTEGER"})
+    ensure_sqlite_columns(connection, "project_bom_import_batches", {"pcb_version_id": "INTEGER"})
+    ensure_sqlite_columns(connection, "project_bom_import_rows", {"pcb_version_id": "INTEGER"})
+    ensure_sqlite_columns(connection, "project_fabrication_revisions", {"pcb_version_id": "INTEGER"})
+    ensure_sqlite_columns(
+        connection,
+        "personal_project_versions_v2",
+        {"active_fabrication_revision_id": "VARCHAR(36)"},
+    )
+    ensure_sqlite_columns(
+        connection,
+        "personal_project_solder_points_v2",
+        {
+            "board_side": "VARCHAR(12)",
+            "assembly_placement_id": "VARCHAR(36)",
+            "active_for_assembly": "BOOLEAN DEFAULT 1 NOT NULL",
         },
     )
     ensure_sqlite_columns(connection, "order_import_batches", {"owner_user_id": "INTEGER"})
@@ -715,7 +827,40 @@ def ensure_database_schema(connection) -> None:
             "lost_at": "DATETIME",
             "loss_stock_applied": "BOOLEAN DEFAULT 0",
             "loss_note": "TEXT",
+            "designator_key": "VARCHAR(80)",
+            "board_side": "VARCHAR(12)",
+            "assembly_placement_id": "VARCHAR(36)",
+            "active_for_assembly": "BOOLEAN DEFAULT 1",
+            "state_version": "INTEGER DEFAULT 1",
         },
+    )
+    ensure_sqlite_columns(
+        connection,
+        "project_assembly_operations",
+        {
+            "inventory_source_user_ids_json": "TEXT",
+            "undo_of_operation_id": "VARCHAR(36)",
+            "undone_by_operation_id": "VARCHAR(36)",
+        },
+    )
+    ensure_sqlite_columns(
+        connection,
+        "project_assembly_loss_events",
+        {
+            "inventory_delta": "INTEGER DEFAULT -1",
+            "prior_soldered": "BOOLEAN DEFAULT 0",
+            "prior_stock_applied": "BOOLEAN DEFAULT 0",
+        },
+    )
+    ensure_sqlite_columns(
+        connection,
+        "project_fabrication_layers",
+        {"svg_asset_id": "VARCHAR(36)"},
+    )
+    ensure_sqlite_columns(
+        connection,
+        "project_assembly_placements",
+        {"source_board_side": "VARCHAR(12) DEFAULT 'top'"},
     )
     ensure_sqlite_columns(connection, "ai_tasks", {"next_attempt_at": "DATETIME"})
     ensure_sqlite_columns(
@@ -764,7 +909,20 @@ def ensure_database_schema(connection) -> None:
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_tasks_next_attempt_at ON ai_tasks(next_attempt_at)"))
     connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_projects_project_code_unique ON projects(project_code) WHERE project_code IS NOT NULL AND project_code != ''"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_boards_project_id ON project_boards(project_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_active_pcb_version_id ON projects(active_pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_start_date ON projects(start_date)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_end_date ON projects(end_date)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_projects_archived_at ON projects(archived_at)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_boards_pcb_version_id ON project_boards(pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_items_pcb_version_id ON project_bom_items(pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_import_batches_pcb_version_id ON project_bom_import_batches(pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_import_rows_pcb_version_id ON project_bom_import_rows(pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_fabrication_revisions_pcb_version_id ON project_fabrication_revisions(pcb_version_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_personal_project_versions_v2_active_fabrication ON personal_project_versions_v2(active_fabrication_revision_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_personal_project_solder_points_v2_placement ON personal_project_solder_points_v2(assembly_placement_id)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_solder_points_board_id ON project_bom_solder_points(board_id)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_solder_points_designator_key ON project_bom_solder_points(designator_key)"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_project_bom_solder_points_placement ON project_bom_solder_points(assembly_placement_id)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_contest_members_user_status ON competition_library_members(user_id, status)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_contest_components_library_name ON competition_library_components(library_id, name)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_contest_components_source_user ON competition_library_components(source_user_id, sync_status)"))
@@ -773,6 +931,7 @@ def ensure_database_schema(connection) -> None:
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_custom_label_templates_personal ON custom_label_templates(scope_type, owner_user_id, status, updated_at)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_custom_label_templates_team ON custom_label_templates(scope_type, team_library_id, status, updated_at)"))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_custom_label_assets_template ON custom_label_assets(template_id, created_at)"))
+    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_sync_entities_local_mapping ON sync_entities(owner_user_id, entity_type, local_id)"))
 
 
 V04_ACCOUNT_MIGRATION = "v0.4.0-account-owner"
@@ -781,6 +940,8 @@ V041_CONTEST_LIVE_INVENTORY = "v0.4.1-contest-live-inventory-and-bom-release"
 V070_EDA_ENGINEERING = "v0.7.0-eda-engineering"
 V072_LCSC_SOURCE_NORMALIZATION = "v0.7.2-lcsc-source-normalization"
 V073_ADMIN_DEFAULTS = "v0.7.3-admin-defaults"
+V110_PROJECT_ASSEMBLY = "v1.1.0-project-assembly"
+V120_PROJECT_LIFECYCLE_COSTS = "v1.2.0-project-lifecycle-costs"
 
 
 def sqlite_database_path() -> Path | None:
@@ -890,6 +1051,84 @@ def ensure_v070_migration_backup() -> Path | None:
         backup_dir = database_path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         target_path = backup_dir / f"pre-v0.7.0-eda-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db"
+        target = sqlite3.connect(str(target_path))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+        return target_path
+    finally:
+        source.close()
+
+
+def ensure_v110_migration_backup() -> Path | None:
+    database_path = sqlite_database_path()
+    if not database_path or not database_path.exists():
+        return None
+    source = sqlite3.connect(str(database_path))
+    try:
+        has_migrations = source.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_migrations'"
+        ).fetchone()
+        if has_migrations and source.execute(
+            "SELECT 1 FROM app_migrations WHERE key = ?", (V110_PROJECT_ASSEMBLY,)
+        ).fetchone():
+            return None
+        backup_dir = database_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target_path = backup_dir / f"pre-v1.1.0-project-assembly-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db"
+        target = sqlite3.connect(str(target_path))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+        return target_path
+    finally:
+        source.close()
+
+
+def ensure_v120_migration_backup() -> Path | None:
+    database_path = sqlite_database_path()
+    if not database_path or not database_path.exists():
+        return None
+    source = sqlite3.connect(str(database_path))
+    try:
+        has_migrations = source.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_migrations'"
+        ).fetchone()
+        if has_migrations and source.execute(
+            "SELECT 1 FROM app_migrations WHERE key = ?", (V120_PROJECT_LIFECYCLE_COSTS,)
+        ).fetchone():
+            return None
+        backup_dir = database_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target_path = backup_dir / f"pre-v1.2.0-project-lifecycle-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db"
+        target = sqlite3.connect(str(target_path))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+        return target_path
+    finally:
+        source.close()
+
+
+def ensure_v130_migration_backup() -> Path | None:
+    database_path = sqlite_database_path()
+    if not database_path or not database_path.exists():
+        return None
+    source = sqlite3.connect(str(database_path))
+    try:
+        has_migrations = source.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_migrations'"
+        ).fetchone()
+        if has_migrations and source.execute(
+            "SELECT 1 FROM app_migrations WHERE key = ?", (V130_PERSONAL_PROJECT_V2_RESET,)
+        ).fetchone():
+            return None
+        backup_dir = database_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target_path = backup_dir / f"pre-v1.3.0-project-v2-reset-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db"
         target = sqlite3.connect(str(target_path))
         try:
             source.backup(target)
@@ -1174,11 +1413,93 @@ def run_v073_admin_defaults(db: Session) -> None:
     db.commit()
 
 
+def run_v110_project_assembly_migration(db: Session) -> None:
+    if db.get(AppMigration, V110_PROJECT_ASSEMBLY):
+        return
+    migrated_points = 0
+    migrated_losses = 0
+    points = db.query(ProjectBomSolderPoint).all()
+    for point in points:
+        point.designator_key = str(point.designator or "").strip().upper()
+        point.active_for_assembly = True if point.active_for_assembly is None else bool(point.active_for_assembly)
+        point.state_version = max(1, int(point.state_version or 1))
+        migrated_points += 1
+        if point.lost and not db.query(ProjectAssemblyLossEvent.id).filter(
+            ProjectAssemblyLossEvent.solder_point_id == point.id,
+            ProjectAssemblyLossEvent.reversed_at.is_(None),
+        ).first():
+            db.add(
+                ProjectAssemblyLossEvent(
+                    id=secrets.token_hex(16),
+                    solder_point_id=point.id,
+                    actor_user_id=None,
+                    note=point.loss_note or "历史报损记录",
+                    stock_applied=bool(point.loss_stock_applied),
+                    inventory_delta=-1 if point.loss_stock_applied else 0,
+                    prior_soldered=False,
+                    prior_stock_applied=False,
+                    created_at=point.lost_at or point.updated_at or datetime.utcnow(),
+                )
+            )
+            migrated_losses += 1
+    db.add(
+        AppMigration(
+            key=V110_PROJECT_ASSEMBLY,
+            detail=f"为 {migrated_points} 个既有焊点补充装配稳定键，并无库存变化地迁移 {migrated_losses} 条历史报损事件。",
+        )
+    )
+    db.commit()
+
+
+def run_v120_project_lifecycle_migration(db: Session) -> None:
+    if db.get(AppMigration, V120_PROJECT_LIFECYCLE_COSTS):
+        return
+    migrated_projects = 0
+    linked_rows = 0
+    projects = db.query(Project).filter(Project.scope_type == "personal").order_by(Project.id.asc()).all()
+    for project in projects:
+        if not project.start_date:
+            created_at = project.created_at or datetime.utcnow()
+            project.start_date = created_at.date()
+        pending_rows = sum(
+            db.query(model).filter(
+                model.project_id == project.id,
+                model.pcb_version_id.is_(None),
+            ).count()
+            for model in (ProjectBomItem, ProjectBoard, ProjectBomImportBatch, ProjectBomImportRow, ProjectFabricationRevision)
+        )
+        version = active_project_version(db, project, create_if_missing=True)
+        if not version:
+            continue
+        version.active_fabrication_revision_id = project.active_fabrication_revision_id
+        for model in (ProjectBomItem, ProjectBoard, ProjectBomImportBatch, ProjectBomImportRow, ProjectFabricationRevision):
+            db.query(model).filter(
+                model.project_id == project.id,
+                model.pcb_version_id.is_(None),
+            ).update({model.pcb_version_id: version.id}, synchronize_session=False)
+        linked_rows += pending_rows
+        migrated_projects += 1
+    db.add(
+        AppMigration(
+            key=V120_PROJECT_LIFECYCLE_COSTS,
+            detail=(
+                f"为 {migrated_projects} 个个人项目建立 V1 PCB 版本并关联 {linked_rows} 条既有 BOM、实物板、"
+                "导入批次和制造修订；保留旧状态与 PJ 编号；未产生库存变化或成本流水。"
+            ),
+        )
+    )
+    db.commit()
+
+
 def startup_application():
+    desktop_mode = os.getenv("DESKTOP_MODE", "0") == "1"
     ensure_v04_migration_backup()
     ensure_v041_migration_backup()
     ensure_v060_migration_backup()
     ensure_v070_migration_backup()
+    ensure_v110_migration_backup()
+    ensure_v120_migration_backup()
+    ensure_v130_migration_backup()
     remove_legacy_component_lcsc_unique()
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
@@ -1190,6 +1511,9 @@ def startup_application():
         run_v070_eda_migration(db)
         run_v072_lcsc_source_normalization(db)
         run_v073_admin_defaults(db)
+        run_v110_project_assembly_migration(db)
+        run_v120_project_lifecycle_migration(db)
+        run_personal_project_v2_reset(db)
         prune_expired_operation_snapshots(db)
         if FEATURE_EDA_ENABLED:
             purge_expired_assets(db)
@@ -1202,14 +1526,20 @@ def startup_application():
         reconcile_pending_purchase_from_import_records(db)
         ensure_project_boards(db)
         ensure_bom_solder_points(db)
-        resolve_superseded_ai_failures(db)
-        enqueue_organize_component_tasks(db, force=False, limit=80)
-        enqueue_missing_component_ai_tasks(db, include_failed=True)
+        if not desktop_mode:
+            recover_stuck_ai_tasks(db)
+            resolve_superseded_ai_failures(db)
+            enqueue_organize_component_tasks(db, force=False, limit=80)
+            enqueue_missing_component_ai_tasks(db, include_failed=True)
         db.commit()
-        ensure_auto_backup()
+        if not desktop_mode:
+            ensure_auto_backup()
     finally:
         db.close()
-    ensure_ai_worker()
+    if not desktop_mode:
+        ensure_ai_worker()
+    ensure_fabrication_worker()
+    ensure_workspace_fabrication_worker()
 
 
 Protected = Annotated[AuthContext, Depends(require_access)]
@@ -1253,6 +1583,7 @@ AI_ANALYSIS_VERSION = "component-ai-v2-design-insights"
 AI_TASK_MAX_RETRIES = int(os.getenv("AI_TASK_MAX_RETRIES", "8"))
 AI_TASK_RETRY_BASE_SECONDS = int(os.getenv("AI_TASK_RETRY_BASE_SECONDS", "45"))
 AI_TASK_RETRY_MAX_SECONDS = int(os.getenv("AI_TASK_RETRY_MAX_SECONDS", "1800"))
+AI_TASK_STUCK_SECONDS = max(300, int(os.getenv("AI_TASK_STUCK_SECONDS", "600")))
 AI_AUTO_REFRESH_ENABLED = os.getenv("AI_AUTO_REFRESH_ENABLED", "1") == "1"
 AI_AUTO_REFRESH_INTERVAL_HOURS = int(os.getenv("AI_AUTO_REFRESH_INTERVAL_HOURS", "12"))
 AI_AUTO_REFRESH_MAX_PER_RUN = int(os.getenv("AI_AUTO_REFRESH_MAX_PER_RUN", "5"))
@@ -1264,7 +1595,7 @@ PROJECT_CODE_PREFIX = (os.getenv("PROJECT_CODE_PREFIX", "PJ").strip().upper() or
 PROJECT_CODE_WIDTH = max(4, min(18, int(os.getenv("PROJECT_CODE_WIDTH", "8"))))
 PUBLIC_PERSONAL_BASE_URL = os.getenv(
     "PUBLIC_PERSONAL_BASE_URL",
-    "http://localhost:8080/component-warehouse/personal",
+    "http://localhost:8080/hardware",
 ).strip().rstrip("/")
 CUSTOM_LABEL_STORAGE_ROOT = Path(os.getenv("CUSTOM_LABEL_STORAGE_ROOT", "./data/custom-labels"))
 CUSTOM_LABEL_ALLOWED_MIME = {
@@ -1819,7 +2150,9 @@ def enqueue_ai_task(db: Session, task_type: str, target_type: str, target_id: in
             AiTask.task_type == task_type,
             AiTask.target_type == target_type,
             AiTask.target_id == target_id,
-            AiTask.status.in_(["pending", "processing", "stale", "failed"]),
+            # Failed rows are immutable audit records. A later retry is a new
+            # task with its own retry budget instead of rewriting the failure.
+            AiTask.status.in_(["pending", "processing", "stale"]),
         )
         .order_by(AiTask.id.desc())
         .first()
@@ -1827,11 +2160,7 @@ def enqueue_ai_task(db: Session, task_type: str, target_type: str, target_id: in
     if existing:
         if input_hash:
             existing.input_hash = input_hash
-        if existing.status == "failed":
-            existing.status = "pending"
-            existing.next_attempt_at = datetime.now()
-            existing.error_message = None
-        elif existing.status != "processing":
+        if existing.status != "processing":
             existing.status = "pending"
         return existing
     task = AiTask(task_type=task_type, target_type=target_type, target_id=target_id, input_hash=input_hash, status="pending")
@@ -1845,25 +2174,66 @@ def retry_delay_for(task: AiTask) -> int:
     return min(delay, AI_TASK_RETRY_MAX_SECONDS)
 
 
+def recover_stuck_ai_tasks(db: Session, now: datetime | None = None) -> int:
+    current = now or datetime.now()
+    cutoff = current - timedelta(seconds=AI_TASK_STUCK_SECONDS)
+    tasks = db.query(AiTask).filter(
+        AiTask.status == "processing",
+        or_(AiTask.started_at.is_(None), AiTask.started_at < cutoff),
+    ).all()
+    for task in tasks:
+        task.status = "pending"
+        task.next_attempt_at = current
+        task.error_message = "后台进程中断，任务已自动重新入队"
+        if task.target_type == "component":
+            component = db.get(Component, task.target_id)
+            if component and component.ai_status == "processing":
+                component.ai_status = "pending"
+                component.ai_error = None
+    return len(tasks)
+
+
 def resolve_superseded_ai_failures(db: Session) -> int:
     resolved = 0
     failed_tasks = db.query(AiTask).filter(AiTask.status == "failed").all()
     for task in failed_tasks:
-        newer_success = (
+        covered_by_success = (
             db.query(AiTask.id)
             .filter(
                 AiTask.task_type == task.task_type,
                 AiTask.target_type == task.target_type,
                 AiTask.target_id == task.target_id,
                 AiTask.status == "completed",
-                AiTask.id > task.id,
+                or_(AiTask.id > task.id, AiTask.input_hash == task.input_hash),
             )
             .first()
         )
-        if not newer_success:
+        component = db.get(Component, task.target_id) if task.target_type == "component" else None
+        current_success = None
+        no_longer_actionable = False
+        if component and task.task_type == "component_organize":
+            current_hash = organize_cache_key(component)
+            current_success = db.query(AiTask.id).filter(
+                AiTask.task_type == task.task_type,
+                AiTask.target_type == task.target_type,
+                AiTask.target_id == task.target_id,
+                AiTask.input_hash == current_hash,
+                AiTask.status == "completed",
+            ).first()
+            no_longer_actionable = not looks_like_needs_organize(component)
+        elif component and task.task_type == "component_analyze":
+            current_hash = component_ai_cache_key(component)
+            current_success = db.query(AiTask.id).filter(
+                AiTask.task_type == task.task_type,
+                AiTask.target_type == task.target_type,
+                AiTask.target_id == task.target_id,
+                AiTask.input_hash == current_hash,
+                AiTask.status == "completed",
+            ).first()
+        if not (covered_by_success or current_success or no_longer_actionable):
             continue
         task.status = "superseded"
-        task.error_message = f"已被后续成功任务覆盖：{task.error_message or ''}"[:1000]
+        task.error_message = f"历史失败已被当前有效状态覆盖：{task.error_message or ''}"[:1000]
         task.next_attempt_at = None
         resolved += 1
     completed_component_ids = [
@@ -2490,7 +2860,7 @@ def public_project_out(project: Project, request: Request | None = None) -> dict
                 "id": item.id,
                 "required_quantity": int(item.required_quantity or 0),
                 "status": item.status or "reserved",
-                "remark": item.remark,
+                "remark": None,
                 "component": {
                     "warehouse_code": component.warehouse_code if component else None,
                     "name": component.name if component else None,
@@ -2501,9 +2871,17 @@ def public_project_out(project: Project, request: Request | None = None) -> dict
                     "package": component.package if component else None,
                     "lcsc_number": component.lcsc_number if component else None,
                     "normalized_spec": component.normalized_spec if component else None,
-                    "location": component.location if component else None,
                 },
-                "solder_points": [solder_point_out(point) for point in solder_points],
+                "solder_points": [
+                    {
+                        "id": point.id,
+                        "board_id": point.board_id,
+                        "designator": point.designator,
+                        "soldered": bool(point.soldered),
+                        "lost": bool(getattr(point, "lost", False)),
+                    }
+                    for point in solder_points
+                ],
                 "soldered_count": sum(1 for point in solder_points if point.soldered),
                 "lost_count": sum(1 for point in solder_points if getattr(point, "lost", False)),
                 "pending_count": sum(1 for point in solder_points if not point.soldered),
@@ -2521,10 +2899,18 @@ def public_project_out(project: Project, request: Request | None = None) -> dict
         "name": project.name,
         "description": project.description,
         "status": project.status,
+        "public_assembly_view_enabled": bool(project.public_assembly_view_enabled),
         "public_url": public_url,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
-        "boards": [board_out(board, points_by_board.get(board.id, [])) for board in boards],
+        "boards": [
+            {
+                key: value
+                for key, value in board_out(board, points_by_board.get(board.id, [])).items()
+                if key not in {"project_id", "note"}
+            }
+            for board in boards
+        ],
         "active_board_id": boards[0].id if boards else None,
         "board_count": len(boards),
         "total_items": len(items),
@@ -2783,41 +3169,68 @@ def solder_point_specs_for_item(item: ProjectBomItem) -> list[dict]:
     ]
 
 
-def default_project_board(db: Session, project_id: int) -> ProjectBoard:
+def default_project_board(db: Session, project_id: int, pcb_version_id: int | None = None) -> ProjectBoard:
+    if pcb_version_id is None:
+        project = db.get(Project, project_id)
+        pcb_version_id = project.active_pcb_version_id if project else None
     board = (
         db.query(ProjectBoard)
-        .filter(ProjectBoard.project_id == project_id)
+        .filter(
+            ProjectBoard.project_id == project_id,
+            ProjectBoard.pcb_version_id == pcb_version_id if pcb_version_id is not None else ProjectBoard.pcb_version_id.is_(None),
+        )
         .order_by(ProjectBoard.board_index.asc(), ProjectBoard.id.asc())
         .first()
     )
     if board:
         return board
-    board = ProjectBoard(project_id=project_id, board_index=1, name="第 1 板", status="active")
+    board = ProjectBoard(
+        project_id=project_id,
+        pcb_version_id=pcb_version_id,
+        board_index=1,
+        name="第 1 板",
+        status="active",
+    )
     db.add(board)
     db.flush()
     return board
 
 
-def project_boards_for_sync(db: Session, project_id: int, board_id: int | None = None) -> list[ProjectBoard]:
+def project_boards_for_sync(
+    db: Session,
+    project_id: int,
+    board_id: int | None = None,
+    pcb_version_id: int | None = None,
+) -> list[ProjectBoard]:
     if board_id:
         board = db.query(ProjectBoard).filter(ProjectBoard.project_id == project_id, ProjectBoard.id == board_id).first()
         if not board:
             raise HTTPException(status_code=404, detail="Project board not found")
         return [board]
-    boards = db.query(ProjectBoard).filter(ProjectBoard.project_id == project_id).order_by(ProjectBoard.board_index.asc(), ProjectBoard.id.asc()).all()
+    query = db.query(ProjectBoard).filter(ProjectBoard.project_id == project_id)
+    if pcb_version_id is not None:
+        query = query.filter(ProjectBoard.pcb_version_id == pcb_version_id)
+    boards = query.order_by(ProjectBoard.board_index.asc(), ProjectBoard.id.asc()).all()
     if boards:
         return boards
-    return [default_project_board(db, project_id)]
+    return [default_project_board(db, project_id, pcb_version_id)]
 
 
 def ensure_project_boards(db: Session) -> int:
     created = 0
     for project_id, in db.query(Project.id).all():
-        before_id = db.query(ProjectBoard.id).filter(ProjectBoard.project_id == project_id).first()
-        board = default_project_board(db, project_id)
+        item_ids = [item_id for (item_id,) in db.query(ProjectBomItem.id).filter(ProjectBomItem.project_id == project_id).all()]
+        if not item_ids:
+            continue
+        project = db.get(Project, project_id)
+        version_id = project.active_pcb_version_id if project else None
+        before_id = db.query(ProjectBoard.id).filter(
+            ProjectBoard.project_id == project_id,
+            ProjectBoard.pcb_version_id == version_id if version_id is not None else ProjectBoard.pcb_version_id.is_(None),
+        ).first()
+        board = default_project_board(db, project_id, version_id)
         if not before_id:
             created += 1
-        item_ids = [item_id for (item_id,) in db.query(ProjectBomItem.id).filter(ProjectBomItem.project_id == project_id).all()]
         if item_ids:
             db.query(ProjectBomSolderPoint).filter(
                 ProjectBomSolderPoint.bom_item_id.in_(item_ids),
@@ -2837,7 +3250,7 @@ def ensure_project_boards(db: Session) -> int:
 
 def sync_bom_solder_points(db: Session, item: ProjectBomItem, board_id: int | None = None) -> None:
     specs = solder_point_specs_for_item(item)
-    boards = project_boards_for_sync(db, item.project_id, board_id)
+    boards = project_boards_for_sync(db, item.project_id, board_id, item.pcb_version_id)
     for board in boards:
         existing = {
             (point.designator or "").upper(): point
@@ -2876,10 +3289,27 @@ def ensure_bom_solder_points(db: Session) -> int:
 
 
 def solder_point_out(point: ProjectBomSolderPoint) -> dict:
+    session = object_session(point)
+    loss_count = 1 if bool(getattr(point, "lost", False)) else 0
+    if session is not None:
+        loss_count = int(
+            session.query(func.count(ProjectAssemblyLossEvent.id))
+            .filter(
+                ProjectAssemblyLossEvent.solder_point_id == point.id,
+                ProjectAssemblyLossEvent.reversed_at.is_(None),
+            )
+            .scalar()
+            or 0
+        )
     return {
         "id": point.id,
         "board_id": point.board_id,
         "designator": point.designator,
+        "designator_key": point.designator_key or str(point.designator or "").strip().upper(),
+        "board_side": point.board_side,
+        "assembly_placement_id": point.assembly_placement_id,
+        "active_for_assembly": bool(point.active_for_assembly),
+        "state_version": int(point.state_version or 1),
         "bom_value": point.bom_value,
         "bom_model": point.bom_model,
         "bom_footprint": point.bom_footprint,
@@ -2887,6 +3317,7 @@ def solder_point_out(point: ProjectBomSolderPoint) -> dict:
         "soldered_at": point.soldered_at,
         "stock_applied": bool(getattr(point, "stock_applied", False)),
         "lost": bool(getattr(point, "lost", False)),
+        "loss_count": loss_count,
         "lost_at": getattr(point, "lost_at", None),
         "loss_stock_applied": bool(getattr(point, "loss_stock_applied", False)),
         "loss_note": getattr(point, "loss_note", None),
@@ -2903,6 +3334,7 @@ def board_out(board: ProjectBoard, points: list[ProjectBomSolderPoint] | None = 
     return {
         "id": board.id,
         "project_id": board.project_id,
+        "pcb_version_id": board.pcb_version_id,
         "board_index": int(board.board_index or 1),
         "name": board.name,
         "status": board.status or "active",
@@ -2939,6 +3371,7 @@ def bom_item_out(
     shortage = max(0, own_reserved - available_for_item) if status == "reserved" else 0
     return {
         "id": item.id,
+        "pcb_version_id": item.pcb_version_id,
         "component_id": item.component_id,
         "required_quantity": item.required_quantity,
         "status": status,
@@ -2962,13 +3395,30 @@ def bom_item_out(
 def project_out(project: Project, reserved_by_component: dict[int, int] | None = None) -> dict:
     reserved_by_component = reserved_by_component or {}
     db = object_session(project)
+    version = (
+        active_project_version(db, project)
+        if db is not None and (project.scope_type or "personal") == "personal"
+        else None
+    )
+    visible_bom_items = [
+        item
+        for item in (getattr(project, "bom_items", []) or [])
+        if version is None or item.pcb_version_id == version.id
+    ]
     substitutions = (
-        substitution_suggestions_for_bom_items(db, project.bom_items, reserved_by_component)
+        substitution_suggestions_for_bom_items(db, visible_bom_items, reserved_by_component)
         if db is not None
         else {}
     )
-    boards = sorted(getattr(project, "boards", []) or [], key=lambda board: (board.board_index or 0, board.id or 0))
-    all_points = [point for item in getattr(project, "bom_items", []) or [] for point in getattr(item, "solder_points", []) or []]
+    boards = sorted(
+        [
+            board
+            for board in (getattr(project, "boards", []) or [])
+            if version is None or board.pcb_version_id == version.id
+        ],
+        key=lambda board: (board.board_index or 0, board.id or 0),
+    )
+    all_points = [point for item in visible_bom_items for point in getattr(item, "solder_points", []) or []]
     points_by_board: dict[int, list[ProjectBomSolderPoint]] = {}
     for point in all_points:
         if point.board_id:
@@ -2977,12 +3427,40 @@ def project_out(project: Project, reserved_by_component: dict[int, int] | None =
     soldered_count = sum(1 for point in all_points if point.soldered)
     lost_count = sum(1 for point in all_points if getattr(point, "lost", False))
     pending_count = sum(1 for point in all_points if not point.soldered)
+    period = project_period(project)
+    versions = []
+    costs = {}
+    if db is not None and (project.scope_type or "personal") == "personal":
+        versions = [
+            version_stats(db, project, item)
+            for item in db.query(ProjectPcbVersion)
+            .filter(ProjectPcbVersion.project_id == project.id)
+            .order_by(ProjectPcbVersion.sequence_number.desc())
+            .all()
+        ]
+        costs = project_cost_summary(db, project)
     return {
         "id": project.id,
         "project_code": project.project_code,
+        "active_pcb_version_id": version.id if version else None,
+        "current_version_code": version.version_code if version else None,
+        "active_fabrication_revision_id": (
+            version.active_fabrication_revision_id if version else project.active_fabrication_revision_id
+        ),
+        "public_assembly_view_enabled": bool(project.public_assembly_view_enabled),
         "name": project.name,
         "description": project.description,
         "status": project.status,
+        "status_label": PROJECT_STATUS_LABELS.get(project.status, project.status),
+        "start_date": project.start_date,
+        "end_date": project.end_date,
+        "start_week": period["start_week"],
+        "end_week": period["end_week"],
+        "actual_days": period["actual_days"],
+        "actual_weeks": period["actual_weeks"],
+        "archived_at": project.archived_at,
+        "versions": versions,
+        "cost_summary": costs,
         "ai_bom_analysis": project.ai_bom_analysis,
         "ai_bom_cache_key": project.ai_bom_cache_key,
         "ai_bom_updated_at": project.ai_bom_updated_at,
@@ -3003,7 +3481,7 @@ def project_out(project: Project, reserved_by_component: dict[int, int] | None =
         "lost_count": lost_count,
         "pending_count": pending_count,
         "solder_progress": round((soldered_count / solder_total) * 100) if solder_total else 0,
-        "bom_items": [bom_item_out(item, reserved_by_component, substitutions.get(item.id)) for item in project.bom_items],
+        "bom_items": [bom_item_out(item, reserved_by_component, substitutions.get(item.id)) for item in visible_bom_items],
     }
 
 
@@ -3084,11 +3562,19 @@ def account_center_public_health_component() -> dict:
 @app.get("/health/status")
 def health_status(db: Session = Depends(get_db)):
     components = [public_status_component("web", "operational", "Web/API 可响应")]
-    metrics: dict[str, int | str | None] = {
+    metrics: dict[str, int | str | bool | None] = {
         "uptimeSeconds": max(0, int(time.monotonic() - PROCESS_STARTED_AT)),
         "p95LatencyMs": None,
         "queuedJobs": None,
+        "failedJobs": None,
+        "stuckJobs": None,
+        "aiWorkerRunning": AI_WORKER_RUNNING,
+        "aiProviderConfigured": bool(
+            (os.getenv("AI_API_KEY") or os.getenv("MIMO_API_KEY"))
+            and (os.getenv("AI_BASE_URL") or os.getenv("MIMO_BASE_URL"))
+        ),
         "lastJobSuccessAt": None,
+        "lastJobFailureAt": None,
     }
     try:
         db.execute(text("SELECT 1")).scalar()
@@ -3108,6 +3594,11 @@ def health_status(db: Session = Depends(get_db)):
         queued_statuses = ("pending", "processing", "stale")
         queued_jobs = db.query(func.count(AiTask.id)).filter(AiTask.status.in_(queued_statuses)).scalar() or 0
         failed_jobs = db.query(func.count(AiTask.id)).filter(AiTask.status == "failed").scalar() or 0
+        stuck_cutoff = datetime.now() - timedelta(seconds=AI_TASK_STUCK_SECONDS)
+        stuck_jobs = db.query(func.count(AiTask.id)).filter(
+            AiTask.status == "processing",
+            or_(AiTask.started_at.is_(None), AiTask.started_at < stuck_cutoff),
+        ).scalar() or 0
         last_success_at = (
             db.query(AiTask.finished_at)
             .filter(AiTask.status == "completed", AiTask.finished_at.isnot(None))
@@ -3115,16 +3606,36 @@ def health_status(db: Session = Depends(get_db)):
             .limit(1)
             .scalar()
         )
+        last_failure_at = (
+            db.query(AiTask.finished_at)
+            .filter(AiTask.status == "failed", AiTask.finished_at.isnot(None))
+            .order_by(AiTask.finished_at.desc())
+            .limit(1)
+            .scalar()
+        )
         metrics["queuedJobs"] = int(queued_jobs)
+        metrics["failedJobs"] = int(failed_jobs)
+        metrics["stuckJobs"] = int(stuck_jobs)
         metrics["lastJobSuccessAt"] = public_status_datetime(last_success_at)
-        ai_status = "degraded" if failed_jobs else "operational"
-        ai_label = f"AI 队列 {queued_jobs} 个，失败 {failed_jobs} 个" if queued_jobs or failed_jobs else "AI 队列空闲"
+        metrics["lastJobFailureAt"] = public_status_datetime(last_failure_at)
+        provider_configured = bool(metrics["aiProviderConfigured"])
+        if not provider_configured:
+            ai_status, ai_label = "degraded", "AI 服务未配置"
+        elif not AI_WORKER_RUNNING:
+            ai_status, ai_label = "degraded", "AI 后台工作器未运行"
+        elif failed_jobs or stuck_jobs:
+            ai_status, ai_label = "degraded", f"AI 队列 {queued_jobs} 个，失败 {failed_jobs} 个，卡住 {stuck_jobs} 个"
+        elif queued_jobs:
+            ai_status, ai_label = "operational", f"AI 正在处理 {queued_jobs} 个任务"
+        else:
+            ai_status, ai_label = "operational", "AI 队列空闲，工作器运行中"
         components.append(
             public_status_component(
                 "ai",
                 ai_status,
                 ai_label,
                 lastSuccessAt=metrics["lastJobSuccessAt"],
+                lastFailureAt=metrics["lastJobFailureAt"],
             )
         )
 
@@ -3388,6 +3899,20 @@ def public_project_detail(project_code: str, request: Request, db: Session = Dep
         .first()
     )
     if not project:
+        alias = db.query(ProjectCodeAlias).filter(func.lower(ProjectCodeAlias.old_code) == code.lower()).first()
+        project = (
+            db.query(Project)
+            .options(
+                joinedload(Project.boards),
+                joinedload(Project.bom_items).joinedload(ProjectBomItem.component).joinedload(Component.category),
+                joinedload(Project.bom_items).joinedload(ProjectBomItem.solder_points),
+            )
+            .filter(Project.id == alias.project_id)
+            .first()
+            if alias
+            else None
+        )
+    if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return public_project_out(project, request)
 
@@ -3397,11 +3922,14 @@ def public_project_qr(project_code: str, request: Request, db: Session = Depends
     code = normalize_project_code(project_code)
     if not code:
         raise HTTPException(status_code=404, detail="Project not found")
-    exists = db.query(Project.id).filter(func.lower(Project.project_code) == code.lower()).first()
-    if not exists:
+    project = db.query(Project).filter(func.lower(Project.project_code) == code.lower()).first()
+    if not project:
+        alias = db.query(ProjectCodeAlias).filter(func.lower(ProjectCodeAlias.old_code) == code.lower()).first()
+        project = db.get(Project, alias.project_id) if alias else None
+    if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return Response(
-        content=qr_svg_markup(frontend_project_url(request, code)),
+        content=qr_svg_markup(frontend_project_url(request, project.project_code)),
         media_type="image/svg+xml",
         headers={"Cache-Control": "no-store"},
     )
@@ -3612,7 +4140,7 @@ def frontend_component_url(request: Request, code: str) -> str:
     forwarded_proto = request.headers.get("x-forwarded-proto")
     scheme = forwarded_proto or request.url.scheme
     host = request.headers.get("host") or request.url.netloc
-    return f"{scheme}://{host}/component-warehouse/personal/scan/{quote(code)}"
+    return f"{scheme}://{host}/hardware/scan/{quote(code)}"
 
 
 def frontend_project_url(request: Request, code: str) -> str:
@@ -3621,7 +4149,7 @@ def frontend_project_url(request: Request, code: str) -> str:
     forwarded_proto = request.headers.get("x-forwarded-proto")
     scheme = forwarded_proto or request.url.scheme
     host = request.headers.get("host") or request.url.netloc
-    return f"{scheme}://{host}/component-warehouse/personal/public/projects/{quote(code)}"
+    return f"{scheme}://{host}/hardware/public/projects/{quote(code)}"
 
 
 def export_components_from_ids(
@@ -5273,14 +5801,32 @@ def list_projects(auth: Protected, db: Session = Depends(get_db)):
 @app.post("/api/projects", response_model=ProjectOut)
 def create_project(payload: ProjectCreate, auth: Protected, db: Session = Depends(get_db)):
     values = payload.model_dump()
-    values["project_code"] = normalize_project_code(values.get("project_code"))
-    assert_unique_project_code(db, values.get("project_code"))
+    try:
+        values["project_code"] = normalize_tracking_project_code(values.get("project_code"))
+        assert_project_code_available(db, values["project_code"])
+    except ValueError as error:
+        raise HTTPException(status_code=409 if "存在" in str(error) else 422, detail=str(error)) from error
+    if values.get("status") not in PROJECT_STATUS_LABELS or values.get("status") in {"active", "completed", "archived"}:
+        raise HTTPException(status_code=422, detail="不支持的项目状态")
+    values["start_date"] = values.get("start_date") or shanghai_today()
+    if values.get("end_date") and values["end_date"] < values["start_date"]:
+        raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
     project = Project(**values)
     set_owner(project, auth)
     db.add(project)
     db.flush()
-    assign_project_code(db, project)
-    default_project_board(db, project.id)
+    version = create_initial_version(db, project, owner_id(auth))
+    db.add(
+        ProjectStatusEvent(
+            id=secrets.token_hex(16),
+            project_id=project.id,
+            from_status=None,
+            to_status=project.status,
+            note="创建项目",
+            source="web",
+            created_by_user_id=owner_id(auth),
+        )
+    )
     log_activity(
         db,
         "project.create",
@@ -5289,6 +5835,7 @@ def create_project(payload: ProjectCreate, auth: Protected, db: Session = Depend
         owner_user_id=owner_id(auth),
         entity_id=project.id,
         project_id=project.id,
+        detail={"project_code": project.project_code, "pcb_version_id": version.id},
     )
     db.commit()
     db.refresh(project)
@@ -5318,11 +5865,38 @@ def update_project(project_id: int, payload: ProjectUpdate, auth: Protected, db:
     assert_owned(project, auth, "Project not found")
     values = payload.model_dump(exclude_unset=True)
     if "project_code" in values:
-        values["project_code"] = normalize_project_code(values.get("project_code"))
-        assert_unique_project_code(db, values.get("project_code"), project.id)
+        try:
+            requested_code = normalize_tracking_project_code(values.pop("project_code"))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if requested_code != project.project_code:
+            raise HTTPException(status_code=409, detail="修改项目编号必须使用二次确认接口")
+    if "status" in values:
+        status = values.pop("status")
+        if status != project.status:
+            if status not in PROJECT_STATUS_LABELS or status == "archived":
+                raise HTTPException(status_code=422, detail="不支持的项目状态")
+            previous = project.status
+            project.status = status
+            if status == "validated" and not project.end_date:
+                project.end_date = shanghai_today()
+            db.add(
+                ProjectStatusEvent(
+                    id=secrets.token_hex(16),
+                    project_id=project.id,
+                    from_status=previous,
+                    to_status=status,
+                    note="由兼容项目编辑接口修改",
+                    source="web",
+                    created_by_user_id=owner_id(auth),
+                )
+            )
+    effective_start = values.get("start_date", project.start_date)
+    effective_end = values.get("end_date", project.end_date)
+    if effective_start and effective_end and effective_end < effective_start:
+        raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
     for key, value in values.items():
         setattr(project, key, value)
-    assign_project_code(db, project)
     db.commit()
     db.refresh(project)
     reserved = reserved_quantities(db, list({item.component_id for item in project.bom_items}))
@@ -5342,11 +5916,21 @@ def create_project_board(project_id: int, auth: Protected, db: Session = Depends
         .first()
     )
     assert_owned(project, auth, "Project not found")
-    max_index = max([int(board.board_index or 0) for board in project.boards] or [0])
-    board = ProjectBoard(project_id=project.id, board_index=max_index + 1, name=f"第 {max_index + 1} 板", status="active")
+    version = active_project_version(db, project, create_if_missing=True)
+    version_boards = [board for board in project.boards if board.pcb_version_id == version.id]
+    max_index = max([int(board.board_index or 0) for board in version_boards] or [0])
+    board = ProjectBoard(
+        project_id=project.id,
+        pcb_version_id=version.id,
+        board_index=max_index + 1,
+        name=f"第 {max_index + 1} 板",
+        status="active",
+    )
     db.add(board)
     db.flush()
     for item in project.bom_items:
+        if item.pcb_version_id != version.id:
+            continue
         sync_bom_solder_points(db, item, board.id)
     log_activity(
         db,
@@ -5443,10 +6027,11 @@ def delete_project(project_id: int, auth: Protected, db: Session = Depends(get_d
 
 @app.post("/api/projects/{project_id}/bom", response_model=BomItemOut)
 def add_bom_item(project_id: int, payload: BomItemCreate, auth: Protected, db: Session = Depends(get_db)):
-    require_project_access(db, project_id, auth)
+    project = require_project_access(db, project_id, auth)
     component = db.get(Component, payload.component_id)
     assert_owned(component, auth, "Component not found")
-    item = ProjectBomItem(project_id=project_id, **payload.model_dump())
+    version = active_project_version(db, project, create_if_missing=True)
+    item = ProjectBomItem(project_id=project_id, pcb_version_id=version.id, **payload.model_dump())
     db.add(item)
     db.flush()
     sync_bom_solder_points(db, item)
@@ -5470,10 +6055,150 @@ def add_bom_item(project_id: int, payload: BomItemCreate, auth: Protected, db: S
     return bom_item_out(item, reserved)
 
 
+def require_project_version(db: Session, project: Project, version_id: int) -> ProjectPcbVersion:
+    version = db.query(ProjectPcbVersion).filter(
+        ProjectPcbVersion.id == version_id,
+        ProjectPcbVersion.project_id == project.id,
+    ).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="PCB 版本不存在")
+    return version
+
+
+@app.get("/api/projects/{project_id}/versions/{version_id}/bom", response_model=list[BomItemOut])
+def list_version_bom(
+    project_id: int,
+    version_id: int,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    project = require_project_access(db, project_id, auth)
+    require_project_version(db, project, version_id)
+    items = db.query(ProjectBomItem).options(
+        joinedload(ProjectBomItem.component).joinedload(Component.category),
+        joinedload(ProjectBomItem.solder_points),
+    ).filter(
+        ProjectBomItem.project_id == project.id,
+        ProjectBomItem.pcb_version_id == version_id,
+    ).order_by(ProjectBomItem.id.asc()).all()
+    reserved = reserved_quantities(db, [item.component_id for item in items])
+    return [bom_item_out(item, reserved) for item in items]
+
+
+@app.post("/api/projects/{project_id}/versions/{version_id}/bom", response_model=BomItemOut)
+def add_version_bom_item(
+    project_id: int,
+    version_id: int,
+    payload: BomItemCreate,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    project = require_project_access(db, project_id, auth)
+    require_project_version(db, project, version_id)
+    component = db.get(Component, payload.component_id)
+    assert_owned(component, auth, "Component not found")
+    item = ProjectBomItem(
+        project_id=project.id,
+        pcb_version_id=version_id,
+        **payload.model_dump(),
+    )
+    db.add(item)
+    db.flush()
+    sync_bom_solder_points(db, item)
+    log_activity(
+        db,
+        "bom.version.add",
+        "project_bom_item",
+        f"为 PCB 版本 {version_id} 添加 {component.name} x {item.required_quantity}",
+        owner_user_id=owner_id(auth),
+        entity_id=item.id,
+        component_id=component.id,
+        project_id=project.id,
+        detail={"pcb_version_id": version_id},
+    )
+    db.commit()
+    db.refresh(item)
+    item.component = component
+    return bom_item_out(item, reserved_quantities(db, [item.component_id]))
+
+
+@app.get("/api/projects/{project_id}/versions/{version_id}/boards", response_model=list[ProjectBoardOut])
+def list_version_boards(
+    project_id: int,
+    version_id: int,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    project = require_project_access(db, project_id, auth)
+    require_project_version(db, project, version_id)
+    boards = db.query(ProjectBoard).filter(
+        ProjectBoard.project_id == project.id,
+        ProjectBoard.pcb_version_id == version_id,
+    ).order_by(ProjectBoard.board_index.asc()).all()
+    return [board_out(board) for board in boards]
+
+
+@app.post("/api/projects/{project_id}/versions/{version_id}/boards", response_model=ProjectBoardOut)
+def create_version_board(
+    project_id: int,
+    version_id: int,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    project = require_project_access(db, project_id, auth)
+    require_project_version(db, project, version_id)
+    max_index = int(db.query(func.max(ProjectBoard.board_index)).filter(
+        ProjectBoard.project_id == project.id,
+        ProjectBoard.pcb_version_id == version_id,
+    ).scalar() or 0)
+    board = ProjectBoard(
+        project_id=project.id,
+        pcb_version_id=version_id,
+        board_index=max_index + 1,
+        name=f"第 {max_index + 1} 板",
+        status="active",
+    )
+    db.add(board)
+    db.flush()
+    items = db.query(ProjectBomItem).filter(
+        ProjectBomItem.project_id == project.id,
+        ProjectBomItem.pcb_version_id == version_id,
+    ).all()
+    for item in items:
+        sync_bom_solder_points(db, item, board.id)
+    log_activity(
+        db,
+        "project.version.board.create",
+        "project_board",
+        f"PCB 版本 {version_id} 新增 {board.name}",
+        owner_user_id=owner_id(auth),
+        entity_id=board.id,
+        project_id=project.id,
+        detail={"pcb_version_id": version_id},
+    )
+    db.commit()
+    db.refresh(board)
+    points = db.query(ProjectBomSolderPoint).filter(ProjectBomSolderPoint.board_id == board.id).all()
+    return board_out(board, points)
+
+
+@app.put("/api/projects/{project_id}/versions/{version_id}/bom/{item_id}", response_model=BomItemOut)
 @app.put("/api/projects/{project_id}/bom/{item_id}", response_model=BomItemOut)
-def update_bom_item(project_id: int, item_id: int, payload: BomItemUpdate, auth: Protected, db: Session = Depends(get_db)):
-    require_project_access(db, project_id, auth)
-    item = db.query(ProjectBomItem).filter(ProjectBomItem.project_id == project_id, ProjectBomItem.id == item_id).first()
+def update_bom_item(
+    project_id: int,
+    item_id: int,
+    payload: BomItemUpdate,
+    auth: Protected,
+    db: Session = Depends(get_db),
+    version_id: int | None = None,
+):
+    project = require_project_access(db, project_id, auth)
+    version = require_project_version(db, project, version_id) if version_id is not None else active_project_version(db, project, create_if_missing=True)
+    item = db.query(ProjectBomItem).filter(
+        ProjectBomItem.project_id == project_id,
+        ProjectBomItem.pcb_version_id == version.id,
+        ProjectBomItem.id == item_id,
+    ).first()
     if not item:
         raise HTTPException(status_code=404, detail="BOM item not found")
     assert_owned(item.component, auth, "Component not found")
@@ -5538,10 +6263,22 @@ def update_bom_item(project_id: int, item_id: int, payload: BomItemUpdate, auth:
     return bom_item_out(item, reserved)
 
 
+@app.delete("/api/projects/{project_id}/versions/{version_id}/bom/{item_id}")
 @app.delete("/api/projects/{project_id}/bom/{item_id}")
-def delete_bom_item(project_id: int, item_id: int, auth: Protected, db: Session = Depends(get_db)):
-    require_project_access(db, project_id, auth)
-    item = db.query(ProjectBomItem).filter(ProjectBomItem.project_id == project_id, ProjectBomItem.id == item_id).first()
+def delete_bom_item(
+    project_id: int,
+    item_id: int,
+    auth: Protected,
+    db: Session = Depends(get_db),
+    version_id: int | None = None,
+):
+    project = require_project_access(db, project_id, auth)
+    version = require_project_version(db, project, version_id) if version_id is not None else active_project_version(db, project, create_if_missing=True)
+    item = db.query(ProjectBomItem).filter(
+        ProjectBomItem.project_id == project_id,
+        ProjectBomItem.pcb_version_id == version.id,
+        ProjectBomItem.id == item_id,
+    ).first()
     if not item:
         raise HTTPException(status_code=404, detail="BOM item not found")
     assert_owned(item.component, auth, "Component not found")
@@ -5573,6 +6310,7 @@ def delete_bom_item(project_id: int, item_id: int, auth: Protected, db: Session 
     return {"deleted": True}
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/bom/{item_id}/status", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/bom/{item_id}/status", response_model=BomItemOut)
 def mark_bom_item_status(
     project_id: int,
@@ -5580,14 +6318,20 @@ def mark_bom_item_status(
     payload: BomItemStatusRequest,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    require_project_access(db, project_id, auth)
+    project = require_project_access(db, project_id, auth)
+    version = require_project_version(db, project, version_id) if version_id is not None else active_project_version(db, project, create_if_missing=True)
     if payload.status not in {"reserved", "picked", "done"}:
         raise HTTPException(status_code=400, detail="Invalid BOM status")
     item = (
         db.query(ProjectBomItem)
         .options(joinedload(ProjectBomItem.component).joinedload(Component.category))
-        .filter(ProjectBomItem.project_id == project_id, ProjectBomItem.id == item_id)
+        .filter(
+            ProjectBomItem.project_id == project_id,
+            ProjectBomItem.pcb_version_id == version.id,
+            ProjectBomItem.id == item_id,
+        )
         .first()
     )
     if not item:
@@ -5643,12 +6387,23 @@ def mark_bom_item_status(
     return bom_item_out(item, reserved)
 
 
-def get_project_bom_item_for_solder(db: Session, project_id: int, item_id: int, auth: AuthContext | None = None) -> ProjectBomItem:
-    require_project_access(db, project_id, auth)
+def get_project_bom_item_for_solder(
+    db: Session,
+    project_id: int,
+    item_id: int,
+    auth: AuthContext | None = None,
+    version_id: int | None = None,
+) -> ProjectBomItem:
+    project = require_project_access(db, project_id, auth)
+    version = require_project_version(db, project, version_id) if version_id is not None else active_project_version(db, project, create_if_missing=True)
     item = (
         db.query(ProjectBomItem)
         .options(joinedload(ProjectBomItem.component).joinedload(Component.category), joinedload(ProjectBomItem.solder_points))
-        .filter(ProjectBomItem.project_id == project_id, ProjectBomItem.id == item_id)
+        .filter(
+            ProjectBomItem.project_id == project_id,
+            ProjectBomItem.pcb_version_id == version.id,
+            ProjectBomItem.id == item_id,
+        )
         .first()
     )
     if not item:
@@ -5660,9 +6415,20 @@ def get_project_bom_item_for_solder(db: Session, project_id: int, item_id: int, 
     return item
 
 
-def get_board_for_project(db: Session, project_id: int, board_id: int, auth: AuthContext | None = None) -> ProjectBoard:
-    require_project_access(db, project_id, auth)
-    board = db.query(ProjectBoard).filter(ProjectBoard.project_id == project_id, ProjectBoard.id == board_id).first()
+def get_board_for_project(
+    db: Session,
+    project_id: int,
+    board_id: int,
+    auth: AuthContext | None = None,
+    version_id: int | None = None,
+) -> ProjectBoard:
+    project = require_project_access(db, project_id, auth)
+    version = require_project_version(db, project, version_id) if version_id is not None else active_project_version(db, project, create_if_missing=True)
+    board = db.query(ProjectBoard).filter(
+        ProjectBoard.project_id == project_id,
+        ProjectBoard.pcb_version_id == version.id,
+        ProjectBoard.id == board_id,
+    ).first()
     if not board:
         raise HTTPException(status_code=404, detail="Project board not found")
     return board
@@ -5762,80 +6528,90 @@ def apply_loss_inventory_change(db: Session, item: ProjectBomItem, changed_point
     )
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/bom/{item_id}/solder-points/{point_id}", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/bom/{item_id}/solder-points/{point_id}", response_model=BomItemOut)
 def update_bom_solder_point(
     project_id: int,
     item_id: int,
     point_id: int,
     payload: BomSolderPointUpdate,
+    request: Request,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    item = get_project_bom_item_for_solder(db, project_id, item_id, auth)
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     point = next((candidate for candidate in item.solder_points if candidate.id == point_id), None)
     if not point:
         raise HTTPException(status_code=404, detail="BOM solder point not found")
-    changed_points = [point] if bool(point.soldered) != bool(payload.soldered) else []
-    apply_solder_inventory_change(db, item, changed_points, bool(payload.soldered), project_id, auth)
-    point.soldered = bool(payload.soldered)
-    point.soldered_at = datetime.utcnow() if point.soldered else None
-    if payload.note is not None:
-        point.note = payload.note.strip() or None
-    log_activity(
-        db,
-        "bom.solder.update",
-        "project_bom_solder_point",
-        f"{'标记已焊' if point.soldered else '取消已焊'} {point.designator}",
-        owner_user_id=owner_id(auth),
-        entity_id=point.id,
-        component_id=item.component_id,
-        project_id=project_id,
-        detail={"bom_item_id": item.id, "designator": point.designator, "note": point.note},
-    )
-    db.commit()
-    db.refresh(item)
+    if bool(point.soldered) != bool(payload.soldered):
+        project = require_project_access(db, project_id, auth)
+        board_id = point.board_id or default_project_board(db, project_id, item.pcb_version_id).id
+        point.board_id = board_id
+        assembly_action_impl(
+            db,
+            project,
+            {
+                "board_id": board_id,
+                "action": "solder" if payload.soldered else "unsolder",
+                "point_ids": [point.id],
+                "versions": {str(point.id): int(point.state_version or 1)},
+                "idempotency_key": f"legacy-solder-{secrets.token_hex(16)}",
+                "note": payload.note,
+            },
+            auth,
+            request,
+        )
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     reserved = reserved_quantities(db, [item.component_id])
     return bom_item_out(item, reserved)
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/bom/{item_id}/solder-points/bulk", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/bom/{item_id}/solder-points/bulk", response_model=BomItemOut)
 def update_bom_solder_points_bulk(
     project_id: int,
     item_id: int,
     payload: BomSolderPointBulkUpdate,
+    request: Request,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    item = get_project_bom_item_for_solder(db, project_id, item_id, auth)
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     point_ids = set(payload.point_ids or [])
     points = [point for point in item.solder_points if not point_ids or point.id in point_ids]
     if not points:
         raise HTTPException(status_code=404, detail="BOM solder point not found")
-    changed_at = datetime.utcnow()
     changed_points = [point for point in points if bool(point.soldered) != bool(payload.soldered)]
-    apply_solder_inventory_change(db, item, changed_points, bool(payload.soldered), project_id, auth)
-    for point in points:
-        point.soldered = bool(payload.soldered)
-        point.soldered_at = changed_at if point.soldered else None
-        if payload.note is not None:
-            point.note = payload.note.strip() or None
-    log_activity(
-        db,
-        "bom.solder.bulk_update",
-        "project_bom_item",
-        f"{'批量标记已焊' if payload.soldered else '批量取消已焊'} {len(points)} 个位号",
-        owner_user_id=owner_id(auth),
-        entity_id=item.id,
-        component_id=item.component_id,
-        project_id=project_id,
-        detail={"point_ids": [point.id for point in points], "soldered": payload.soldered},
-    )
-    db.commit()
-    db.refresh(item)
+    if changed_points:
+        project = require_project_access(db, project_id, auth)
+        grouped: dict[int, list[ProjectBomSolderPoint]] = {}
+        fallback_board = default_project_board(db, project_id, item.pcb_version_id)
+        for point in changed_points:
+            point.board_id = point.board_id or fallback_board.id
+            grouped.setdefault(point.board_id, []).append(point)
+        for board_id, board_points in grouped.items():
+            assembly_action_impl(
+                db,
+                project,
+                {
+                    "board_id": board_id,
+                    "action": "solder" if payload.soldered else "unsolder",
+                    "point_ids": [point.id for point in board_points],
+                    "versions": {str(point.id): int(point.state_version or 1) for point in board_points},
+                    "idempotency_key": f"legacy-solder-bulk-{board_id}-{secrets.token_hex(16)}",
+                    "note": payload.note,
+                },
+                auth,
+                request,
+            )
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     reserved = reserved_quantities(db, [item.component_id])
     return bom_item_out(item, reserved)
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/boards/{board_id}/bom/{item_id}/solder-points/{point_id}", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/boards/{board_id}/bom/{item_id}/solder-points/{point_id}", response_model=BomItemOut)
 def update_board_bom_solder_point(
     project_id: int,
@@ -5843,77 +6619,78 @@ def update_board_bom_solder_point(
     item_id: int,
     point_id: int,
     payload: BomSolderPointUpdate,
+    request: Request,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    get_board_for_project(db, project_id, board_id, auth)
-    item = get_project_bom_item_for_solder(db, project_id, item_id, auth)
+    get_board_for_project(db, project_id, board_id, auth, version_id)
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     point = next((candidate for candidate in item.solder_points if candidate.id == point_id and candidate.board_id == board_id), None)
     if not point:
         raise HTTPException(status_code=404, detail="BOM solder point not found")
-    changed_points = [point] if bool(point.soldered) != bool(payload.soldered) else []
-    apply_solder_inventory_change(db, item, changed_points, bool(payload.soldered), project_id, auth)
-    point.soldered = bool(payload.soldered)
-    point.soldered_at = datetime.utcnow() if point.soldered else None
-    if payload.note is not None:
-        point.note = payload.note.strip() or None
-    log_activity(
-        db,
-        "bom.solder.update",
-        "project_bom_solder_point",
-        f"{'标记已焊' if point.soldered else '取消已焊'} {point.designator}",
-        owner_user_id=owner_id(auth),
-        entity_id=point.id,
-        component_id=item.component_id,
-        project_id=project_id,
-        detail={"bom_item_id": item.id, "board_id": board_id, "designator": point.designator, "note": point.note},
-    )
-    db.commit()
-    db.refresh(item)
+    if bool(point.soldered) != bool(payload.soldered):
+        project = require_project_access(db, project_id, auth)
+        assembly_action_impl(
+            db,
+            project,
+            {
+                "board_id": board_id,
+                "action": "solder" if payload.soldered else "unsolder",
+                "point_ids": [point.id],
+                "versions": {str(point.id): int(point.state_version or 1)},
+                "idempotency_key": f"legacy-solder-{secrets.token_hex(16)}",
+                "note": payload.note,
+            },
+            auth,
+            request,
+        )
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     reserved = reserved_quantities(db, [item.component_id])
     return bom_item_out(item, reserved)
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/boards/{board_id}/bom/{item_id}/solder-points/bulk", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/boards/{board_id}/bom/{item_id}/solder-points/bulk", response_model=BomItemOut)
 def update_board_bom_solder_points_bulk(
     project_id: int,
     board_id: int,
     item_id: int,
     payload: BomSolderPointBulkUpdate,
+    request: Request,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    get_board_for_project(db, project_id, board_id, auth)
-    item = get_project_bom_item_for_solder(db, project_id, item_id, auth)
+    get_board_for_project(db, project_id, board_id, auth, version_id)
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     point_ids = set(payload.point_ids or [])
     points = [point for point in item.solder_points if point.board_id == board_id and (not point_ids or point.id in point_ids)]
     if not points:
         raise HTTPException(status_code=404, detail="BOM solder point not found")
-    changed_at = datetime.utcnow()
     changed_points = [point for point in points if bool(point.soldered) != bool(payload.soldered)]
-    apply_solder_inventory_change(db, item, changed_points, bool(payload.soldered), project_id, auth)
-    for point in points:
-        point.soldered = bool(payload.soldered)
-        point.soldered_at = changed_at if point.soldered else None
-        if payload.note is not None:
-            point.note = payload.note.strip() or None
-    log_activity(
-        db,
-        "bom.solder.bulk_update",
-        "project_bom_item",
-        f"{'批量标记已焊' if payload.soldered else '批量取消已焊'} {len(points)} 个位号",
-        owner_user_id=owner_id(auth),
-        entity_id=item.id,
-        component_id=item.component_id,
-        project_id=project_id,
-        detail={"board_id": board_id, "point_ids": [point.id for point in points], "soldered": payload.soldered},
-    )
-    db.commit()
-    db.refresh(item)
+    if changed_points:
+        project = require_project_access(db, project_id, auth)
+        assembly_action_impl(
+            db,
+            project,
+            {
+                "board_id": board_id,
+                "action": "solder" if payload.soldered else "unsolder",
+                "point_ids": [point.id for point in changed_points],
+                "versions": {str(point.id): int(point.state_version or 1) for point in changed_points},
+                "idempotency_key": f"legacy-solder-bulk-{secrets.token_hex(16)}",
+                "note": payload.note,
+            },
+            auth,
+            request,
+        )
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     reserved = reserved_quantities(db, [item.component_id])
     return bom_item_out(item, reserved)
 
 
+@app.post("/api/projects/{project_id}/versions/{version_id}/boards/{board_id}/bom/{item_id}/solder-points/{point_id}/loss", response_model=BomItemOut)
 @app.post("/api/projects/{project_id}/boards/{board_id}/bom/{item_id}/solder-points/{point_id}/loss", response_model=BomItemOut)
 def update_board_bom_solder_point_loss(
     project_id: int,
@@ -5921,32 +6698,33 @@ def update_board_bom_solder_point_loss(
     item_id: int,
     point_id: int,
     payload: BomSolderPointLossUpdate,
+    request: Request,
     auth: Protected,
     db: Session = Depends(get_db),
+    version_id: int | None = None,
 ):
-    get_board_for_project(db, project_id, board_id, auth)
-    item = get_project_bom_item_for_solder(db, project_id, item_id, auth)
+    get_board_for_project(db, project_id, board_id, auth, version_id)
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     point = next((candidate for candidate in item.solder_points if candidate.id == point_id and candidate.board_id == board_id), None)
     if not point:
         raise HTTPException(status_code=404, detail="BOM solder point not found")
-    changed_points = [point] if bool(getattr(point, "lost", False)) != bool(payload.lost) else []
-    apply_loss_inventory_change(db, item, changed_points, bool(payload.lost), project_id, auth)
-    point.lost = bool(payload.lost)
-    point.lost_at = datetime.utcnow() if point.lost else None
-    point.loss_note = payload.note.strip() if payload.note else None
-    log_activity(
-        db,
-        "bom.solder.loss",
-        "project_bom_solder_point",
-        f"{'标记报损' if point.lost else '取消报损'} {point.designator}",
-        owner_user_id=owner_id(auth),
-        entity_id=point.id,
-        component_id=item.component_id,
-        project_id=project_id,
-        detail={"bom_item_id": item.id, "board_id": board_id, "designator": point.designator, "note": point.loss_note},
-    )
-    db.commit()
-    db.refresh(item)
+    if bool(getattr(point, "lost", False)) != bool(payload.lost):
+        project = require_project_access(db, project_id, auth)
+        assembly_action_impl(
+            db,
+            project,
+            {
+                "board_id": board_id,
+                "action": "loss" if payload.lost else "undo_loss",
+                "point_ids": [point.id],
+                "versions": {str(point.id): int(point.state_version or 1)},
+                "idempotency_key": f"legacy-loss-{secrets.token_hex(16)}",
+                "note": payload.note,
+            },
+            auth,
+            request,
+        )
+    item = get_project_bom_item_for_solder(db, project_id, item_id, auth, version_id)
     reserved = reserved_quantities(db, [item.component_id])
     return bom_item_out(item, reserved)
 
@@ -5958,7 +6736,8 @@ def import_matched_bom_items(
     auth: Protected,
     db: Session = Depends(get_db),
 ):
-    require_project_access(db, project_id, auth)
+    project = require_project_access(db, project_id, auth)
+    version = active_project_version(db, project, create_if_missing=True)
     added = updated = skipped = 0
     for item in payload.items:
         component = db.get(Component, item.component_id)
@@ -5970,7 +6749,11 @@ def import_matched_bom_items(
         target_bom_item = None
         existing = (
             db.query(ProjectBomItem)
-            .filter(ProjectBomItem.project_id == project_id, ProjectBomItem.component_id == item.component_id)
+            .filter(
+                ProjectBomItem.project_id == project_id,
+                ProjectBomItem.pcb_version_id == version.id,
+                ProjectBomItem.component_id == item.component_id,
+            )
             .first()
         )
         if existing:
@@ -5997,6 +6780,7 @@ def import_matched_bom_items(
         else:
             bom_item = ProjectBomItem(
                 project_id=project_id,
+                pcb_version_id=version.id,
                 component_id=item.component_id,
                 required_quantity=item.required_quantity,
                 remark=item.remark,
@@ -7559,12 +8343,7 @@ def get_external_order_template():
 
 
 def sqlite_database_path() -> Path | None:
-    if not DATABASE_URL.startswith("sqlite:///"):
-        return None
-    raw_path = DATABASE_URL.replace("sqlite:///", "", 1)
-    if raw_path == ":memory:":
-        return None
-    return Path(raw_path).expanduser().resolve()
+    return backup_sqlite_database_path(DATABASE_URL)
 
 
 def backup_root() -> Path | None:
@@ -7574,19 +8353,6 @@ def backup_root() -> Path | None:
     root = db_path.parent / "backups"
     root.mkdir(parents=True, exist_ok=True)
     return root
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def add_backup_file(archive: zipfile.ZipFile, path: Path, arcname: str, files: list[dict]) -> None:
-    archive.write(path, arcname)
-    files.append({"path": arcname, "bytes": path.stat().st_size, "sha256": file_sha256(path)})
 
 
 def backup_type_from_name(path: Path) -> str:
@@ -7600,67 +8366,61 @@ def backup_type_from_name(path: Path) -> str:
     return "manual"
 
 
-def create_backup_archive(backup_type: str = "manual") -> tuple[bytes, dict]:
-    created_at = datetime.utcnow()
+def server_instance_id() -> str:
     db_path = sqlite_database_path()
-    buffer = io.BytesIO()
-    manifest = {
-        "app": APP_BACKUP_NAME,
-        "created_at": created_at.isoformat() + "Z",
-        "backup_type": backup_type,
-        "database_url": "sqlite" if DATABASE_URL.startswith("sqlite") else "non-sqlite",
-        "files": [],
-        "warnings": [],
-    }
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        if db_path and db_path.exists():
-            snapshot = tempfile.NamedTemporaryFile(prefix="cw-backup-", suffix=".db", delete=False)
-            snapshot_path = Path(snapshot.name)
-            snapshot.close()
-            try:
-                source = sqlite3.connect(str(db_path))
-                target = sqlite3.connect(str(snapshot_path))
-                try:
-                    source.backup(target)
-                finally:
-                    target.close()
-                    source.close()
-                add_backup_file(archive, snapshot_path, "database/component_warehouse.snapshot.db", manifest["files"])
-            finally:
-                try:
-                    snapshot_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+    if not db_path:
+        return ""
+    path = db_path.parent / ".server-instance-id"
+    try:
+        value = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        if not value:
+            value = secrets.token_hex(16)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(value, encoding="utf-8")
+            os.replace(temporary, path)
+        return value
+    except OSError:
+        return ""
 
-            data_root = db_path.parent
-            if data_root.exists():
-                backups_dir = data_root / "backups"
-                eda_root = eda_storage_root()
-                for path in sorted(data_root.rglob("*")):
-                    if (
-                        path.is_file()
-                        and backups_dir not in path.parents
-                        and eda_root != path
-                        and eda_root not in path.parents
-                    ):
-                        add_backup_file(archive, path, f"data/{path.relative_to(data_root).as_posix()}", manifest["files"])
-                manifest["warnings"].append(
-                    "EDA 大文件未包含在常规数据库备份中；请使用 /api/admin/eda/archive 生成完整或增量归档。"
-                )
-        else:
-            manifest["warnings"].append("当前 DATABASE_URL 不是可备份的 SQLite 文件路径，未生成数据库文件快照。")
-        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    return buffer.getvalue(), manifest
+
+def current_sync_cursor() -> int:
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(text("SELECT coalesce(max(cursor), 0) FROM sync_changes")).scalar()
+            return int(row or 0)
+    except Exception:
+        return 0
+
+
+def create_server_backup(
+    backup_type: str = "manual",
+    *,
+    exported_by_user_id: int | None = None,
+    scope: str = "server-full",
+):
+    return create_backup_archive_v2(
+        database_url=DATABASE_URL,
+        app_name=APP_BACKUP_NAME,
+        app_version=APP_VERSION,
+        backup_type=backup_type,
+        scope=scope,
+        exported_by_user_id=exported_by_user_id,
+        server_instance_id=server_instance_id(),
+        sync_cursor=current_sync_cursor(),
+        team_secret_file=TEAM_SECRET_FILE,
+        output_dir=backup_root(),
+    )
 
 
 def write_named_backup(prefix: str) -> Path | None:
     root = backup_root()
     if not root:
         return None
-    backup_bytes, _ = create_backup_archive(prefix.rstrip("-"))
-    path = root / f"{prefix}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
-    path.write_bytes(backup_bytes)
-    prune_backups()
+    artifact = create_server_backup(prefix.rstrip("-"))
+    normalized_prefix = prefix.rstrip("-")
+    path = root / f"{normalized_prefix}-v2-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
+    os.replace(artifact.path, path)
+    prune_v2_backups(root)
     return path
 
 
@@ -7675,6 +8435,7 @@ def list_local_backups() -> list[dict]:
             {
                 "filename": path.name,
                 "type": backup_type_from_name(path),
+                "format": "v2" if is_v2_archive(path) else "legacy-v1",
                 "bytes": stat.st_size,
                 "created_at": datetime.fromtimestamp(stat.st_mtime),
             }
@@ -7682,116 +8443,118 @@ def list_local_backups() -> list[dict]:
     return rows
 
 
-def prune_backups() -> None:
-    root = backup_root()
-    if not root:
-        return
-    backups = sorted(root.glob("*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)
-    for path in backups[BACKUP_KEEP_COUNT:]:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-
-
 def ensure_auto_backup() -> None:
     root = backup_root()
     if not root:
         return
-    auto_backups = sorted(root.glob("auto-*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)
+    auto_backups = sorted(root.glob("auto-v2-*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)
     if auto_backups:
         age = datetime.utcnow() - datetime.utcfromtimestamp(auto_backups[0].stat().st_mtime)
         if age < timedelta(hours=BACKUP_AUTO_INTERVAL_HOURS):
-            prune_backups()
+            prune_v2_backups(root)
             return
     write_named_backup("auto")
 
 
-def validate_backup_zip(content: bytes) -> dict:
-    if not content:
-        raise HTTPException(status_code=400, detail="备份文件为空")
-    if len(content) > BACKUP_MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="备份文件过大")
+def validate_backup_path(path: Path):
     try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="不是有效的 ZIP 备份文件")
-    with archive:
-        names = archive.namelist()
-        for name in names:
-            parts = Path(name).parts
-            if name.startswith("/") or ".." in parts:
-                raise HTTPException(status_code=400, detail="备份文件包含不安全路径")
-        if "manifest.json" not in names:
-            raise HTTPException(status_code=400, detail="缺少 manifest.json，不是系统备份")
-        if "database/component_warehouse.snapshot.db" not in names:
-            raise HTTPException(status_code=400, detail="缺少数据库快照")
-        try:
-            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise HTTPException(status_code=400, detail="manifest.json 无法读取")
-        if manifest.get("app") not in {APP_BACKUP_NAME, "Component Warehouse"}:
-            raise HTTPException(status_code=400, detail=f"不是 {APP_BRAND_NAME} 备份")
-        snapshot_info = archive.getinfo("database/component_warehouse.snapshot.db")
-        if snapshot_info.file_size <= 0:
-            raise HTTPException(status_code=400, detail="数据库快照为空")
-        snapshot_bytes = archive.read("database/component_warehouse.snapshot.db")
-    snapshot = tempfile.NamedTemporaryFile(prefix="cw-inspect-", suffix=".db", delete=False)
-    snapshot_path = Path(snapshot.name)
-    snapshot.write(snapshot_bytes)
-    snapshot.close()
-    try:
-        connection = sqlite3.connect(str(snapshot_path))
-        try:
-            ok = connection.execute("PRAGMA integrity_check").fetchone()
-            if not ok or ok[0] != "ok":
-                raise HTTPException(status_code=400, detail="数据库快照校验失败")
-            table_count = connection.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-        finally:
-            connection.close()
-    finally:
-        snapshot_path.unlink(missing_ok=True)
-    return {
-        "manifest": manifest,
-        "snapshot_bytes": len(snapshot_bytes),
-        "snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
-        "file_count": len(names),
-        "table_count": table_count,
-        "warnings": manifest.get("warnings") or [],
-    }
+        return inspect_backup_archive(
+            path,
+            expected_app_names={APP_BACKUP_NAME, "Component Warehouse", "WXY LAB 器件管理系统"},
+            max_upload_bytes=BACKUP_MAX_UPLOAD_BYTES,
+        )
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/admin/backup")
-def export_data_backup(_: AdminProtected):
-    backup_bytes, _ = create_backup_archive("manual")
+def export_data_backup(auth: AdminProtected):
+    artifact = create_server_backup("manual", exported_by_user_id=auth.user_id)
     created_at = datetime.utcnow()
-    filename = f"component-warehouse-backup-{created_at.strftime('%Y%m%d-%H%M%S')}.zip"
-    return Response(
-        content=backup_bytes,
+    filename = f"wxy-lab-hardware-server-full-v{APP_VERSION}-{created_at.strftime('%Y%m%d-%H%M%S')}.cwbackup.zip"
+    return FileResponse(
+        artifact.path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=filename,
+        background=BackgroundTask(artifact.path.unlink, missing_ok=True),
     )
 
 
 @app.get("/api/admin/backups")
 def list_data_backups(_: AdminProtected):
-    return {"items": list_local_backups(), "keep_count": BACKUP_KEEP_COUNT}
+    db_path = sqlite_database_path()
+    return {
+        "items": list_local_backups(),
+        "retention": {"daily": 7, "weekly": 4, "monthly": 6},
+        "cleanup": legacy_cleanup_preview(db_path.parent) if db_path else None,
+    }
+
+
+@app.post("/api/admin/backups/cleanup")
+def cleanup_old_data_backups(payload: dict, _: AdminProtected):
+    db_path = sqlite_database_path()
+    if not db_path:
+        raise HTTPException(status_code=400, detail="当前不是 SQLite 数据目录")
+    try:
+        return cleanup_legacy_backups(
+            db_path.parent,
+            preview_id=str(payload.get("preview_id") or ""),
+            confirm_text=str(payload.get("confirm_text") or ""),
+        )
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/admin/backup/inspect")
 async def inspect_data_backup(_: AdminProtected, file: UploadFile = File(...)):
-    content = await file.read()
-    result = validate_backup_zip(content)
-    return {
-        "filename": file.filename,
-        "created_at": result["manifest"].get("created_at"),
-        "backup_type": result["manifest"].get("backup_type"),
-        "snapshot_bytes": result["snapshot_bytes"],
-        "snapshot_sha256": result["snapshot_sha256"],
-        "file_count": result["file_count"],
-        "table_count": result["table_count"],
-        "warnings": result["warnings"],
-    }
+    upload_path = None
+    try:
+        upload_path = copy_upload_to_temp(file.file, max_bytes=BACKUP_MAX_UPLOAD_BYTES, directory=backup_root())
+        result = validate_backup_path(upload_path)
+        free = shutil.disk_usage(sqlite_database_path().parent).free if sqlite_database_path() else 0
+        required_free = (result.expanded_bytes if result.format_version == "v2" else result.snapshot_bytes) * 2
+        return {
+            "filename": file.filename,
+            "format": result.format_version,
+            "scope": result.scope,
+            "created_at": result.manifest.get("created_at"),
+            "backup_type": result.manifest.get("backup_type"),
+            "snapshot_bytes": result.snapshot_bytes,
+            "snapshot_sha256": result.snapshot_sha256,
+            "expanded_bytes": result.expanded_bytes,
+            "required_free_bytes": required_free,
+            "free_bytes": free,
+            "file_count": result.file_count,
+            "data_roots": result.manifest.get("data_roots") or [],
+            "table_count": result.table_count,
+            "warnings": result.warnings,
+            "required_confirm_text": result.required_confirm_text,
+        }
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    finally:
+        if upload_path:
+            upload_path.unlink(missing_ok=True)
+
+
+def run_post_restore_migrations() -> None:
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        ensure_database_schema(connection)
+    migration_db = SessionLocal()
+    try:
+        run_v04_account_migration(migration_db)
+        run_v041_inventory_migration(migration_db)
+        run_v070_eda_migration(migration_db)
+        seed_categories(migration_db)
+        seed_category_prefixes(migration_db)
+        run_component_identity_migration(migration_db)
+        ensure_project_codes(migration_db)
+        ensure_project_boards(migration_db)
+        ensure_bom_solder_points(migration_db)
+        migration_db.commit()
+    finally:
+        migration_db.close()
 
 
 @app.post("/api/admin/restore")
@@ -7800,49 +8563,87 @@ async def restore_data_backup(
     file: UploadFile = File(...),
     confirm_text: str = Form(...),
 ):
-    if confirm_text.strip() != "恢复数据库":
-        raise HTTPException(status_code=400, detail="确认文本不正确")
     db_path = sqlite_database_path()
     if not db_path:
         raise HTTPException(status_code=400, detail="当前只支持 SQLite 文件数据库恢复")
-    content = await file.read()
-    inspection = validate_backup_zip(content)
-    with BACKUP_LOCK:
-        pre_restore_path = write_named_backup("pre-restore")
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            snapshot_bytes = archive.read("database/component_warehouse.snapshot.db")
-        snapshot = tempfile.NamedTemporaryFile(prefix="cw-restore-", suffix=".db", delete=False)
-        snapshot_path = Path(snapshot.name)
-        snapshot.write(snapshot_bytes)
-        snapshot.close()
-        try:
-            engine.dispose()
-            source = sqlite3.connect(str(snapshot_path))
-            target = sqlite3.connect(str(db_path))
+    upload_path = None
+    staging_root = None
+    pre_restore_path = None
+    try:
+        upload_path = copy_upload_to_temp(file.file, max_bytes=BACKUP_MAX_UPLOAD_BYTES, directory=db_path.parent)
+        inspection = validate_backup_path(upload_path)
+        if inspection.scope == "desktop-local":
+            raise HTTPException(status_code=400, detail="服务器拒绝使用 desktop-local 包覆盖线上数据库")
+        if confirm_text.strip() != inspection.required_confirm_text:
+            raise HTTPException(status_code=400, detail=f"确认文本不正确，请输入：{inspection.required_confirm_text}")
+        required_free = (inspection.expanded_bytes if inspection.format_version == "v2" else inspection.snapshot_bytes) * 2
+        if shutil.disk_usage(db_path.parent).free < required_free:
+            raise HTTPException(status_code=507, detail="磁盘空间不足，无法安全暂存并回滚")
+        with BACKUP_LOCK:
+            pre_restore_path = write_named_backup("pre-restore")
+            staging_root = Path(tempfile.mkdtemp(prefix="cw-restore-v2-", dir=db_path.parent))
+            incoming = extract_backup_archive(inspection, staging_root / "incoming")
+            rollback = staging_root / "rollback"
+            rollback.mkdir()
+            rollback_db = rollback / "component_warehouse.db"
+            sqlite_snapshot(db_path, rollback_db)
+            swapped: list[tuple[Path, Path | None]] = []
+            secret_swapped = False
+            rollback_secret = rollback / "contest-invite-secret"
             try:
-                source.backup(target)
-            finally:
-                target.close()
-                source.close()
-            Base.metadata.create_all(bind=engine)
-            with engine.begin() as connection:
-                ensure_database_schema(connection)
-            migration_db = SessionLocal()
-            try:
-                run_v04_account_migration(migration_db)
-                run_v041_inventory_migration(migration_db)
-                run_v070_eda_migration(migration_db)
-                seed_categories(migration_db)
-                seed_category_prefixes(migration_db)
-                run_component_identity_migration(migration_db)
-                ensure_project_codes(migration_db)
-                ensure_project_boards(migration_db)
-                ensure_bom_solder_points(migration_db)
-                migration_db.commit()
-            finally:
-                migration_db.close()
-        finally:
-            snapshot_path.unlink(missing_ok=True)
+                engine.dispose()
+                if inspection.format_version == "v2":
+                    for root_name in BACKUP_DATA_ROOT_NAMES:
+                        live_root = db_path.parent / root_name
+                        old_root = rollback / root_name
+                        staged_root = incoming / "data" / root_name
+                        if live_root.exists():
+                            live_root.rename(old_root)
+                            swapped.append((live_root, old_root))
+                        else:
+                            swapped.append((live_root, None))
+                        if staged_root.exists():
+                            staged_root.rename(live_root)
+                        else:
+                            live_root.mkdir(parents=True, exist_ok=True)
+                    staged_secret = incoming / "secrets" / "contest-invite-secret"
+                    if staged_secret.is_file():
+                        secret_target = Path(TEAM_SECRET_FILE).resolve()
+                        if Path(TEAM_SECRET_FILE).is_symlink():
+                            raise BackupError("团队邀请密钥目标不能是符号链接")
+                        secret_target.parent.mkdir(parents=True, exist_ok=True)
+                        if secret_target.exists():
+                            shutil.copy2(secret_target, rollback_secret)
+                        temporary_secret = secret_target.with_suffix(secret_target.suffix + ".restore-tmp")
+                        shutil.copy2(staged_secret, temporary_secret)
+                        os.replace(temporary_secret, secret_target)
+                        secret_swapped = True
+                sqlite_snapshot(incoming / "database" / "component_warehouse.snapshot.db", db_path)
+                run_post_restore_migrations()
+                integrity = sqlite3.connect(str(db_path))
+                try:
+                    if integrity.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise BackupError("恢复后的数据库完整性检查失败")
+                finally:
+                    integrity.close()
+            except Exception:
+                engine.dispose()
+                sqlite_snapshot(rollback_db, db_path)
+                for live_root, old_root in reversed(swapped):
+                    if live_root.exists():
+                        shutil.rmtree(live_root)
+                    if old_root and old_root.exists():
+                        old_root.rename(live_root)
+                if secret_swapped:
+                    secret_target = Path(TEAM_SECRET_FILE).resolve()
+                    if rollback_secret.exists():
+                        temporary_secret = secret_target.with_suffix(secret_target.suffix + ".rollback-tmp")
+                        shutil.copy2(rollback_secret, temporary_secret)
+                        os.replace(temporary_secret, secret_target)
+                    else:
+                        secret_target.unlink(missing_ok=True)
+                run_post_restore_migrations()
+                raise
         db = SessionLocal()
         try:
             log_activity(
@@ -7851,17 +8652,26 @@ async def restore_data_backup(
                 "system",
                 f"恢复数据库备份 {file.filename or ''}".strip(),
                 detail={
-                    "backup_created_at": inspection["manifest"].get("created_at"),
-                    "snapshot_sha256": inspection["snapshot_sha256"],
+                    "backup_created_at": inspection.manifest.get("created_at"),
+                    "snapshot_sha256": inspection.snapshot_sha256,
+                    "format": inspection.format_version,
                     "pre_restore_backup": pre_restore_path.name if pre_restore_path else None,
                 },
             )
             db.commit()
         finally:
             db.close()
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    finally:
+        if upload_path:
+            upload_path.unlink(missing_ok=True)
+        if staging_root:
+            shutil.rmtree(staging_root, ignore_errors=True)
     return {
         "restored": True,
-        "message": "数据库已恢复。建议刷新页面；如仍看到旧数据，请重启后端服务。",
+        "format": inspection.format_version,
+        "message": "完整备份已恢复并通过数据库完整性检查。",
         "pre_restore_backup": pre_restore_path.name if pre_restore_path else None,
     }
 
@@ -7972,8 +8782,10 @@ def recompute_bom_import_batch(db: Session, batch: ProjectBomImportBatch) -> Non
 def auto_import_exact_lcsc_rows(db: Session, project_id: int | None, rows: list[dict]) -> dict[str, int]:
     if not project_id:
         return {"added": 0, "updated": 0, "skipped": 0}
-    if not db.get(Project, project_id):
+    project = db.get(Project, project_id)
+    if not project:
         return {"added": 0, "updated": 0, "skipped": 0}
+    version = active_project_version(db, project, create_if_missing=True) if project.scope_type == "personal" else None
     added = updated = skipped = 0
     for row in rows:
         if row.get("status") != "exact_lcsc" or not row.get("selected_component_id"):
@@ -7996,7 +8808,11 @@ def auto_import_exact_lcsc_rows(db: Session, project_id: int | None, rows: list[
         )
         existing = (
             db.query(ProjectBomItem)
-            .filter(ProjectBomItem.project_id == project_id, ProjectBomItem.component_id == component_id)
+            .filter(
+                ProjectBomItem.project_id == project_id,
+                ProjectBomItem.component_id == component_id,
+                ProjectBomItem.pcb_version_id == version.id if version else ProjectBomItem.pcb_version_id.is_(None),
+            )
             .first()
         )
         if existing and marker in (existing.remark or ""):
@@ -8028,6 +8844,7 @@ def auto_import_exact_lcsc_rows(db: Session, project_id: int | None, rows: list[
         else:
             bom_item = ProjectBomItem(
                 project_id=project_id,
+                pcb_version_id=version.id if version else None,
                 component_id=component_id,
                 required_quantity=int(row.get("required_quantity") or 1),
                 remark=remark,
@@ -8066,8 +8883,10 @@ def save_bom_match_snapshot(
     project = db.get(Project, project_id)
     if not project:
         return
+    version = active_project_version(db, project, create_if_missing=True) if project.scope_type == "personal" else None
     batch = ProjectBomImportBatch(
         project_id=project_id,
+        pcb_version_id=version.id if version else None,
         source_file=source_file,
         source_sha256=source_sha256,
         field_mapping_json=json.dumps(
@@ -8090,6 +8909,7 @@ def save_bom_match_snapshot(
         import_row = ProjectBomImportRow(
             batch_id=batch.id,
             project_id=project_id,
+            pcb_version_id=version.id if version else None,
             source_row=row.get("source_row"),
             designator=row.get("designator"),
             required_quantity=int(row.get("required_quantity") or 1),
@@ -8890,8 +9710,6 @@ def enqueue_auto_refresh_component_ai_tasks(db: Session) -> int:
 def enqueue_organize_component_tasks(db: Session, force: bool = False, limit: int | None = None) -> int:
     count = 0
     query = db.query(Component).options(joinedload(Component.category)).order_by(Component.id.asc())
-    if limit:
-        query = query.limit(limit)
     for component in query.all():
         cache_key = organize_cache_key(component)
         if not force:
@@ -8910,6 +9728,8 @@ def enqueue_organize_component_tasks(db: Session, force: bool = False, limit: in
                 continue
         enqueue_ai_task(db, "component_organize", "component", component.id, cache_key)
         count += 1
+        if limit and count >= limit:
+            break
     return count
 
 
@@ -9096,6 +9916,8 @@ def ai_worker_loop() -> None:
             continue
         db = SessionLocal()
         try:
+            recover_stuck_ai_tasks(db)
+            resolve_superseded_ai_failures(db)
             tasks = (
                 db.query(AiTask.id)
                 .filter(
@@ -9112,6 +9934,7 @@ def ai_worker_loop() -> None:
                 .all()
             )
             task_ids = [t.id for t in tasks]
+            db.commit()
         finally:
             db.close()
         if task_ids:
@@ -9125,6 +9948,9 @@ def ai_worker_loop() -> None:
         else:
             db = SessionLocal()
             try:
+                recover_stuck_ai_tasks(db)
+                resolve_superseded_ai_failures(db)
+                enqueue_organize_component_tasks(db, force=False, limit=80)
                 enqueue_missing_component_ai_tasks(db, include_failed=True)
                 enqueue_auto_refresh_component_ai_tasks(db)
                 db.commit()

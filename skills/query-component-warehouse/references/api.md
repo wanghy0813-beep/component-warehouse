@@ -1,4 +1,4 @@
-# Component Warehouse Codex API reference
+# WXY LAB Hardware Codex API reference
 
 The client adds `/api/integrations/codex/` to the configured service root and authenticates machine endpoints with the read-only bearer token.
 
@@ -11,8 +11,11 @@ The client adds `/api/integrations/codex/` to the configured service root and au
 | `get` | `GET v1/components/{warehouse_code}` | Full personal component, lots, suppliers, movements |
 | `categories` | `GET v1/categories` | System-maintained component and equipment categories with stable numeric IDs and code prefixes |
 | `match` | `POST v1/components/match` | Maximum 200 requirements |
-| `projects` | `GET v1/projects` | Active personal projects and reservation-aware BOM context |
+| `projects` | `GET v1/projects` | Active personal Project V2 records and per-board BOM availability |
+| `project-dashboard` | `GET v1/projects/overview` | Lightweight project status, current PCB version, comprehensive cost, and unpriced count |
 | `project` | `GET v1/projects/{id_or_code}` | One personal project; prefer the stable project code |
+| `project-versions` | `GET v1/projects/{id_or_code}/versions` | PCB V1/V2 chain, per-version BOM/board/solder/cost summary |
+| `project-costs` | `GET v1/projects/{id_or_code}/costs` | BOM estimate, actual material use, direct expense, comprehensive cost, purchases, and unpriced counts |
 | `risks` | `GET v1/risks` | Dynamic and manual personal risks with stable codes |
 | `purchases` | `GET v1/purchases` | Personal orders, stable codes, outstanding and reliable in-transit quantities |
 
@@ -42,7 +45,9 @@ The matcher never emits a candidate from package similarity alone. Without an ex
 
 If a known isolated label still reaches the API, the response keeps `classification: "missing"` for compatibility but sets `ignored_input: true`, provides `ignored_reason`, and omits `missing_suggestion`. Do not present ignored inputs as shortages or purchasing needs.
 
-For an existing project, do not run `match` against its BOM to calculate shortages because that would count the project's own reservation as unavailable. Read `project PROJECT_CODE` and use each BOM row's `physical_shortage_quantity`, `reservation_shortage_quantity`, `reserved_by_other_projects_quantity`, `available_for_project_quantity`, and `shortage_quantity`. Never guess the current project from recency; ask for the project code when it is ambiguous.
+For an existing Project V2 record, do not run `match` against its BOM to calculate shortages. Read `project PROJECT_CODE` and use each BOM row's `quantity_per_board`, `available_quantity`, `shortage_quantity`, and `enough`. Never guess the current project from recency; ask for the project code when it is ambiguous.
+
+Project cost fields use one stable CNY definition: `comprehensive_cost = actual_material_cost + direct_expense`. Purchase plan and committed purchase amounts are reported separately and must not be added again. A null BOM estimate or a positive unpriced count means “未计价”, never zero. Project V2 codes are immutable stable identifiers.
 
 For purchasing advice, count only `in_transit_quantity`; it is zero for planned, cancelled, or fully received lines. Join contexts by `warehouse_code` and `project_code`, not by display names.
 
@@ -56,8 +61,8 @@ For purchasing advice, count only `in_transit_quantity`; it is zero for planned,
   "reason": "Create approved board project and reserve its BOM",
   "actions": [
     {
-      "action": "project.create",
-      "payload": {"name": "Board Rev A", "description": "Approved design"}
+      "action": "workspace.project.create",
+      "payload": {"project_code": "WXY-HP26-HCB", "name": "Board Rev A", "description": "Approved design"}
     }
   ]
 }
@@ -67,18 +72,24 @@ Supported actions:
 
 - `component.create`, `component.update`, `component.archive`, `component.restore`
 - `stock.adjust` with integer `delta`; use `manual_consume`, `loss`, `manual_receipt`, or `codex_adjustment` as `movement_type`
-- `project.create`, `project.update`, `project.archive`, `project.restore`
-- `bom.upsert`, `bom.archive`, `bom.restore`
+- `workspace.project.create`, `workspace.project.update`, `workspace.project.status`, `workspace.project.archive`, `workspace.project.restore`
+- `workspace.version.create`, `workspace.version.status`
+- `workspace.expense.create`, `workspace.expense.archive`, `workspace.expense.restore`
+- `workspace.bom.upsert`, `workspace.bom.archive`, `workspace.bom.restore`; new rows may include `version_id`, otherwise they target the current version
 - `purchase.create`, `purchase.update`, `purchase.cancel`, `purchase.receive`
 
-For `component.*` and `stock.adjust`, use the stable warehouse code as `target_id`. For `project.*`, use the project code or numeric ID. For an added BOM row, omit `target_id` and supply `project_id`/`project_code`, `warehouse_code`, `required_quantity`, `status`, and optional `remark`. For existing BOM rows use the numeric BOM row ID.
+For `component.*` and `stock.adjust`, use the stable warehouse code as `target_id`. For `workspace.project.*`, use the stable project code or V2 UUID. For an added BOM row, omit `target_id` and supply `project_code`, `warehouse_code`, `quantity_per_board`, and optional `designators`/`note`. For an existing BOM row use its V2 UUID.
+
+`workspace.project.create` requires an explicit globally unique `project_code`; the service uppercases it and only accepts letters, numbers, and hyphens. It creates an empty V1 and does not require a BOM. Optional `start_date` records the real (possibly earlier) start day; optional `status` records the creation-time current stage. When that stage is later in the primary lifecycle, the service distributes each reached stage from `start_date` through the approval timestamp and returns them in `lifecycle.nodes`. Exact audit events remain available in `status_history`. The stable project code is immutable after creation. Use `workspace.project.status` for later lifecycle changes so history and validation end dates are audited.
+
+`workspace.version.create` targets the project code/UUID and accepts `version_code` and `change_summary`. V2 and later require a change summary; only BOM rows are copied. Version actions target the version UUID. `workspace.expense.create` targets the project and accepts `category`, positive CNY `amount`, optional `version_id`, `occurred_on`, `vendor`, and `note`. Binary receipts remain a web-only upload; never put file content into an operation proposal.
 
 `component.update` may set nullable `average_unit_price` as a non-negative CNY per-piece value. Use it only when the user supplied a reliable landed purchase amount and quantity. The proposal still requires browser approval; never bypass the approval flow for a price update.
 
-Actions execute in array order. To create a project and add its BOM atomically, explicitly set a unique `project_code` on `project.create`, put that action before dependent actions, and reuse the same code in each `bom.upsert` or `purchase.create` payload.
+Actions execute in array order. To create a project and add its BOM atomically, explicitly set a unique `project_code` on `workspace.project.create`, put that action before dependent actions, and reuse the same code in each `workspace.bom.upsert` payload. The BOM will attach to the newly created current V1. Project V2 purchases are kept separate from comprehensive cost and are not automatically linked by a workspace proposal.
 
 `purchase.create` requires a `lines` array. Each line requires `warehouse_code`, `ordered_quantity`, and optionally description, price, URL, and note. `purchase.receive` targets a purchase line ID and supplies a positive `quantity`.
 
 The proposal response includes the operation ID, a ten-minute `approval_url`, normalized preview, and risk level. Approval and rejection endpoints are intentionally absent from the client. Terminal statuses are `rejected`, `expired`, `stale`, `failed`, `succeeded`, and `undone`; `pending_approval` is the only approvable status. Repeating `propose` after a non-success terminal status creates a new approval while retaining the old audit record.
 
-`undo` calls `POST v1/operations/{id}/undo` and creates a second ten-minute approval proposal while the original is within its 30-day undo window. If that undo proposal reaches a non-success terminal state, request it again. Undo of creates archives the project/component/BOM rather than erasing it. Undo of stock changes and purchase receipts appends an opposite inventory movement while preserving the original movement and receipt history.
+`undo` calls `POST v1/operations/{id}/undo` and creates a second ten-minute approval proposal while the original is within its 30-day undo window. If that undo proposal reaches a non-success terminal state, request it again. Undo of creates archives the project/component/BOM/expense/version rather than erasing it. Undo of stock changes and purchase receipts appends an opposite inventory movement while preserving the original movement and receipt history.

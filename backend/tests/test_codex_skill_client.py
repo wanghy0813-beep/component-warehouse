@@ -34,9 +34,9 @@ class MockHandler(BaseHTTPRequestHandler):
         elif self.path.endswith("/components/match"):
             status, payload = 200, {"items": [{"classification": "exact", "auto_selected": True}]}
         elif self.path.endswith("/v1/operations"):
-            status, payload = 200, {"id": "op-1", "status": "pending_approval", "approval_url": "/personal/integrations/codex/operations/op-1"}
+            status, payload = 200, {"id": "op-1", "status": "pending_approval", "approval_url": "/hardware/integrations/codex/operations/op-1"}
         elif self.path.endswith("/undo"):
-            status, payload = 200, {"id": "undo-1", "status": "pending_approval", "approval_url": "/personal/integrations/codex/operations/undo-1"}
+            status, payload = 200, {"id": "undo-1", "status": "pending_approval", "approval_url": "/hardware/integrations/codex/operations/undo-1"}
         else:
             status, payload = 200, {"status": "succeeded"}
         raw = json.dumps(payload).encode()
@@ -91,7 +91,7 @@ def test_client_search_match_propose_status_and_undo(mock_service, tmp_path):
     operation_file.write_text(json.dumps([{"action": "stock.adjust", "target_id": "RES-00000001", "payload": {"delta": -1}}]))
     proposal = client_module.run(parse(*config_flag, "propose", str(operation_file), "--reason", "consume one"))
     assert proposal["approval_required"] is True
-    assert proposal["approval_url"].endswith("/personal/integrations/codex/operations/op-1")
+    assert proposal["approval_url"].endswith("/hardware/integrations/codex/operations/op-1")
     request_body = next(row[3] for row in MockHandler.requests if row[1].endswith("/v1/operations"))
     assert request_body["idempotency_key"].startswith("codex-")
 

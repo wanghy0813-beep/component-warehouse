@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -260,18 +260,25 @@ class CustomLabelExportRequest(BaseModel):
 
 
 class ProjectBase(BaseModel):
-    project_code: str | None = None
+    project_code: str
     name: str
     description: str | None = None
-    status: str = "active"
+    status: str = "planning"
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class ProjectCreate(ProjectBase):
     pass
 
 
-class ProjectUpdate(ProjectBase):
+class ProjectUpdate(BaseModel):
+    project_code: str | None = None
     name: str | None = None
+    description: str | None = None
+    status: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class BomItemCreate(BaseModel):
@@ -307,6 +314,7 @@ class BomSolderPointLossUpdate(BaseModel):
 class ProjectBoardOut(BaseModel):
     id: int
     project_id: int
+    pcb_version_id: int | None = None
     board_index: int = 1
     name: str
     status: str = "active"
@@ -346,6 +354,7 @@ class BomItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    pcb_version_id: int | None = None
     component_id: int
     required_quantity: int
     status: str = "reserved"
@@ -368,6 +377,18 @@ class ProjectOut(ProjectBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    active_pcb_version_id: int | None = None
+    current_version_code: str | None = None
+    archived_at: datetime | None = None
+    start_week: str | None = None
+    end_week: str | None = None
+    actual_days: int | None = None
+    actual_weeks: float | None = None
+    status_label: str | None = None
+    cost_summary: dict = Field(default_factory=dict)
+    versions: list[dict] = Field(default_factory=list)
+    active_fabrication_revision_id: str | None = None
+    public_assembly_view_enabled: bool = False
     ai_bom_analysis: str | None = None
     ai_bom_cache_key: str | None = None
     ai_bom_updated_at: datetime | None = None

@@ -19,7 +19,7 @@
     <section class="guide-card download-card">
       <h2>Windows 同步工具</h2>
       <p>下载 ZIP 后解压，双击 ComponentWarehouse-AD-Sync.exe。第一次使用需要在网页创建同步令牌。</p>
-      <div><el-button type="primary" @click="downloadClient">下载 Windows x64 客户端</el-button><a href="/component-warehouse/downloads/ComponentWarehouse-AD-Sync-latest-win-x64.zip.sha256" target="_blank">查看 SHA-256</a></div>
+      <div><el-button type="primary" @click="downloadClient">下载 Windows x64 客户端</el-button><a href="/hardware/downloads/WXYLAB-AD-Sync-latest-win-x64.zip.sha256" target="_blank">查看 SHA-256</a></div>
     </section>
   </section>
 </template>
@@ -43,7 +43,7 @@ function backToEda() {
   router.push(libraryId ? `/library/${libraryId}/eda` : '/eda')
 }
 function downloadClient() {
-  window.location.href = '/component-warehouse/downloads/ComponentWarehouse-AD-Sync-latest-win-x64.zip'
+  window.location.href = '/hardware/downloads/WXYLAB-AD-Sync-latest-win-x64.zip'
 }
 </script>
 

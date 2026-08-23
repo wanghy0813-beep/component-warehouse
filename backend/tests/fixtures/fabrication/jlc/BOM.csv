@@ -1,0 +1,5 @@
+Designator,Comment,Footprint,MPN,DNP
+R1 R2,10K,0603,R-10K,no
+U1,MCU,QFN-32,MCU-1,yes
+J1,USB,USB-C,USB-C-1,no
+P1,TERMINAL,CONN-TH,TERM-2P,no

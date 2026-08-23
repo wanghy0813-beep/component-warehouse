@@ -1,0 +1,5 @@
+Designator,Center X,Center Y,Layer,Rotation
+R10,15.0mm,12.0mm,TopLayer,0
+R10,16.0mm,12.0mm,TopLayer,0
+U3,28.0mm,20.0mm,BottomLayer,90
+J2,40.0mm,10.0mm,TopLayer,180

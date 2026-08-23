@@ -25,7 +25,19 @@
             <el-button @click="downloadProjectCsv(true)">导出缺料</el-button>
           </div>
         </section>
-        <section class="metrics">
+        <nav class="workspace-nav" aria-label="团队项目工作区">
+          <button v-for="item in workspaceOptions" :key="item.value" type="button" :class="{ active: workspaceTab === item.value }" @click="workspaceTab = item.value">
+            <strong>{{ item.label }}</strong><small>{{ item.hint }}</small>
+          </button>
+        </nav>
+        <AssemblyWorkbench
+          v-show="workspaceTab === 'assembly' || workspaceTab === 'files'"
+          :key="`team-assembly-${current.id}`"
+          :project-id="current.id"
+          :library-id="libraryId"
+          @changed="load"
+        />
+        <section v-show="workspaceTab === 'bom'" class="metrics">
           <article><span>BOM 种类</span><strong>{{ current.bom_items?.length || 0 }}</strong></article>
           <article><span>总数量</span><strong>{{ totalQuantity }}</strong></article>
           <article><span>缺料</span><strong>{{ current.bom_items?.filter(item => !item.enough).length || 0 }}</strong></article>
@@ -33,7 +45,7 @@
           <article><span>待确认行</span><strong>{{ current.bom_match_review || 0 }}</strong></article>
           <article><span>未匹配行</span><strong>{{ current.bom_match_missing || 0 }}</strong></article>
         </section>
-        <section class="panel">
+        <section v-show="workspaceTab === 'bom'" class="panel">
           <el-table :data="current.bom_items" empty-text="暂无 BOM 物料">
             <el-table-column label="物料" min-width="220"><template #default="{ row }"><strong>{{ row.component.model || row.component.name }}</strong><small>{{ row.component.warehouse_code }}</small></template></el-table-column>
             <el-table-column prop="required_quantity" label="需求" width="80" />
@@ -42,14 +54,14 @@
             <el-table-column prop="remark" label="位号/备注" min-width="220" show-overflow-tooltip />
           </el-table>
         </section>
-        <section class="panel">
+        <section v-show="workspaceTab === 'risk'" class="panel">
           <div class="section-head"><strong>当前项目工程风险</strong><span>{{ currentProjectRisks.length }} 项</span></div>
           <div v-if="currentProjectRisks.length" class="risk-chips">
             <span v-for="risk in currentProjectRisks.slice(0, 12)" :key="risk.id" :class="risk.severity">{{ risk.title }} · {{ risk.component_name || risk.project_name || '项目' }}</span>
           </div>
           <el-empty v-else description="当前 BOM 未发现封装、资料、料号或匹配风险" :image-size="52" />
         </section>
-        <section class="panel">
+        <section v-show="workspaceTab === 'files'" class="panel">
           <div class="section-head"><strong>项目文件与附件</strong><span>{{ projectAssets.length }} 个</span></div>
           <div v-if="projectAssets.length" class="asset-chips">
             <button v-for="asset in projectAssets" :key="asset.id" type="button" @click="downloadProjectAsset(asset)">
@@ -125,6 +137,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from '../../shared/elementApi'
 import BomFieldMappingDialog from '../../shared/components/BomFieldMappingDialog.vue'
+import AssemblyWorkbench from '../../shared/components/AssemblyWorkbench.vue'
 import {
   addTeamBomItem,
   commitTeamBom,
@@ -146,6 +159,13 @@ const route = useRoute()
 const libraryId = computed(() => String(route.params.libraryId || ''))
 const projects = ref([])
 const current = ref(null)
+const workspaceTab = ref('assembly')
+const workspaceOptions = [
+  { label: '装配工作台', value: 'assembly', hint: '板图与焊接' },
+  { label: 'BOM / 匹配', value: 'bom', hint: '库存与位号' },
+  { label: '采购与风险', value: 'risk', hint: '缺料和风险' },
+  { label: '文件版本', value: 'files', hint: '制造包与附件' }
+]
 const components = ref([])
 const importing = ref(false)
 const committing = ref(false)
@@ -303,7 +323,8 @@ function formatBytes(value) {
 
 <style scoped>
 .team-projects { display: grid; gap: 16px; }.page-head, .project-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }.page-head h1, .project-head h2 { margin: 5px 0; }.page-head p, .project-head p { margin: 0; color: #667085; }.eyebrow { color: #f97316; font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+.workspace-nav { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; padding:7px; border:1px solid #e4eaf2; border-radius:var(--cw-radius-card); background:#fff; position:sticky; top:68px; z-index:20; }.workspace-nav button{border:0;background:transparent;border-radius:9px;padding:8px;display:flex;justify-content:center;align-items:baseline;gap:7px;color:#475569;cursor:pointer}.workspace-nav button.active{background:#ea580c;color:#fff;box-shadow:0 5px 14px #ea580c33}.workspace-nav small{color:inherit;opacity:.72}
 .layout { display: grid; grid-template-columns: 240px 1fr; gap: 14px; }.panel { padding: 16px; border: 1px solid #e4eaf2; border-radius: var(--cw-radius-card); background: #fff; }.project-list { display: grid; align-content: start; gap: 8px; }.project-list button { display: grid; gap: 4px; padding: 12px; border: 1px solid #e4eaf2; border-radius: var(--cw-radius-control); background: #fff; text-align: left; cursor: pointer; }.project-list button.active { border-color: #fb923c; background: #fff7ed; }.project-list span, small { color: #667085; }.project-main { display: grid; gap: 12px; }.actions { display: flex; gap: 8px; }.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }.metrics article { display: grid; gap: 4px; padding: 13px; border: 1px solid #e4eaf2; border-radius: var(--cw-radius-control); background: #fff; }.metrics span { color: #667085; }.metrics strong { font-size: 22px; }
 .section-head { display: flex; justify-content: space-between; gap: 12px; color: #667085; }.asset-chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 9px; margin-top: 12px; }.asset-chips button { display: grid; gap: 4px; padding: 11px; border: 1px solid #e4eaf2; border-radius: var(--cw-radius-control); background: #f8fafc; text-align: left; cursor: pointer; }.asset-chips strong { overflow-wrap: anywhere; }.asset-chips small { color: #667085; }.risk-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }.risk-chips span { padding: 6px 9px; border-radius: 999px; background: #fffbeb; color: #92400e; font-size: 12px; }.risk-chips span.danger { background: #fff1f2; color: #b42318; }
-@media (max-width: 850px) { .layout { grid-template-columns: 1fr; }.project-list { grid-template-columns: repeat(2, 1fr); }.metrics { grid-template-columns: repeat(2, 1fr); }.page-head, .project-head { display: grid; } }
+@media (max-width: 850px) { .layout { grid-template-columns: 1fr; }.project-list { grid-template-columns: repeat(2, 1fr); }.metrics { grid-template-columns: repeat(2, 1fr); }.page-head, .project-head { display: grid; }.workspace-nav{grid-template-columns:repeat(2,minmax(0,1fr));position:static}.workspace-nav button{flex-direction:column;align-items:center;gap:1px}.actions{flex-wrap:wrap} }
 </style>

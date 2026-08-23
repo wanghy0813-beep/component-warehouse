@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -172,6 +172,289 @@ class ComponentIdentityRegistry(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
 
 
+class PersonalProjectV2(Base):
+    """Clean personal-project aggregate introduced in v1.3.
+
+    The V2 aggregate intentionally does not share identifiers or relationships
+    with the legacy ``projects`` table. Team projects continue to use the
+    legacy model through their own API surface.
+    """
+
+    __tablename__ = "personal_projects_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    project_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="planning", nullable=False, index=True)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    end_date: Mapped[date | None] = mapped_column(Date, index=True)
+    current_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), index=True)
+
+
+class PersonalProjectVersionV2(Base):
+    __tablename__ = "personal_project_versions_v2"
+    __table_args__ = (
+        UniqueConstraint("project_id", "sequence_number", name="uq_personal_project_v2_version_sequence"),
+        UniqueConstraint("project_id", "version_code", name="uq_personal_project_v2_version_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    version_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="designing", nullable=False, index=True)
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    active_fabrication_revision_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectStatusEventV2(Base):
+    __tablename__ = "personal_project_status_events_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    from_status: Mapped[str | None] = mapped_column(String(40), index=True)
+    to_status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="web", nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PersonalProjectBomItemV2(Base):
+    __tablename__ = "personal_project_bom_items_v2"
+    __table_args__ = (
+        UniqueConstraint("version_id", "component_id", name="uq_personal_project_v2_bom_component"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("components.id"), nullable=False, index=True)
+    quantity_per_board: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    designators: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectBoardV2(Base):
+    __tablename__ = "personal_project_boards_v2"
+    __table_args__ = (
+        UniqueConstraint("version_id", "board_number", name="uq_personal_project_v2_board_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    board_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="assembly", nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectSolderPointV2(Base):
+    __tablename__ = "personal_project_solder_points_v2"
+    __table_args__ = (
+        UniqueConstraint("board_id", "bom_item_id", "designator", name="uq_personal_project_v2_solder_point"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    board_id: Mapped[str] = mapped_column(ForeignKey("personal_project_boards_v2.id"), nullable=False, index=True)
+    bom_item_id: Mapped[str] = mapped_column(ForeignKey("personal_project_bom_items_v2.id"), nullable=False, index=True)
+    designator: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    board_side: Mapped[str | None] = mapped_column(String(12), index=True)
+    assembly_placement_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    active_for_assembly: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
+    state_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    soldered_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    lost_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectCostEventV2(Base):
+    __tablename__ = "personal_project_cost_events_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    board_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_boards_v2.id"), index=True)
+    bom_item_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_bom_items_v2.id"), index=True)
+    solder_point_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_solder_points_v2.id"), index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("components.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    unpriced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    reversal_of_event_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PersonalProjectExpenseV2(Base):
+    __tablename__ = "personal_project_expenses_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_versions_v2.id"), index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    vendor: Mapped[str | None] = mapped_column(String(200), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectRiskV2(Base):
+    __tablename__ = "personal_project_risks_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="medium", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectFileV2(Base):
+    __tablename__ = "personal_project_files_v2"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_versions_v2.id"), index=True)
+    original_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(600), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PersonalProjectFabricationRevisionV2(Base):
+    """A parsed manufacturing-package revision scoped to one V2 PCB version."""
+
+    __tablename__ = "personal_project_fabrication_revisions_v2"
+    __table_args__ = (
+        UniqueConstraint("version_id", "revision_number", name="uq_personal_project_v2_fabrication_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    source_asset_id: Mapped[str] = mapped_column(ForeignKey("eda_assets.id"), nullable=False, index=True)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
+    detected_profile: Mapped[str | None] = mapped_column(String(40), index=True)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    mapping_json: Mapped[str | None] = mapped_column(Text)
+    summary_json: Mapped[str | None] = mapped_column(Text)
+    warning_json: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    bounds_json: Mapped[str | None] = mapped_column(Text)
+    calibration_json: Mapped[str | None] = mapped_column(Text)
+    ai_assisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectFabricationLayerV2(Base):
+    __tablename__ = "personal_project_fabrication_layers_v2"
+    __table_args__ = (
+        UniqueConstraint("revision_id", "source_name", name="uq_personal_project_v2_fabrication_layer"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("personal_project_fabrication_revisions_v2.id"), nullable=False, index=True)
+    source_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(12), default="both", nullable=False, index=True)
+    svg_asset_id: Mapped[str | None] = mapped_column(ForeignKey("eda_assets.id"), index=True)
+    svg_markup: Mapped[str | None] = mapped_column(Text)
+    bounds_json: Mapped[str | None] = mapped_column(Text)
+    byte_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class PersonalProjectAssemblyPlacementV2(Base):
+    __tablename__ = "personal_project_assembly_placements_v2"
+    __table_args__ = (
+        UniqueConstraint("revision_id", "board_side", "designator_key", name="uq_personal_project_v2_placement"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("personal_project_fabrication_revisions_v2.id"), nullable=False, index=True)
+    bom_item_id: Mapped[str | None] = mapped_column(ForeignKey("personal_project_bom_items_v2.id"), index=True)
+    designator: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    designator_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    board_side: Mapped[str] = mapped_column(String(12), default="top", nullable=False, index=True)
+    x_mm: Mapped[float | None] = mapped_column(Float)
+    y_mm: Mapped[float | None] = mapped_column(Float)
+    rotation_deg: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    source_x_mm: Mapped[float | None] = mapped_column(Float)
+    source_y_mm: Mapped[float | None] = mapped_column(Float)
+    source_rotation_deg: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    source_board_side: Mapped[str] = mapped_column(String(12), default="top", nullable=False)
+    value: Mapped[str | None] = mapped_column(String(200))
+    footprint: Mapped[str | None] = mapped_column(String(200))
+    model: Mapped[str | None] = mapped_column(String(300))
+    dnp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    positioned: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    match_status: Mapped[str] = mapped_column(String(32), default="unmatched", nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="cpl", nullable=False, index=True)
+    confidence: Mapped[str] = mapped_column(String(20), default="deterministic", nullable=False, index=True)
+    manually_adjusted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PersonalProjectAssemblyOperationV2(Base):
+    __tablename__ = "personal_project_assembly_operations_v2"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_personal_project_v2_assembly_operation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("personal_projects_v2.id"), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("personal_project_versions_v2.id"), nullable=False, index=True)
+    board_id: Mapped[str] = mapped_column(ForeignKey("personal_project_boards_v2.id"), nullable=False, index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    point_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    undone_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -183,6 +466,10 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), default="active")
+    start_date: Mapped[date | None] = mapped_column(Date, index=True)
+    end_date: Mapped[date | None] = mapped_column(Date, index=True)
+    active_pcb_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     ai_bom_analysis: Mapped[str | None] = mapped_column(Text)
     ai_bom_cache_key: Mapped[str | None] = mapped_column(String(80), index=True)
     ai_bom_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -193,6 +480,8 @@ class Project(Base):
     bom_match_missing_items: Mapped[str | None] = mapped_column(Text)
     bom_match_rows: Mapped[str | None] = mapped_column(Text)
     bom_match_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    active_fabrication_revision_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    public_assembly_view_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -205,6 +494,104 @@ class Project(Base):
         cascade="all, delete-orphan",
         order_by="ProjectBoard.board_index",
     )
+    fabrication_revisions: Mapped[list["ProjectFabricationRevision"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="ProjectFabricationRevision.revision_number",
+    )
+    pcb_versions: Mapped[list["ProjectPcbVersion"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="ProjectPcbVersion.sequence_number",
+    )
+
+
+class ProjectPcbVersion(Base):
+    __tablename__ = "project_pcb_versions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version_code", name="uq_project_pcb_version_code"),
+        UniqueConstraint("project_id", "sequence_number", name="uq_project_pcb_version_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    version_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="designing", index=True)
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    active_fabrication_revision_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    project: Mapped[Project] = relationship(back_populates="pcb_versions", foreign_keys=[project_id])
+
+
+class ProjectCodeAlias(Base):
+    __tablename__ = "project_code_aliases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    old_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class ProjectStatusEvent(Base):
+    __tablename__ = "project_status_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    from_status: Mapped[str | None] = mapped_column(String(40), index=True)
+    to_status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(32), default="web", index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class ProjectExpense(Base):
+    __tablename__ = "project_expenses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    vendor: Mapped[str | None] = mapped_column(String(200), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    attachment_asset_id: Mapped[str | None] = mapped_column(ForeignKey("eda_assets.id"), index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ProjectMaterialCostEvent(Base):
+    __tablename__ = "project_material_cost_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
+    board_id: Mapped[int | None] = mapped_column(ForeignKey("project_boards.id"), index=True)
+    bom_item_id: Mapped[int | None] = mapped_column(ForeignKey("project_bom_items.id"), index=True)
+    solder_point_id: Mapped[int | None] = mapped_column(ForeignKey("project_bom_solder_points.id"), index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("components.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    unpriced: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    source_operation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    reversal_of_event_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
 class ProjectBoard(Base):
@@ -212,6 +599,7 @@ class ProjectBoard(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
     board_index: Mapped[int] = mapped_column(Integer, default=1, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="active", index=True)
@@ -229,6 +617,7 @@ class ProjectBomItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
     component_id: Mapped[int] = mapped_column(ForeignKey("components.id"), index=True)
     required_quantity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(40), default="reserved", index=True)
@@ -250,6 +639,11 @@ class ProjectBomSolderPoint(Base):
     bom_item_id: Mapped[int] = mapped_column(ForeignKey("project_bom_items.id"), index=True)
     board_id: Mapped[int | None] = mapped_column(ForeignKey("project_boards.id"), index=True)
     designator: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    designator_key: Mapped[str | None] = mapped_column(String(80), index=True)
+    board_side: Mapped[str | None] = mapped_column(String(12), index=True)
+    assembly_placement_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    active_for_assembly: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    state_version: Mapped[int] = mapped_column(Integer, default=1)
     bom_value: Mapped[str | None] = mapped_column(String(200))
     bom_model: Mapped[str | None] = mapped_column(String(300))
     bom_footprint: Mapped[str | None] = mapped_column(String(200))
@@ -268,11 +662,145 @@ class ProjectBomSolderPoint(Base):
     board: Mapped[ProjectBoard | None] = relationship(back_populates="solder_points")
 
 
+class ProjectFabricationRevision(Base):
+    __tablename__ = "project_fabrication_revisions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "revision_number", name="uq_project_fabrication_revision_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
+    source_asset_id: Mapped[str] = mapped_column(ForeignKey("eda_assets.id"), index=True)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    detected_profile: Mapped[str | None] = mapped_column(String(40), index=True)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    mapping_json: Mapped[str | None] = mapped_column(Text)
+    summary_json: Mapped[str | None] = mapped_column(Text)
+    warning_json: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    bounds_json: Mapped[str | None] = mapped_column(Text)
+    calibration_json: Mapped[str | None] = mapped_column(Text)
+    ai_assisted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    project: Mapped[Project] = relationship(back_populates="fabrication_revisions")
+    layers: Mapped[list["ProjectFabricationLayer"]] = relationship(
+        back_populates="revision", cascade="all, delete-orphan"
+    )
+    placements: Mapped[list["ProjectAssemblyPlacement"]] = relationship(
+        back_populates="revision", cascade="all, delete-orphan"
+    )
+
+
+class ProjectFabricationLayer(Base):
+    __tablename__ = "project_fabrication_layers"
+    __table_args__ = (
+        UniqueConstraint("revision_id", "source_name", name="uq_project_fabrication_layer_source"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("project_fabrication_revisions.id"), index=True)
+    source_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(12), default="both", index=True)
+    svg_asset_id: Mapped[str | None] = mapped_column(ForeignKey("eda_assets.id"), index=True)
+    svg_markup: Mapped[str | None] = mapped_column(Text)
+    bounds_json: Mapped[str | None] = mapped_column(Text)
+    byte_size: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+    revision: Mapped[ProjectFabricationRevision] = relationship(back_populates="layers")
+
+
+class ProjectAssemblyPlacement(Base):
+    __tablename__ = "project_assembly_placements"
+    __table_args__ = (
+        UniqueConstraint("revision_id", "board_side", "designator_key", name="uq_project_placement_refdes"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("project_fabrication_revisions.id"), index=True)
+    bom_item_id: Mapped[int | None] = mapped_column(ForeignKey("project_bom_items.id"), index=True)
+    designator: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    designator_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    board_side: Mapped[str] = mapped_column(String(12), default="top", index=True)
+    x_mm: Mapped[float | None] = mapped_column(Float)
+    y_mm: Mapped[float | None] = mapped_column(Float)
+    rotation_deg: Mapped[float] = mapped_column(Float, default=0)
+    source_x_mm: Mapped[float | None] = mapped_column(Float)
+    source_y_mm: Mapped[float | None] = mapped_column(Float)
+    source_rotation_deg: Mapped[float] = mapped_column(Float, default=0)
+    source_board_side: Mapped[str] = mapped_column(String(12), default="top")
+    value: Mapped[str | None] = mapped_column(String(200))
+    footprint: Mapped[str | None] = mapped_column(String(200))
+    model: Mapped[str | None] = mapped_column(String(300))
+    dnp: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    positioned: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    match_status: Mapped[str] = mapped_column(String(32), default="unmatched", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="cpl", index=True)
+    confidence: Mapped[str] = mapped_column(String(20), default="deterministic", index=True)
+    manually_adjusted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    revision: Mapped[ProjectFabricationRevision] = relationship(back_populates="placements")
+
+
+class ProjectAssemblyOperation(Base):
+    __tablename__ = "project_assembly_operations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_project_assembly_operation_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    board_id: Mapped[int] = mapped_column(ForeignKey("project_boards.id"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    point_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
+    inventory_source_user_ids_json: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    undo_of_operation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    undone_by_operation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    undone_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class ProjectAssemblyLossEvent(Base):
+    __tablename__ = "project_assembly_loss_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    solder_point_id: Mapped[int] = mapped_column(ForeignKey("project_bom_solder_points.id"), index=True)
+    operation_id: Mapped[str | None] = mapped_column(ForeignKey("project_assembly_operations.id"), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    stock_applied: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    inventory_delta: Mapped[int] = mapped_column(Integer, default=-1)
+    prior_soldered: Mapped[bool] = mapped_column(Boolean, default=False)
+    prior_stock_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    reversed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
 class ProjectBomImportBatch(Base):
     __tablename__ = "project_bom_import_batches"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
     source_file: Mapped[str | None] = mapped_column(String(300))
     source_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     field_mapping_json: Mapped[str | None] = mapped_column(Text)
@@ -293,6 +821,7 @@ class ProjectBomImportRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     batch_id: Mapped[int] = mapped_column(ForeignKey("project_bom_import_batches.id"), index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    pcb_version_id: Mapped[int | None] = mapped_column(ForeignKey("project_pcb_versions.id"), index=True)
     source_row: Mapped[int | None] = mapped_column(Integer)
     designator: Mapped[str | None] = mapped_column(String(300))
     required_quantity: Mapped[int] = mapped_column(Integer, default=1)
@@ -978,3 +1507,135 @@ class EdaSyncToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class SyncDevice(Base):
+    __tablename__ = "sync_devices"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "client_id", "installation_id_hash", name="uq_sync_device_installation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    client_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    installation_id_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    installation_hint: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    platform: Mapped[str] = mapped_column(String(80), default="windows-x64", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="active", nullable=False, index=True)
+    last_cursor: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_clock_offset_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SyncEntity(Base):
+    __tablename__ = "sync_entities"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "entity_type", "local_id", name="uq_sync_entity_local_mapping"),
+    )
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "entity_type", "local_id", name="uq_sync_entity_local"),
+    )
+
+    entity_uid: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    local_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    field_times_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    tombstone: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), index=True)
+
+
+class SyncTransaction(Base):
+    __tablename__ = "sync_transactions"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "event_id", name="uq_sync_transaction_event"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    device_id: Mapped[str | None] = mapped_column(ForeignKey("sync_devices.id"), index=True)
+    base_cursor: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    client_created_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    server_received_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="accepted", nullable=False, index=True)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class SyncChange(Base):
+    __tablename__ = "sync_changes"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "event_id", name="uq_sync_change_event"),
+    )
+
+    cursor: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    transaction_id: Mapped[str] = mapped_column(ForeignKey("sync_transactions.id"), nullable=False, index=True)
+    event_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    device_id: Mapped[str | None] = mapped_column(ForeignKey("sync_devices.id"), index=True)
+    entity_uid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(24), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    fields_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    refs_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    field_times_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    attachments_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class SyncConflict(Base):
+    __tablename__ = "sync_conflicts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    device_id: Mapped[str | None] = mapped_column(ForeignKey("sync_devices.id"), index=True)
+    transaction_id: Mapped[str] = mapped_column(ForeignKey("sync_transactions.id"), nullable=False, index=True)
+    entity_uid: Mapped[str | None] = mapped_column(String(36), index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(100), index=True)
+    reason: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    conflict_fields_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    server_version_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    client_version_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    dependencies_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="open", nullable=False, index=True)
+    resolution: Mapped[str | None] = mapped_column(String(24), index=True)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class SyncBlob(Base):
+    __tablename__ = "sync_blobs"
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(160))
+    storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    reference_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_referenced_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class SyncBlobUpload(Base):
+    __tablename__ = "sync_blob_uploads"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("sync_devices.id"), nullable=False, index=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=4 * 1024 * 1024, nullable=False)
+    received_chunks_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    temp_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="uploading", nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

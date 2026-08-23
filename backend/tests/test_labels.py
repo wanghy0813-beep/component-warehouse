@@ -69,7 +69,7 @@ def test_label_sheet_uses_safe_category_names_for_supported_shapes():
     assert 'style="background:#DBEAFE;border-color:#DBEAFE;color:#111827;"' in html
     assert 'style="background:#DCFCE7;border-color:#DCFCE7;color:#111827;"' in html
     assert "元器件" in html
-    assert "/component-warehouse/personal/fonts/dingtalk/L1_" in html
+    assert "/hardware/fonts/dingtalk/L1_" in html
     assert "&lt;app.models" not in html
     assert "<app.models" not in html
 
@@ -234,8 +234,8 @@ def test_custom_label_sheet_uses_shared_logo_time_border_and_sanitizes_svg():
     assert 'font-family:"DingTalk JinBuTi", "钉钉进步体", "Microsoft YaHei", sans-serif' in no_logo
     assert "font-size:2.381mm" in no_logo
     assert "font-weight:800" in no_logo
-    assert "/component-warehouse/personal/fonts/misans/MiSans." in no_logo
-    assert "/component-warehouse/personal/fonts/dingtalk/L1_" in no_logo
+    assert "/hardware/fonts/misans/MiSans." in no_logo
+    assert "/hardware/fonts/dingtalk/L1_" in no_logo
     assert no_logo.index("@font-face") < no_logo.index("@page")
     assert "data:font/woff2;base64" not in no_logo
     assert "text-align:right" in no_logo
@@ -444,7 +444,7 @@ def test_component_label_export_appends_custom_labels_after_components(tmp_path)
     assert "standard-category-title-band" in html
     assert "standard-category-meta" not in html
     assert 'font-family: "DingTalk JinBuTi", "钉钉进步体", "Microsoft YaHei", sans-serif; font-synthesis: none;' in html
-    assert "/component-warehouse/personal/fonts/dingtalk/L1_" in html
+    assert "/hardware/fonts/dingtalk/L1_" in html
     assert html.index("@font-face") < html.index("@page")
     assert 'style="background:#FEE2E2;border-color:#FEE2E2;color:#111827;"' in html
 

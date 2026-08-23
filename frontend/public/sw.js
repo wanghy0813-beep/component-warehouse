@@ -1,6 +1,6 @@
-const CACHE_NAME = 'cw-personal-v0.7.6'
-const APP_ROOT = '/component-warehouse'
-const PERSONAL_ROOT = `${APP_ROOT}/personal/`
+const CACHE_NAME = 'wxy-hardware-personal-v1'
+const SERVICE_ROOT = '/hardware'
+const PERSONAL_ROOT = '/hardware/'
 const APP_SHELL = [PERSONAL_ROOT, `${PERSONAL_ROOT}manifest.webmanifest`]
 
 self.addEventListener('install', (event) => {
@@ -18,7 +18,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
-  if (url.pathname.startsWith(`${APP_ROOT}/api/`)) return
+  if (url.pathname.startsWith(`${SERVICE_ROOT}/api/`)) return
   const isHashedAsset = url.pathname.includes('/assets/')
   if (isHashedAsset) {
     event.respondWith(

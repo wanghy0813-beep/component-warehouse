@@ -1,6 +1,6 @@
 const CACHE_NAME = 'cw-team-v0.7.6'
-const APP_ROOT = '/component-warehouse'
-const TEAM_ROOT = `${APP_ROOT}/team/`
+const SERVICE_ROOT = '/component-warehouse'
+const TEAM_ROOT = `${SERVICE_ROOT}/team/`
 const APP_SHELL = [TEAM_ROOT, `${TEAM_ROOT}team-manifest.webmanifest`]
 
 self.addEventListener('install', (event) => {
@@ -18,7 +18,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
-  if (url.pathname.startsWith(`${APP_ROOT}/api/`)) return
+  if (url.pathname.startsWith(`${SERVICE_ROOT}/api/`)) return
   const isHashedAsset = url.pathname.includes('/assets/')
   if (isHashedAsset) {
     event.respondWith(

@@ -1,4 +1,6 @@
-# Component Warehouse · Team
+# WXY LAB Hardware Workspace · 团队版
+
+> 团队版前端当前暂停维护。既有团队数据和 API 保留，不执行清理；后续恢复时可继续使用。
 
 Team mode is used to share component libraries, PCB records, projects, purchases, risks, members, and operation logs.
 

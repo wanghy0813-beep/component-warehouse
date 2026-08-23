@@ -1,0 +1,4 @@
+Designators,Description,Footprint,Manufacturer Part Number,Fitted
+R10,1K,RESC0603,R-1K,yes
+U3,ADC,QFN24,ADC-24,yes
+J2,HEADER,HDR2X3,HDR-6,no

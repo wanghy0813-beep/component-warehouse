@@ -1,0 +1,7 @@
+### Module positions - created by KiCad
+## Unit = inches, Angle = degrees.
+# Ref Val Package PosX PosY Rot Side
+C1 100n C_0603 0.500in 0.300in 0 top
+C2 100n C_0603 1.000in 0.300in 180 bottom
+U1 Sensor QFN-16 0.750in 0.750in 45 top
+## End

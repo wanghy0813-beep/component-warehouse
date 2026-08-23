@@ -15,7 +15,7 @@ const detailText = ref('请稍候，系统正在校验安全登录状态。')
 onMounted(async () => {
   try {
     const result = await finishSsoLogin(window.location.search)
-    const target = result.returnTo || new URL('/component-warehouse/personal/', window.location.origin).href
+    const target = result.returnTo || new URL('/hardware/', window.location.origin).href
     window.location.replace(target)
   } catch (error) {
     statusText.value = '统一账号登录失败'

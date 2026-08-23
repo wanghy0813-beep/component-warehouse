@@ -25,7 +25,7 @@ from .services.inventory import component_available_quantity, equipment_occupied
 
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile"])
-APP_ROOT = "/component-warehouse"
+APP_ROOT = "/hardware"
 
 
 class ScanResolveRequest(BaseModel):
@@ -48,8 +48,8 @@ def mobile_capabilities():
             "formats": ["qr_code"],
             "batch_max": 50,
             "supports_multiple_results": True,
-            "personal_url": f"{APP_ROOT}/personal/scan/{{componentId}}",
-            "team_url": f"{APP_ROOT}/team/scan/{{libraryId}}/{{itemId}}",
+            "personal_url": f"{APP_ROOT}/scan/{{componentId}}",
+            "team_url": "/component-warehouse/team/scan/{libraryId}/{itemId}",
         },
         "nfc": {
             "supported_payloads": [
@@ -118,6 +118,10 @@ def scan_parts(value: str) -> tuple[str, list[str]]:
     if "component-warehouse" in segments:
         root_index = segments.index("component-warehouse")
         segments = segments[root_index + 1:]
+    if segments and segments[0] == "hardware":
+        segments = segments[1:]
+    if len(segments) >= 2 and segments[0] == "scan":
+        return "personal", [segments[1]]
     if len(segments) >= 3 and segments[0] == "personal" and segments[1] == "scan":
         return "personal", [segments[2]]
     if len(segments) >= 4 and segments[0] == "team" and segments[1] == "scan":
@@ -136,7 +140,7 @@ def resolve_scan(payload: ScanResolveRequest, db: Session = Depends(get_db)):
             "library_id": parts[0],
             "component_id": parts[1],
             "requires_auth": True,
-            "url": f"{APP_ROOT}/team/scan/{parts[0]}/{parts[1]}",
+            "url": f"/component-warehouse/team/scan/{parts[0]}/{parts[1]}",
         }
     identifier = parts[0].strip()
     query = db.query(Component).filter(

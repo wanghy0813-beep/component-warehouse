@@ -9,6 +9,7 @@ BACKEND_PORT="${BACKEND_PORT:-18080}"
 NGINX_AVAILABLE="/etc/nginx/sites-available/component-warehouse-direct-8080"
 NGINX_ENABLED="/etc/nginx/sites-enabled/component-warehouse-direct-8080"
 PUBLISH_ROOT="/var/www/component-warehouse"
+HARDWARE_ROOT="/var/www/hardware"
 
 log() {
   printf '[switch-direct] %s\n' "$*"
@@ -38,6 +39,9 @@ ensure_frontend_permissions() {
   if [[ -d "${PUBLISH_ROOT}" ]]; then
     run sudo -n chmod -R a+rX "${PUBLISH_ROOT}"
   fi
+  if [[ -d "${HARDWARE_ROOT}" ]]; then
+    run sudo -n chmod -R a+rX "${HARDWARE_ROOT}"
+  fi
 }
 
 main() {
@@ -51,14 +55,14 @@ main() {
   run sudo -n ln -sfn "${NGINX_AVAILABLE}" "${NGINX_ENABLED}"
   run sudo -n nginx -t
   run sudo -n systemctl reload nginx
-  wait_for_url "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health" "direct public port"
-  run curl -fsS "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health"
-  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/personal/" >/dev/null
+  wait_for_url "http://127.0.0.1:${PUBLIC_PROXY_PORT}/hardware/health" "direct public port"
+  run curl -fsS "http://127.0.0.1:${PUBLIC_PROXY_PORT}/hardware/health"
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/hardware/" >/dev/null
+  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/hardware/sw.js" >/dev/null
   run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/team/" >/dev/null
-  run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/personal/sw.js" >/dev/null
   run curl -fsSI "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/team/team-sw.js" >/dev/null
   run curl -kfsS https://wxylab.ltd/component-warehouse/health
-  log "Direct-host runtime now serves the public Component Warehouse path"
+  log "Direct-host runtime now serves the public WXY LAB Hardware path"
 }
 
 main "$@"

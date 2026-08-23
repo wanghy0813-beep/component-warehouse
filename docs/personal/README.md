@@ -1,8 +1,8 @@
-# Component Warehouse · Personal
+# WXY LAB Hardware · 个人硬件研发工作台
 
-Personal mode is used to manage one user's component inventory, stock batches, project BOMs, labels, imports, purchases, risks, and operation logs.
+The personal workspace manages one user's complete hardware-development chain: component inventory, PCB versions, project BOMs, assembly, costs, files, risks, labels, purchases, and audit logs.
 
-Path: `/component-warehouse/personal/`
+Path: `/hardware/`
 
 ## Accounts
 
@@ -16,6 +16,6 @@ Use the component page to add parts, import orders, scan QR codes, export invent
 
 Projects can import BOM files, review exact matches, show shortages, track soldering progress, and generate purchase plans.
 
-## Teams
+## Team workspace
 
-When a personal component is added to a team library, the team view reads the source member's live inventory while the member remains active.
+The team UI is temporarily paused. Existing team data and APIs remain intact for a future restart.

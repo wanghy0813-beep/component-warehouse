@@ -1,0 +1,4 @@
+Reference,Value,Footprint,MPN,Populate
+C1 C2,100n,C_0603,C-100N,yes
+U1,Sensor,QFN-16,SENSOR-1,yes
+TP1,TESTPOINT,TP_THT,TP-1,yes

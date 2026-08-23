@@ -1,15 +1,15 @@
 {
-  "id": "/component-warehouse/personal/",
-  "name": "WXY LAB 器件管理",
-  "short_name": "器件管理",
-  "description": "WXY LAB 器件管理个人版",
-  "start_url": "/component-warehouse/personal/",
-  "scope": "/",
+  "id": "/hardware/",
+  "name": "WXY LAB Hardware",
+  "short_name": "WXY Hardware",
+  "description": "元器件、PCB、装配、成本与项目全流程个人研发工作台",
+  "start_url": "/hardware/",
+  "scope": "/hardware/",
   "display": "standalone",
   "lang": "zh-CN",
   "categories": ["productivity", "utilities"],
-  "background_color": "#f8fbff",
-  "theme_color": "#0e74ff",
+  "background_color": "#edf2f3",
+  "theme_color": "#0f5863",
   "icons": [
     {
       "src": "icons/cw-app-icon-192.png",

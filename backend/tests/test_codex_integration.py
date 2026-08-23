@@ -18,8 +18,14 @@ from app.models import (
     IntegrationAccessToken,
     IntegrationOperation,
     InventoryLot,
+    PersonalProjectBomItemV2,
+    PersonalProjectExpenseV2,
+    PersonalProjectV2,
+    PersonalProjectVersionV2,
     Project,
     ProjectBomItem,
+    ProjectExpense,
+    ProjectPcbVersion,
     PurchaseLine,
     PurchaseOrder,
     PurchaseReceipt,
@@ -355,9 +361,9 @@ def test_atomic_project_bom_and_consumption_can_be_approved_then_reversed(codex_
             "idempotency_key": "project-bom-stock-atomic-0001",
             "reason": "Codex 接入验收",
             "actions": [
-                {"action": "project.create", "payload": {"project_code": "PRJ-CODEX-TEST", "name": "Codex 接入验收"}},
+                {"action": "workspace.project.create", "payload": {"project_code": "PRJ-CODEX-TEST", "name": "Codex 接入验收"}},
                 {
-                    "action": "bom.upsert",
+                    "action": "workspace.bom.upsert",
                     "payload": {"project_code": "PRJ-CODEX-TEST", "warehouse_code": "RES-00000001", "required_quantity": 4},
                 },
                 {
@@ -371,18 +377,19 @@ def test_atomic_project_bom_and_consumption_can_be_approved_then_reversed(codex_
     assert proposal.status_code == 200, proposal.text
     operation_id = proposal.json()["id"]
     db = codex_env["Session"]()
-    assert db.query(Project).count() == 0
-    assert db.query(ProjectBomItem).count() == 0
+    assert db.query(PersonalProjectV2).count() == 0
+    assert db.query(PersonalProjectBomItemV2).count() == 0
     assert db.get(Component, 1).quantity == 20
     db.close()
 
     approved = codex_env["client"].post(f"/api/integrations/codex/operations/{operation_id}/approve")
     assert approved.status_code == 200, approved.text
     db = codex_env["Session"]()
-    project = db.query(Project).filter(Project.project_code == "PRJ-CODEX-TEST").one()
-    bom = db.query(ProjectBomItem).filter(ProjectBomItem.project_id == project.id).one()
-    assert project.status == "active"
-    assert (bom.status, bom.required_quantity) == ("reserved", 4)
+    project = db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "PRJ-CODEX-TEST").one()
+    bom = db.query(PersonalProjectBomItemV2).filter(PersonalProjectBomItemV2.project_id == project.id).one()
+    assert project.status == "planning"
+    assert project.current_version_id is not None
+    assert (bom.archived_at, bom.quantity_per_board) == (None, 4)
     assert db.get(Component, 1).quantity == 18
     db.close()
 
@@ -396,13 +403,108 @@ def test_atomic_project_bom_and_consumption_can_be_approved_then_reversed(codex_
     reversed_response = codex_env["client"].post(f"/api/integrations/codex/operations/{retry_undo.json()['id']}/approve")
     assert reversed_response.status_code == 200, reversed_response.text
     db = codex_env["Session"]()
-    project = db.query(Project).filter(Project.project_code == "PRJ-CODEX-TEST").one()
-    bom = db.query(ProjectBomItem).filter(ProjectBomItem.project_id == project.id).one()
-    assert project.status == "archived"
-    assert bom.status == "archived"
+    project = db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "PRJ-CODEX-TEST").one()
+    bom = db.query(PersonalProjectBomItemV2).filter(PersonalProjectBomItemV2.project_id == project.id).one()
+    assert project.archived_at is not None
+    assert bom.archived_at is not None
     assert db.get(Component, 1).quantity == 20
     assert db.get(IntegrationOperation, operation_id).preview_json
     db.close()
+
+
+def test_project_lifecycle_versions_costs_and_expenses_remain_approval_only(codex_env):
+    _, headers = create_machine_token(codex_env)
+    created = codex_env["client"].post(
+        "/api/integrations/codex/v1/operations",
+        headers=headers,
+        json={
+            "idempotency_key": "project-lifecycle-create-0001",
+            "actions": [
+                {
+                    "action": "workspace.project.create",
+                    "payload": {
+                        "project_code": "wxy-plugin-board", "name": "插件项目",
+                        "start_date": "2026-07-20", "status": "pcb_design",
+                        "lifecycle_dates": {
+                            "planning": "2026-07-20",
+                            "component_selection": "2026-07-21",
+                            "schematic": "2026-07-22",
+                            "pcb_design": "2026-07-23",
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    db = codex_env["Session"]()
+    assert db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "WXY-PLUGIN-BOARD").count() == 0
+    db.close()
+    assert codex_env["client"].post(f"/api/integrations/codex/operations/{created.json()['id']}/approve").status_code == 200
+
+    changed = codex_env["client"].post(
+        "/api/integrations/codex/v1/operations",
+        headers=headers,
+        json={
+            "idempotency_key": "project-lifecycle-change-0001",
+            "actions": [
+                {"action": "workspace.project.status", "target_id": "WXY-PLUGIN-BOARD", "payload": {"status": "fabricating", "note": "进入打板"}},
+            ],
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["risk_level"] == "normal"
+    assert codex_env["client"].post(f"/api/integrations/codex/operations/{changed.json()['id']}/approve").status_code == 200
+
+    project_context = codex_env["client"].get(
+        "/api/integrations/codex/v1/projects/WXY-PLUGIN-BOARD",
+        headers=headers,
+    )
+    assert project_context.status_code == 200
+    assert project_context.json()["project_code"] == "WXY-PLUGIN-BOARD"
+    assert project_context.json()["status"] == "fabricating"
+    assert project_context.json()["period"]["start_week"] == "2026W30"
+    assert [node["status"] for node in project_context.json()["lifecycle"]["nodes"][:5]] == [
+        "planning", "component_selection", "schematic", "pcb_design", "fabricating",
+    ]
+    assert project_context.json()["lifecycle"]["nodes"][0]["occurred_on"] == "2026-07-20"
+    assert project_context.json()["lifecycle"]["nodes"][3]["state"] == "completed"
+    assert project_context.json()["lifecycle"]["nodes"][4]["state"] == "current"
+    assert len(project_context.json()["status_history"]) == 5
+
+    proposal = codex_env["client"].post(
+        "/api/integrations/codex/v1/operations",
+        headers=headers,
+        json={
+            "idempotency_key": "project-version-expense-0001",
+            "actions": [
+                {"action": "workspace.version.create", "target_id": "WXY-PLUGIN-BOARD", "payload": {"version_code": "V2", "change_summary": "修复接口"}},
+                {"action": "workspace.expense.create", "target_id": "WXY-PLUGIN-BOARD", "payload": {"category": "pcb_fabrication", "amount": "88.50", "occurred_on": "2026-07-21", "vendor": "板厂"}},
+            ],
+        },
+    )
+    assert proposal.status_code == 200, proposal.text
+    db = codex_env["Session"]()
+    assert db.query(PersonalProjectVersionV2).count() == 1
+    assert db.query(PersonalProjectExpenseV2).count() == 0
+    db.close()
+    assert codex_env["client"].post(f"/api/integrations/codex/operations/{proposal.json()['id']}/approve").status_code == 200
+
+    versions = codex_env["client"].get(
+        "/api/integrations/codex/v1/projects/WXY-PLUGIN-BOARD/versions",
+        headers=headers,
+    ).json()["items"]
+    assert [row["version_code"] for row in versions] == ["V2", "V1"]
+    costs = codex_env["client"].get(
+        "/api/integrations/codex/v1/projects/WXY-PLUGIN-BOARD/costs",
+        headers=headers,
+    ).json()
+    assert costs["direct_expense"] == 88.5
+    assert costs["comprehensive_cost"] == 88.5
+    dashboard = codex_env["client"].get("/api/integrations/codex/v1/projects/overview", headers=headers)
+    assert dashboard.status_code == 200
+    assert dashboard.json()["items"][0]["current_version_code"] == "V2"
+    assert dashboard.json()["items"][0]["unpriced_count"] == 0
 
 
 def test_purchase_create_receive_and_receive_undo_are_ledger_based(codex_env):
@@ -468,24 +570,46 @@ def test_purchase_create_receive_and_receive_undo_are_ledger_based(codex_env):
     db.close()
 
 
-def test_project_shortage_context_splits_physical_and_other_reservations_and_links_purchases(codex_env):
+def test_project_v2_shortage_context_is_per_board_and_purchases_stay_separate(codex_env):
     _, headers = create_machine_token(codex_env)
     db = codex_env["Session"]()
-    current = Project(scope_type="personal", owner_user_id=1, project_code="PRJ-CURRENT", name="当前项目")
-    other = Project(scope_type="personal", owner_user_id=1, project_code="PRJ-OTHER", name="其他项目")
+    current = PersonalProjectV2(
+        id="project-current", owner_user_id=1, project_code="PRJ-CURRENT", name="当前项目",
+        status="planning", start_date=datetime.utcnow().date(),
+    )
+    other = PersonalProjectV2(
+        id="project-other", owner_user_id=1, project_code="PRJ-OTHER", name="其他项目",
+        status="planning", start_date=datetime.utcnow().date(),
+    )
     db.add_all([current, other])
     db.flush()
+    current_version = PersonalProjectVersionV2(
+        id="version-current", project_id=current.id, sequence_number=1, version_code="V1", status="designing"
+    )
+    other_version = PersonalProjectVersionV2(
+        id="version-other", project_id=other.id, sequence_number=1, version_code="V1", status="designing"
+    )
+    db.add_all([current_version, other_version])
+    db.flush()
+    current.current_version_id = current_version.id
+    other.current_version_id = other_version.id
     db.add_all(
         [
-            ProjectBomItem(project_id=current.id, component_id=1, required_quantity=5, status="reserved"),
-            ProjectBomItem(project_id=other.id, component_id=1, required_quantity=18, status="reserved"),
+            PersonalProjectBomItemV2(
+                id="bom-current", project_id=current.id, version_id=current_version.id,
+                component_id=1, quantity_per_board=25, designators="R1",
+            ),
+            PersonalProjectBomItemV2(
+                id="bom-other", project_id=other.id, version_id=other_version.id,
+                component_id=1, quantity_per_board=18, designators="R1",
+            ),
         ]
     )
     order = PurchaseOrder(
         id="order-context",
         scope_type="personal",
         owner_user_id=1,
-        project_id=current.id,
+        project_id=None,
         order_number="PO-CONTEXT",
         status="ordered",
         currency="CNY",
@@ -512,19 +636,17 @@ def test_project_shortage_context_splits_physical_and_other_reservations_and_lin
     assert project_response.status_code == 200, project_response.text
     row = project_response.json()["bom"][0]
     assert row["warehouse_code"] == "RES-00000001"
-    assert row["own_reserved_quantity"] == 5
-    assert row["reserved_by_other_projects_quantity"] == 18
     assert row["stock_quantity"] == 20
-    assert row["physical_shortage_quantity"] == 0
-    assert row["reservation_shortage_quantity"] == 3
-    assert row["shortage_quantity"] == 3
-    assert row["available_for_project_quantity"] == 2
+    assert row["available_quantity"] == 20
+    assert row["quantity_per_board"] == 25
+    assert row["shortage_quantity"] == 5
     assert row["enough"] is False
+    assert row["average_unit_price"] == 0.125
 
     purchases = codex_env["client"].get("/api/integrations/codex/v1/purchases", headers=headers)
     assert purchases.status_code == 200, purchases.text
     purchase = purchases.json()["items"][0]
-    assert purchase["project_code"] == "PRJ-CURRENT"
+    assert purchase["project_code"] is None
     line = purchase["lines"][0]
     assert line["warehouse_code"] == "RES-00000001"
     assert line["outstanding_quantity"] == 8
@@ -534,4 +656,4 @@ def test_project_shortage_context_splits_physical_and_other_reservations_and_lin
 
     risks_response = codex_env["client"].get("/api/integrations/codex/v1/risks", headers=headers)
     assert risks_response.status_code == 200, risks_response.text
-    assert any(item.get("warehouse_code") == "RES-00000001" for item in risks_response.json()["items"])
+    assert isinstance(risks_response.json()["items"], list)

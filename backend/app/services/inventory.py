@@ -120,11 +120,16 @@ def reserved_quantities(db: Session, component_ids: list[int] | None = None) -> 
     reserved: dict[int, int] = {}
     for item in query.all():
         points = getattr(item, "solder_points", []) or []
-        remaining = (
-            sum(1 for point in points if not point.soldered)
-            if points
-            else int(item.required_quantity or 0)
-        )
+        project = getattr(item, "project", None)
+        if project and getattr(project, "active_fabrication_revision_id", None):
+            active_points = [point for point in points if bool(getattr(point, "active_for_assembly", True))]
+            remaining = sum(1 for point in active_points if not point.soldered)
+        else:
+            remaining = (
+                sum(1 for point in points if not point.soldered)
+                if points
+                else int(item.required_quantity or 0)
+            )
         reserved[item.component_id] = reserved.get(item.component_id, 0) + remaining
     return reserved
 

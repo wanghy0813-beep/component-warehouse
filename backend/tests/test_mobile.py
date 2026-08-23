@@ -28,6 +28,8 @@ def test_mobile_scan_resolve_personal_and_ambiguity(team_env):
     assert resolved.status_code == 200
     assert resolved.json()["component"]["id"] == "SEN-00000088"
     for value in [
+        "https://example.test/hardware/scan/SEN-00000088",
+        "/hardware/scan/SEN-00000088",
         "https://example.test/component-warehouse/personal/scan/SEN-00000088/?from=label",
         "/component-warehouse/personal/scan/SEN-00000088",
         "personal/scan/SEN-00000088",
@@ -76,7 +78,8 @@ def test_mobile_capabilities_are_public_and_versioned(team_env):
     assert response.status_code == 200
     data = response.json()
     assert data["bridge_protocol"] == "1.0"
-    assert data["application_root"] == "/component-warehouse"
+    assert data["application_root"] == "/hardware"
+    assert data["scan"]["personal_url"] == "/hardware/scan/{componentId}"
     assert data["scan"]["batch_max"] == 50
     assert data["scan"]["supports_multiple_results"] is True
     assert "receiveNfc" in data["web_bridge"]["methods"]

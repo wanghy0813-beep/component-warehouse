@@ -3,6 +3,7 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import router from './router'
 import './styles.css'
+import '../styles/material-theme.css'
 import { TEAM_BASE } from '../shared/appPaths'
 import { installAppBridge } from '../shared/appBridge'
 

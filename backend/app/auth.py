@@ -24,6 +24,7 @@ ACCOUNT_PROVIDER_LABEL = os.getenv("ACCOUNT_PROVIDER_LABEL", "Account V1").strip
 ACCOUNT_BASE_URL = os.getenv("ACCOUNT_BASE_URL", "").rstrip("/")
 ACCOUNT_SERVICE_CLIENT_ID = os.getenv("ACCOUNT_SERVICE_CLIENT_ID", "componentwarehouse-service").strip()
 ACCOUNT_WEB_CLIENT_ID = os.getenv("ACCOUNT_WEB_CLIENT_ID", "componentwarehouse-web").strip()
+ACCOUNT_DESKTOP_CLIENT_ID = os.getenv("ACCOUNT_DESKTOP_CLIENT_ID", "componentwarehouse-desktop-v1").strip()
 ACCOUNT_CLIENT_SECRET = os.getenv("ACCOUNT_CLIENT_SECRET", "").strip()
 ACCOUNT_SSO_REDIRECT_URI = os.getenv("ACCOUNT_SSO_REDIRECT_URI", "").strip()
 ACCOUNT_SSO_AUTHORIZE_URL = os.getenv("ACCOUNT_SSO_AUTHORIZE_URL", "").strip()
@@ -467,6 +468,71 @@ def verify_remote_token(db: Session, token: str) -> AuthContext:
     context = upsert_user_mirror(db, payload)
     cache_auth(token, context)
     return context
+
+
+def verify_desktop_sync_token(db: Session, token: str, required_scope: str) -> AuthContext:
+    """Verify a desktop device-grant token without widening normal web access."""
+    if AUTH_MODE != "account-v1":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="桌面同步需要统一账号服务",
+        )
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="桌面账号令牌缺失")
+    if not ACCOUNT_BASE_URL or not ACCOUNT_CLIENT_SECRET:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="账号服务端地址或凭据未配置")
+    try:
+        response = httpx.post(
+            f"{ACCOUNT_BASE_URL}/introspect",
+            headers={
+                "X-Account-Client-Id": ACCOUNT_SERVICE_CLIENT_ID,
+                "X-Account-Client-Secret": ACCOUNT_CLIENT_SECRET,
+                LEGACY_CLIENT_ID_HEADER: ACCOUNT_SERVICE_CLIENT_ID,
+                LEGACY_CLIENT_SECRET_HEADER: ACCOUNT_CLIENT_SECRET,
+            },
+            json={"token": token},
+            timeout=AUTH_HTTP_TIMEOUT_SECONDS,
+        )
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="统一账号暂时不可用，请稍后重试",
+        ) from error
+    if response.status_code != 200:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="统一账号令牌校验失败")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="统一账号返回格式异常") from error
+    token_scopes = payload.get("scope") or payload.get("scopes") or ""
+    if isinstance(token_scopes, str):
+        scopes = {item for item in token_scopes.split() if item}
+    else:
+        scopes = {str(item) for item in token_scopes or []}
+    if (
+        not payload.get("ok")
+        or not payload.get("active")
+        or payload.get("tokenType") != "opaque"
+        or payload.get("clientId") != ACCOUNT_DESKTOP_CLIENT_ID
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="桌面账号令牌无效或已解绑")
+    if required_scope not in scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"桌面令牌缺少权限：{required_scope}")
+    return upsert_user_mirror(db, payload)
+
+
+def require_sync_read(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> AuthContext:
+    return verify_desktop_sync_token(db, extract_bearer_token(authorization), "hardware.sync.read")
+
+
+def require_sync_write(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> AuthContext:
+    return verify_desktop_sync_token(db, extract_bearer_token(authorization), "hardware.sync.write")
 
 
 def verify_local_access(db: Session, token: str) -> AuthContext:

@@ -118,7 +118,7 @@ PUBLIC_TEAM_BASE_URL = os.getenv(
 ).rstrip("/")
 PUBLIC_PERSONAL_BASE_URL = os.getenv(
     "PUBLIC_PERSONAL_BASE_URL",
-    "http://localhost:8080/component-warehouse/personal",
+    "http://localhost:8080/hardware",
 ).rstrip("/")
 TEAM_MEDIA_ROOT = Path(os.getenv("TEAM_MEDIA_ROOT", "./data/contest-media"))
 MAX_PCB_IMAGE_BYTES = 2 * 1024 * 1024

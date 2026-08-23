@@ -98,6 +98,8 @@ def project_out(db: Session, project: Project) -> dict:
     return {
         "id": project.id,
         "project_code": project.project_code,
+        "active_fabrication_revision_id": project.active_fabrication_revision_id,
+        "public_assembly_view_enabled": bool(project.public_assembly_view_enabled),
         "name": project.name,
         "description": project.description,
         "status": project.status,

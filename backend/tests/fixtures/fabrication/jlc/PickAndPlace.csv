@@ -1,0 +1,5 @@
+Designator,Mid X,Mid Y,Layer,Rotation
+R1,10mm,10mm,Top,0
+R2,45mm,10mm,Bottom,180
+U1,22mm,24mm,Top,90
+J1,30mm,35mm,Top,270

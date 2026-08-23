@@ -8,6 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir \
     -i http://mirrors.tencentyun.com/pypi/simple \
+    --extra-index-url https://pypi.org/simple \
     --trusted-host mirrors.tencentyun.com \
     -r requirements.txt
 

@@ -1,14 +1,16 @@
 <template>
-  <el-button
-    v-if="canShowPwaInstall"
-    class="install-app-button"
-    size="small"
-    :icon="Download"
-    :loading="installing"
-    @click="install"
-  >
-    安装应用
-  </el-button>
+  <div v-if="!IS_DESKTOP" class="install-actions">
+    <el-button class="install-app-button" size="small" type="primary" :icon="Download" @click="downloadWindows">
+      下载 Windows 离线版
+    </el-button>
+    <el-button
+      v-if="canShowPwaInstall"
+      class="install-app-button"
+      size="small"
+      :loading="installing"
+      @click="install"
+    >安装网页版</el-button>
+  </div>
 </template>
 
 <script setup>
@@ -16,8 +18,13 @@ import { ref } from 'vue'
 import { Download } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from '../elementApi'
 import { canShowPwaInstall, requestPwaInstall } from '../pwaInstall'
+import { IS_DESKTOP } from '../desktopBridge'
 
 const installing = ref(false)
+
+function downloadWindows() {
+  window.location.assign('/hardware/downloads/WXY-LAB-Hardware-Setup-x64.exe')
+}
 
 async function install() {
   if (installing.value) return
@@ -44,7 +51,5 @@ async function install() {
 </script>
 
 <style scoped>
-.install-app-button {
-  flex: 0 0 auto;
-}
+.install-actions { display: flex; flex-wrap: wrap; gap: 8px; }.install-app-button { flex: 0 0 auto; }
 </style>

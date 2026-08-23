@@ -1,0 +1,316 @@
+/* High-contrast material system: clear ceramic surfaces, petrol blue and warm copper. */
+:root {
+  color-scheme: light;
+  --cw-bg: #f2f6f7;
+  --cw-bg-strong: #e4ecee;
+  --cw-panel: #ffffff;
+  --cw-solid: #ffffff;
+  --cw-soft: #eaf1f2;
+  --cw-text: #102a32;
+  --cw-muted: #52666f;
+  --cw-border: rgba(25, 72, 82, 0.20);
+  --cw-border-strong: rgba(19, 65, 75, 0.34);
+  --cw-shadow: 0 18px 44px rgba(23, 55, 63, 0.13);
+  --cw-shadow-soft: 0 8px 22px rgba(23, 55, 63, 0.09);
+  --cw-accent: #006b78;
+  --cw-accent-hover: #005662;
+  --cw-accent-soft: #d9eef1;
+  --cw-green: #176b59;
+  --cw-red: #a63f3b;
+  --cw-orange: #a9521c;
+  --cw-copper: #b45a22;
+  --cw-gold: #896512;
+  --cw-sage: #3f7165;
+  --cw-olive: #64722c;
+  --cw-radius-card: 20px;
+  --cw-radius-control: 11px;
+  --cw-radius-chip: 999px;
+
+  --el-color-primary: #006b78;
+  --el-color-primary-light-3: #4d97a0;
+  --el-color-primary-light-5: #80b5bb;
+  --el-color-primary-light-7: #b3d3d7;
+  --el-color-primary-light-8: #cce2e5;
+  --el-color-primary-light-9: #e5f1f2;
+  --el-color-primary-dark-2: #005662;
+  --el-color-success: #176b59;
+  --el-color-warning: #896512;
+  --el-color-danger: #a63f3b;
+  --el-color-info: #52666f;
+  --el-text-color-primary: #102a32;
+  --el-text-color-regular: #304a54;
+  --el-text-color-secondary: #52666f;
+  --el-text-color-placeholder: #60747d;
+  --el-text-color-disabled: #60747d;
+  --el-border-color: #cbd8db;
+  --el-border-color-light: #d8e2e4;
+  --el-border-color-lighter: #e4ebed;
+  --el-fill-color: #e2ebed;
+  --el-fill-color-light: #edf3f4;
+  --el-fill-color-lighter: #f6f9f9;
+  --el-fill-color-blank: #ffffff;
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f2f6f7;
+  --el-mask-color: rgba(16, 42, 50, 0.42);
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100%;
+  overflow-x: clip;
+}
+
+body {
+  background:
+    radial-gradient(circle at 8% -12%, rgba(0, 107, 120, 0.09), transparent 30rem),
+    radial-gradient(circle at 96% 8%, rgba(180, 90, 34, 0.07), transparent 28rem),
+    var(--cw-bg) !important;
+}
+
+#app,
+.personal-app,
+.standalone-shell,
+.standalone-auth,
+.team-app,
+.team-standalone-shell {
+  color: var(--cw-text) !important;
+  background: transparent !important;
+}
+
+img,
+svg,
+canvas,
+video { max-width: 100%; }
+
+pre,
+code {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+:where(main, section, article, nav, header, footer, form, fieldset, .page, .team-page,
+  .personal-main, .team-main, .el-card, .el-dialog, .el-drawer, .el-form-item,
+  .el-form-item__content, .el-descriptions__cell, .el-tabs__content, .el-tab-pane) {
+  min-width: 0;
+}
+
+.personal-header,
+.team-header {
+  border-bottom-color: var(--cw-border) !important;
+  background: rgba(255, 255, 255, 0.98) !important;
+  box-shadow: 0 6px 24px rgba(29, 45, 49, 0.06);
+  backdrop-filter: none !important;
+}
+
+.personal-brand strong,
+.team-brand strong { color: #163f49 !important; }
+
+.personal-desktop-nav a,
+.desktop-nav a { color: #405861 !important; }
+
+.personal-desktop-nav a.router-link-exact-active,
+.desktop-nav a.router-link-active {
+  color: #005a66 !important;
+  background: #d9eef1 !important;
+}
+
+.personal-mobile-nav,
+.mobile-nav {
+  border-color: var(--cw-border-strong) !important;
+  background: rgba(255, 255, 255, 0.99) !important;
+  box-shadow: var(--cw-shadow) !important;
+  backdrop-filter: none !important;
+}
+
+.personal-mobile-nav a.router-link-exact-active,
+.mobile-nav a.router-link-active {
+  color: #005a66 !important;
+  background: #d9eef1 !important;
+  box-shadow: inset 0 0 0 1px rgba(31, 111, 120, 0.18) !important;
+}
+
+/* Sticky and floating controls stay opaque so scrolling does not trigger costly backdrop repaints. */
+#app :is(.floating-search, .approval-bar, .create-save-bar, .back-to-top),
+#app .component-detail-drawer.el-drawer .el-drawer__header {
+  background-color: rgba(248, 250, 249, 0.98) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Zero-specificity defaults let intentional dark/colored component variants win. */
+:where(#app) :where(.glass-panel, .panel, .solid-card, .team-panel, .team-page-head,
+  .summary-card, .metric, .metric-card, .dashboard-panel, .category-block,
+  .detail-card, .content-card, .cost-block, .version-list > article,
+  .project-facts > article, .el-card) {
+  border-color: var(--cw-border);
+  background: linear-gradient(145deg, #ffffff 0%, #f8fbfb 100%);
+  box-shadow: var(--cw-shadow-soft);
+}
+
+#app .team-page-head {
+  background: linear-gradient(125deg, #eef4f3, #fafbfa 72%) !important;
+}
+
+.el-button { max-width: 100%; }
+
+.el-button--primary {
+  --el-button-bg-color: var(--cw-accent);
+  --el-button-border-color: var(--cw-accent);
+  --el-button-hover-bg-color: var(--cw-accent-hover);
+  --el-button-hover-border-color: var(--cw-accent-hover);
+  --el-button-active-bg-color: #124d54;
+  --el-button-active-border-color: #124d54;
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner,
+.el-input-number,
+.el-date-editor,
+.el-upload-dragger {
+  border-color: var(--cw-border) !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 1px var(--cw-border) inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--cw-accent) inset !important;
+}
+
+.el-card,
+.el-dialog,
+.el-message-box,
+.el-drawer,
+.el-popper,
+.el-popover,
+.el-select__popper,
+.el-dropdown__popper,
+.el-picker-panel,
+.el-alert {
+  border-color: var(--cw-border) !important;
+  background: #ffffff !important;
+  box-shadow: var(--cw-shadow) !important;
+}
+
+.el-dialog,
+.el-message-box {
+  width: min(var(--el-dialog-width, 560px), calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+}
+
+.el-drawer { max-width: 100vw; }
+.el-tag { max-width: 100%; overflow: hidden; }
+
+.el-tag__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.el-table {
+  --el-table-bg-color: #ffffff;
+  --el-table-tr-bg-color: #ffffff;
+  --el-table-header-bg-color: #eaf1f2;
+  --el-table-row-hover-bg-color: #e6f1f2;
+  --el-table-border-color: #d2dee1;
+  --el-table-text-color: #29434d;
+  --el-table-header-text-color: #304a54;
+  border: 1px solid var(--cw-border);
+  background: var(--cw-solid) !important;
+}
+
+.el-table th.el-table__cell {
+  background: #eaf1f2 !important;
+  font-weight: 720;
+}
+
+.el-table .cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.el-table__inner-wrapper,
+.el-table__body-wrapper,
+.el-table__header-wrapper { max-width: 100%; }
+
+.el-pagination,
+.el-tabs__nav-wrap,
+.el-collapse-item__header { color: var(--cw-text); }
+.el-tabs__item.is-active { color: var(--cw-accent); }
+.el-tabs__active-bar { background-color: var(--cw-accent); }
+
+.el-empty__description p,
+.muted,
+.page-subtitle { color: var(--cw-muted) !important; }
+
+/* Loading stays on the light canvas and never darkens or bleaches the whole view. */
+.el-loading-mask {
+  background-color: rgba(242, 246, 247, 0.78) !important;
+}
+
+.el-loading-spinner .path { stroke: var(--cw-accent) !important; }
+.el-loading-spinner .circular { filter: none !important; }
+.el-loading-spinner .el-loading-text {
+  color: #005a66 !important;
+  font-weight: 700;
+}
+
+.boot,
+.team-boot {
+  min-height: 100vh !important;
+  min-height: 100dvh !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--cw-text) !important;
+  background: var(--cw-bg) !important;
+}
+
+.boot-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid #c7dadd;
+  border-top-color: var(--cw-accent);
+  border-radius: 50%;
+  animation: cw-boot-spin .75s linear infinite;
+}
+
+.boot small,
+.team-boot small { color: var(--cw-muted); }
+
+@keyframes cw-boot-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-spinner { animation-duration: 1.5s; }
+}
+
+@media (max-width: 760px) {
+  .el-message-box,
+  .el-dialog {
+    width: calc(100vw - 20px) !important;
+    max-width: calc(100vw - 20px) !important;
+  }
+
+  .el-message {
+    min-width: 0 !important;
+    width: calc(100vw - 24px) !important;
+  }
+
+  .el-message__content,
+  .el-notification__content,
+  .el-alert__content {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}

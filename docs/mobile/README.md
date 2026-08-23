@@ -3,7 +3,7 @@
 个人版和团队版均可嵌入 App WebView：
 
 ```text
-https://example.com/component-warehouse/personal/?embed=1
+https://example.com/hardware/?embed=1
 https://example.com/component-warehouse/team/?embed=1
 ```
 
@@ -18,7 +18,7 @@ https://example.com/component-warehouse/team/?embed=1
 
 原生端可调用：
 
-- `receiveAuthSession(session)`：注入 Component Warehouse Account V1 会话。
+- `receiveAuthSession(session)`：注入 WXY LAB Hardware Account V1 会话。
 - `receiveScan({ value })` 或 `receiveScan({ values })`：回传一个或多个扫码结果。
 - `receiveNfc(payload)`：回传 NFC 内容。
 - `navigate(path)`：切换个人版或团队版内部页面。
