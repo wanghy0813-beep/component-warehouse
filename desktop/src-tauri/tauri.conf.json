@@ -32,7 +32,10 @@
     "resources": {
       "binaries/_internal/": "_internal/"
     },
-    "icon": ["../../frontend/src/assets/generated/cw-app-icon.png"],
+    "icon": [
+      "icons/icon.ico",
+      "../../frontend/src/assets/generated/cw-app-icon.png"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "fixedRuntime",

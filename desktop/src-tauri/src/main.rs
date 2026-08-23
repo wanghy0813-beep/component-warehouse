@@ -461,7 +461,7 @@ async fn resolve_desktop_conflict(
 }
 
 fn main() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
@@ -555,7 +555,7 @@ fn main() {
                     if let Some(child) = sidecar.take() {
                         let _ = child.kill();
                     }
-                }
+                };
             }
         });
 }

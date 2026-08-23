@@ -19,6 +19,7 @@ artifacts/
 desktop/pyinstaller-build/
 desktop/pyinstaller-dist/
 desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
 desktop/src-tauri/target/
 desktop/src-tauri/WebView2.FixedVersionRuntime.x64/
 tools/ad-sync/bin/
