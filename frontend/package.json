@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "rm -rf dist && npm run build:personal && npm run build:team",
-    "build:personal": "VITE_APP_TARGET=personal vite build",
-    "build:desktop": "VITE_APP_TARGET=personal VITE_DESKTOP=1 vite build",
-    "build:team": "VITE_APP_TARGET=team vite build",
+    "build:personal": "node scripts/build-target.mjs personal",
+    "build:desktop": "node scripts/build-target.mjs desktop",
+    "build:team": "node scripts/build-target.mjs team",
     "check:copy": "python3 ../scripts/check_copy.py",
     "test": "npm run test:frontend",
     "test:frontend": "node --test tests/*.test.mjs",
