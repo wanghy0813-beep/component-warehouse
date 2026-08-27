@@ -1,0 +1,20 @@
+[Unit]
+Description=WXY LAB Hardware OAuth MCP service
+After=network-online.target component-warehouse-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ComponentWarehouse/backend
+EnvironmentFile=/etc/component-warehouse/backend.env
+ExecStart=/opt/ComponentWarehouse/backend/.venv-mcp/bin/python -m uvicorn app.codex_mcp:app --host 127.0.0.1 --port 18082 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

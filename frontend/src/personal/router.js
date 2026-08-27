@@ -21,6 +21,7 @@ const routes = [
     { path: '/integrations/codex/:pathMatch(.*)*', redirect: '/about' }
   ] : [
     { path: '/integrations/codex', name: 'codex-integrations', component: () => import('../views/CodexIntegrations.vue') },
+    { path: '/integrations/codex/oauth/:requestId', name: 'codex-oauth', component: () => import('../views/CodexOauthAuthorize.vue') },
     { path: '/integrations/codex/operations/:operationId', name: 'codex-operation', component: () => import('../views/CodexOperation.vue') }
   ]),
   { path: '/admin', redirect: '/about' },

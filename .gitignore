@@ -10,6 +10,7 @@ data/
 __pycache__/
 *.py[cod]
 .venv/
+.venv-mcp/
 venv/
 
 node_modules/

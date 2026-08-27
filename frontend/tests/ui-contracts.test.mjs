@@ -280,11 +280,13 @@ test('app shell is marked as Chinese and opts out of browser translation', () =>
 test('Codex integration exposes one-time read tokens and SSO-only operation approval', () => {
   const integrations = source('../src/views/CodexIntegrations.vue')
   const operation = source('../src/views/CodexOperation.vue')
+  const oauth = source('../src/views/CodexOauthAuthorize.vue')
   const router = source('../src/personal/router.js')
   const api = source('../src/api/client.js')
   const management = source('../src/views/About.vue')
 
   assert.match(router, /\/integrations\/codex\/operations\/:operationId/)
+  assert.match(router, /\/integrations\/codex\/oauth\/:requestId/)
   assert.match(integrations, /密钥只显示一次/)
   assert.match(integrations, /WXY LAB Hardware · ChatGPT 接入/)
   assert.match(integrations, /完整读取个人业务库并提交无副作用草案/)
@@ -296,6 +298,11 @@ test('Codex integration exposes one-time read tokens and SSO-only operation appr
   assert.match(operation, /目标状态变化后本单会拒绝执行/)
   assert.match(api, /approveCodexOperation/)
   assert.match(api, /requestCodexOperationUndo/)
+  assert.match(api, /getCodexOauthRequest/)
+  assert.match(api, /decideCodexOauthRequest/)
+  assert.match(oauth, /授权只绑定当前登录账号的个人库/)
+  assert.match(oauth, /ChatGPT 不能批准写入/)
+  assert.match(oauth, /startSsoLogin\(window\.location\.href\)/)
   assert.match(management, /管理 ChatGPT 接入/)
 })
 

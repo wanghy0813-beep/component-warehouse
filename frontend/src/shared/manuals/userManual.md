@@ -128,6 +128,8 @@ BOM 可手工选择现有库存器件，也可上传 CSV/XLSX/XLSM。文件至�
 
 ## WXY LAB Hardware · ChatGPT 接入
 
+在 ChatGPT 自定义连接器中填写新地址 `https://wxylab.ltd/hardware/mcp`；网页地址 `https://wxylab.ltd/hardware` 本身不能作为 MCP URL。旧地址 `/component-warehouse/mcp` 仅保留兼容；请删除 ChatGPT 中的旧连接，用新 URL 重新添加并完成 SSO/OAuth 授权，以刷新名称和工具元数据。
+
 在线网页的“关于与管理”页面可以创建只显示一次的 ChatGPT 接入令牌。令牌允许读取当前账号的完整个人业务库，覆盖库存、批次与流水、个人项目、BOM 与装配、成本与费用、采购、风险、EDA、标签及文件元数据；大量数据按游标分页读取。
 
 读取范围不包括团队和其他用户数据、账号或第三方令牌、审计日志、AI 缓存、同步内部表、二进制文件内容与服务器路径。ChatGPT 不能用令牌直接修改数据库；所有写入只生成网页审批草案，必须由当前账号逐单确认后执行。

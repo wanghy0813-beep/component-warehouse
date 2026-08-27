@@ -64,6 +64,16 @@ export async function getCurrentUser() {
   return data
 }
 
+export async function getCodexOauthRequest(requestId) {
+  const { data } = await api.get(`/integrations/codex/oauth/requests/${encodeURIComponent(requestId)}`)
+  return data
+}
+
+export async function decideCodexOauthRequest(requestId, decision) {
+  const { data } = await api.post(`/integrations/codex/oauth/requests/${encodeURIComponent(requestId)}`, { decision })
+  return data
+}
+
 export async function getComponentAccessContext(code) {
   const { data } = await api.get(`/components/access-context/${encodeURIComponent(code)}`)
   return data

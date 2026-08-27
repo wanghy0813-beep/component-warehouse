@@ -2,6 +2,8 @@
 
 ## 2026-08-27 · ChatGPT integration
 
+- Published the renamed OAuth MCP connector at `https://wxylab.ltd/hardware/mcp`, retained the former `/component-warehouse/mcp` resource for compatibility, moved the live MCP service into the regular direct-host deployment, and updated its published name to `WXY LAB Hardware`.
+- Added MCP workspace catalog and cursor-paged dataset tools so the connector can read the authenticated user's complete personal business workspace under the existing read-only and browser-approved-write boundary.
 - Renamed the installed ChatGPT/Codex integration to `WXY LAB Hardware` across its Skill metadata and web management surfaces.
 - Expanded the existing personal access token from inventory-oriented queries to a catalogued, cursor-paginated read API covering all 57 personal business datasets, including offline-workspace data and personal import history.
 - Kept the trust boundary unchanged: team and other-user data, credentials and tokens, audit logs, AI caches, sync internals, binary contents, and server paths remain excluded; every write still requires browser approval.

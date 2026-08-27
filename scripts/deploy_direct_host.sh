@@ -10,9 +10,11 @@ BACKUP_ROOT="${DATA_DIR}/release-backups"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_ROOT}/direct-host-${STAMP}"
 SERVICE_NAME="component-warehouse-backend"
+MCP_SERVICE_NAME="component-warehouse-mcp"
 SERVICE_USER="${SERVICE_USER:-ubuntu}"
 SERVICE_GROUP="${SERVICE_GROUP:-ubuntu}"
 BACKEND_PORT="${BACKEND_PORT:-18080}"
+MCP_PORT="${MCP_PORT:-18082}"
 PUBLIC_PROXY_PORT="${PUBLIC_PROXY_PORT:-8080}"
 PREVIEW_PORT="${PREVIEW_PORT:-18081}"
 ENV_DIR="/etc/component-warehouse"
@@ -146,8 +148,19 @@ prepare_backend() {
   run "${BACKEND_DIR}/.venv/bin/python" -m pip install \
     -i "${PIP_INDEX_URL}" --extra-index-url "${PIP_EXTRA_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
     -r "${BACKEND_DIR}/requirements.txt"
+  if [[ ! -x "${BACKEND_DIR}/.venv-mcp/bin/python" ]]; then
+    run "${PYTHON_BIN}" -m venv "${BACKEND_DIR}/.venv-mcp"
+  fi
+  run "${BACKEND_DIR}/.venv-mcp/bin/python" -m pip install --upgrade pip \
+    --timeout 1000 --retries 5 \
+    -i "${PIP_INDEX_URL}" --extra-index-url "${PIP_EXTRA_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}"
+  run "${BACKEND_DIR}/.venv-mcp/bin/python" -m pip install \
+    --timeout 1000 --retries 5 \
+    -i "${PIP_INDEX_URL}" --extra-index-url "${PIP_EXTRA_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
+    -r "${BACKEND_DIR}/requirements-mcp.txt"
   write_backend_env
   run sudo -n install -m 0644 "${REPO_DIR}/deploy/component-warehouse-backend.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+  run sudo -n install -m 0644 "${REPO_DIR}/deploy/component-warehouse-mcp.service" "/etc/systemd/system/${MCP_SERVICE_NAME}.service"
   run sudo -n systemctl daemon-reload
 }
 
@@ -223,17 +236,24 @@ prepare_data_permissions() {
 start_preview() {
   run sudo -n ln -sfn "${NGINX_PREVIEW_AVAILABLE}" "${NGINX_PREVIEW_ENABLED}"
   run sudo -n systemctl enable "${SERVICE_NAME}"
+  run sudo -n systemctl enable "${MCP_SERVICE_NAME}"
   run sudo -n systemctl restart "${SERVICE_NAME}"
+  run sudo -n systemctl restart "${MCP_SERVICE_NAME}"
   run sudo -n nginx -t
   run sudo -n systemctl reload nginx
 }
 
 verify() {
   wait_for_url "http://127.0.0.1:${BACKEND_PORT}/health" "direct backend"
+  wait_for_url "http://127.0.0.1:${MCP_PORT}/health" "OAuth MCP service"
   wait_for_url "http://127.0.0.1:${PREVIEW_PORT}/hardware/health" "direct preview"
   wait_for_url "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health" "public runtime"
   run systemctl --no-pager --full status "${SERVICE_NAME}"
+  run systemctl --no-pager --full status "${MCP_SERVICE_NAME}"
   run curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health"
+  run curl -fsS "http://127.0.0.1:${MCP_PORT}/health"
+  run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/.well-known/oauth-protected-resource/hardware/mcp"
+  run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/.well-known/oauth-authorization-server/hardware/oauth"
   run curl -fsS "http://127.0.0.1:${PREVIEW_PORT}/hardware/health"
   run curl -fsS "http://127.0.0.1:${PUBLIC_PROXY_PORT}/component-warehouse/health"
   run curl -kfsS https://wxylab.ltd/component-warehouse/health
