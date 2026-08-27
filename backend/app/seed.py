@@ -1,66 +1,28 @@
 from sqlalchemy.orm import Session
 
 from .models import Category
+from .services.hardware_categories import HARDWARE_CATEGORIES
 
 
-DEFAULT_CATEGORIES = [
-    "电阻",
-    "电容",
-    "电感",
-    "二极管",
-    "三极管",
-    "MOS管",
-    "芯片",
-    "电源",
-    "接口",
-    "连接件",
-    "时钟源",
-    "开关",
-    "开发板",
-    "设备",
-    "功能模块",
-    "通信模块",
-    "显示模块",
-    "机电件",
-    "散热件",
-    "保护器件",
-    "传感器",
-    "结构件",
-    "其他",
-]
+DEFAULT_CATEGORIES = [item.name for item in HARDWARE_CATEGORIES]
 
-DEFAULT_CATEGORY_COLORS = {
-    "电阻": "#e8f1ff",
-    "电容": "#f1e8ff",
-    "电感": "#e6fbff",
-    "二极管": "#fff2df",
-    "三极管": "#e8f7ee",
-    "MOS管": "#e4f6ec",
-    "芯片": "#e7edff",
-    "电源": "#ffe9e7",
-    "接口": "#fff7d6",
-    "连接件": "#e8fff8",
-    "时钟源": "#eef2ff",
-    "开关": "#f1f3f5",
-    "开发板": "#e8eaee",
-    "设备": "#e5edf5",
-    "功能模块": "#eaf4ff",
-    "通信模块": "#e9f8ff",
-    "显示模块": "#f3ecff",
-    "机电件": "#fff0e6",
-    "散热件": "#e9fbf2",
-    "保护器件": "#ffece4",
-    "传感器": "#ffeaf5",
-    "结构件": "#f4f1ec",
-    "其他": "#eef2f7",
-}
+DEFAULT_CATEGORY_COLORS = {item.name: item.color for item in HARDWARE_CATEGORIES}
 
 
 def seed_categories(db: Session):
     existing = {category.name: category for category in db.query(Category).all()}
+    used_prefixes = {category.code_prefix for category in existing.values() if category.code_prefix}
     for name in DEFAULT_CATEGORIES:
+        definition = next(item for item in HARDWARE_CATEGORIES if item.name == name)
         if name not in existing:
-            db.add(Category(name=name, color=DEFAULT_CATEGORY_COLORS.get(name)))
+            prefix = definition.prefix if definition.prefix not in used_prefixes else None
+            db.add(Category(name=name, color=definition.color, code_prefix=prefix, code_prefix_locked=bool(prefix)))
+            if prefix:
+                used_prefixes.add(prefix)
         elif not existing[name].color or existing[name].color == "#eef6ff":
             existing[name].color = DEFAULT_CATEGORY_COLORS.get(name)
+        if name in existing and not existing[name].code_prefix and definition.prefix not in used_prefixes:
+            existing[name].code_prefix = definition.prefix
+            existing[name].code_prefix_locked = True
+            used_prefixes.add(definition.prefix)
     db.commit()

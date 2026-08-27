@@ -158,7 +158,7 @@
 
       <template v-if="activeTab === 'overview'">
         <div class="fact-grid">
-          <article class="fact-card material-surface"><small>项目状态</small><strong>{{ selectedProject.status_label }}</strong><span>{{ selectedProject.period.current_week }}</span></article>
+          <article class="fact-card material-surface"><small>项目状态</small><strong>{{ selectedProject.status_label }}</strong><span :title="currentStageWeekLabel">{{ currentStageWeekLabel }}</span></article>
           <article class="fact-card material-surface"><small>当前 PCB</small><strong>{{ selectedProject.current_version?.version_code || 'V1' }}</strong><span>{{ selectedProject.current_version?.status_label || '设计中' }}</span></article>
           <article class="fact-card material-surface"><small>项目周期</small><strong>{{ selectedProject.period.actual_days }} 天</strong><span :title="periodWeekRange">{{ periodWeekRange }}</span></article>
           <article class="fact-card material-surface"><small>综合实际成本</small><strong>{{ money(selectedProject.cost.comprehensive_cost) }}</strong><span>{{ selectedProject.cost.unpriced_count }} 项未计价</span></article>
@@ -173,7 +173,10 @@
             <span v-if="selectedProject.lifecycle?.side_state" class="lifecycle-side-state">
               当前{{ selectedProject.lifecycle.current_label }}，主流程节点保持不变
             </span>
-            <small v-else>{{ selectedProject.period.start_date }} 至今 · {{ selectedProject.period.actual_days }} 天</small>
+            <div class="panel-actions">
+              <small v-if="!selectedProject.lifecycle?.side_state">{{ selectedProject.period.start_date }} 至今 · {{ selectedProject.period.actual_days }} 天</small>
+              <el-button size="small" @click="openTimelineBackfill">补录节点日期</el-button>
+            </div>
           </div>
           <div class="lifecycle-scroll" tabindex="0" aria-label="项目生命周期节点">
             <ol class="lifecycle-track">
@@ -355,6 +358,19 @@
       <template #footer><el-button @click="versionDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="createVersion">建立版本</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="timelineDialog" title="补录项目节点日期" width="620px" destroy-on-close>
+      <p class="timeline-create-help">可只填写缺失或需要校正的已到达节点；未填写项保持原样，历史操作记录不会被覆盖。</p>
+      <div class="create-timeline-editor" aria-label="补录项目节点日期">
+        <el-form-item v-for="stage in backfillableStages" :key="stage.status" :label="stage.label">
+          <div class="date-week-field">
+            <el-date-picker v-model="timelineDates[stage.status]" type="date" value-format="YYYY-MM-DD" clearable :disabled-date="disableFutureDate" placeholder="可后补" />
+            <span :class="{ empty: !timelineDates[stage.status] }">{{ weekBadge(timelineDates[stage.status]) }}</span>
+          </div>
+        </el-form-item>
+      </div>
+      <template #footer><el-button @click="timelineDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveTimelineBackfill">保存节点日期</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="bomDialog" title="添加 BOM 物料" width="600px" destroy-on-close>
       <el-form label-position="top"><el-form-item label="库存元器件"><el-select v-model="bomForm.component_id" filterable remote reserve-keyword :remote-method="searchComponents" :loading="componentLoading" placeholder="输入仓库编号、名称或型号"><el-option v-for="item in componentOptions" :key="item.id" :label="`${item.warehouse_code || '未编号'} · ${item.name}${item.model ? ` · ${item.model}` : ''}`" :value="item.id" /></el-select></el-form-item><el-form-item label="单板数量"><el-input-number v-model="bomForm.quantity_per_board" :min="1" :max="10000" /></el-form-item><el-form-item label="位号"><el-input v-model="bomForm.designators" placeholder="例如 R1, R2, R3；不足时自动补位" /></el-form-item><el-form-item label="备注（可选）"><el-input v-model="bomForm.note" type="textarea" :rows="3" /></el-form-item></el-form>
       <template #footer><el-button @click="bomDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="addBom">添加物料</el-button></template>
@@ -388,6 +404,7 @@ import {
   createWorkspaceBoard, createWorkspaceProject, createWorkspaceVersion, deleteWorkspaceBomItem,
   downloadWorkspaceFile, fillWorkspaceUnpriced, getProjectWorkspaceBootstrap, getWorkspaceProject,
   getWorkspaceVersion, importWorkspaceBom, searchWorkspaceComponents, updateWorkspaceProject,
+  backfillWorkspaceProjectTimeline,
   updateWorkspaceRisk, updateWorkspaceVersion, uploadWorkspaceFile,
 } from '../api/client'
 
@@ -414,6 +431,7 @@ const versionDialog = ref(false)
 const bomDialog = ref(false)
 const expenseDialog = ref(false)
 const riskDialog = ref(false)
+const timelineDialog = ref(false)
 const componentLoading = ref(false)
 const componentOptions = ref([])
 const createForm = reactive({ project_code: '', name: '', description: '', status: 'planning', start_date: localDate() })
@@ -423,6 +441,7 @@ const versionForm = reactive({ version_code: '', change_summary: '' })
 const bomForm = reactive({ component_id: null, quantity_per_board: 1, designators: '', note: '' })
 const expenseForm = reactive({ category: 'pcb_fabrication', amount: 0.01, occurred_on: localDate(), version_id: null, vendor: '', note: '' })
 const riskForm = reactive({ severity: 'medium', title: '', detail: '' })
+const timelineDates = reactive({})
 
 const tabs = [
   { value: 'overview', label: '概览', note: '状态与周期', icon: DataAnalysis },
@@ -474,6 +493,23 @@ const lifecycleNodes = computed(() => {
       occurred_at: event?.created_at || null, iso_week: null,
     }
   })
+})
+const backfillableStages = computed(() => lifecycleNodes.value
+  .filter(node => node.state !== 'upcoming')
+  .map(node => ({ status: node.status, label: node.label })))
+const currentLifecycleNode = computed(() => {
+  const nodes = lifecycleNodes.value
+  return nodes.find(node => node.state === 'current') || [...nodes].reverse().find(node => node.occurred_at) || null
+})
+const currentStageWeekLabel = computed(() => {
+  const node = currentLifecycleNode.value
+  if (!node?.occurred_at) return selectedProject.value?.period?.current_week || '—'
+  const start = node.iso_week || isoWeekLabel(node.occurred_on || node.occurred_at)
+  const end = selectedProject.value?.period?.end_date
+    ? (node.end_iso_week || start)
+    : isoWeekLabel(localDate())
+  const suffix = selectedProject.value?.period?.end_date ? `（截至 ${shortMonthDay(selectedProject.value.period.end_date)}）` : '（TODAY）'
+  return start === end ? `${start}${suffix}` : `${start}–${end}${suffix}`
 })
 const periodWeekRange = computed(() => {
   const period = selectedProject.value?.period
@@ -547,6 +583,30 @@ async function createProject() {
   } catch (error) {
     ElMessage.error(errorMessage(error, '创建项目失败'))
   } finally { saving.value = false }
+}
+
+function openTimelineBackfill() {
+  for (const key of Object.keys(timelineDates)) delete timelineDates[key]
+  for (const node of lifecycleNodes.value) {
+    if (node.state !== 'upcoming' && node.occurred_on) timelineDates[node.status] = node.occurred_on
+  }
+  timelineDialog.value = true
+}
+
+async function saveTimelineBackfill() {
+  const values = Object.fromEntries(backfillableStages.value
+    .map(stage => [stage.status, timelineDates[stage.status]])
+    .filter(([, value]) => value))
+  if (!Object.keys(values).length) return ElMessage.warning('请至少填写一个节点日期')
+  const ordered = backfillableStages.value.map(stage => values[stage.status]).filter(Boolean)
+  if (ordered.some((value, index) => index && value < ordered[index - 1])) return ElMessage.warning('节点日期必须按研发阶段依次递增')
+  saving.value = true
+  try {
+    selectedProject.value = await backfillWorkspaceProjectTimeline(selectedProject.value.id, values)
+    timelineDialog.value = false
+    await loadDashboard()
+    ElMessage.success('节点日期已补录')
+  } catch (error) { ElMessage.error(errorMessage(error, '补录节点日期失败')) } finally { saving.value = false }
 }
 
 async function openProject(project) {
@@ -821,7 +881,8 @@ function lifecycleWeekRange(node) {
   if (!node?.occurred_at) return ''
   const start = node.iso_week || isoWeekLabel(node.occurred_on || node.occurred_at)
   const end = node.ongoing ? isoWeekLabel(localDate()) : (node.end_iso_week || start)
-  return start === end ? start : `${start}—${end}`
+  const range = start === end ? start : `${start}–${end}`
+  return node.ongoing ? `${range}（TODAY）` : range
 }
 function nodeStateLabel(value) { return ({ completed: '已完成', current: '当前阶段', skipped: '未记录', upcoming: '待开始' })[value] || '待开始' }
 function disableFutureDate(value) { return value.getTime() > new Date(`${localDate()}T23:59:59`).getTime() }

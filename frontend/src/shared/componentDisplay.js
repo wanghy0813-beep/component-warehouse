@@ -21,13 +21,18 @@ export function uniqueDisplayParts(values, primary = '') {
   return result
 }
 
-const PASSIVE_VALUE_CATEGORIES = new Set(['电阻', '电容', '电感'])
-const NAME_FIRST_CATEGORIES = new Set(['机电件'])
+const PASSIVE_VALUE_CATEGORIES = new Set(['电阻', '电容', '电感', '贴片电阻', '直插/采样电阻', 'MLCC', '电解/固态', '电感/晶振'])
+const NAME_FIRST_CATEGORIES = new Set(['机电件', '开关/机电', '模块/开发板/显示', '结构/工具/电池'])
 const SEMICONDUCTOR_MODEL_CATEGORIES = ['二极管', '三极管', '晶体管', '场效应管', 'MOS', 'MOSFET', 'BJT', 'IGBT']
 const PASSIVE_SPEC_NAMES = {
   电阻: ['阻值', '电阻值', '标称阻值'],
+  贴片电阻: ['阻值', '电阻值', '标称阻值'],
+  '直插/采样电阻': ['阻值', '电阻值', '标称阻值'],
   电容: ['容值', '容量', '标称容值', '标称容量', '电容值'],
-  电感: ['感值', '电感值', '标称感值', '阻抗', '标称阻抗', '磁珠阻抗']
+  MLCC: ['容值', '容量', '标称容值', '标称容量', '电容值'],
+  '电解/固态': ['容值', '容量', '标称容值', '标称容量', '电容值'],
+  电感: ['感值', '电感值', '标称感值', '阻抗', '标称阻抗', '磁珠阻抗'],
+  '电感/晶振': ['感值', '电感值', '标称感值', '阻抗', '标称阻抗', '磁珠阻抗']
 }
 
 function categoryName(item) {
@@ -57,9 +62,9 @@ function keySpecsFor(item) {
 function hasPassiveUnit(value, category) {
   const text = String(value || '').replace(/\s+/g, '')
   if (!text) return false
-  if (category === '电阻') return /(mΩ|Ω|ohm|kΩ|kohm|MΩ|Mohm|GΩ|Gohm)$/i.test(text)
-  if (category === '电容') return /(pF|nF|uF|µF|μF|mF)$/i.test(text)
-  if (category === '电感') return /(nH|uH|µH|μH|mH|H)$/i.test(text)
+  if (['电阻', '贴片电阻', '直插/采样电阻'].includes(category)) return /(mΩ|Ω|ohm|kΩ|kohm|MΩ|Mohm|GΩ|Gohm)$/i.test(text)
+  if (['电容', 'MLCC', '电解/固态'].includes(category)) return /(pF|nF|uF|µF|μF|mF)$/i.test(text)
+  if (['电感', '电感/晶振'].includes(category)) return /(nH|uH|µH|μH|mH|H)$/i.test(text)
   return false
 }
 
@@ -142,7 +147,10 @@ function firstPassiveValueFromText(text, category) {
     电容: /(?:^|[^\p{L}\p{N}.])(\d+(?:\.\d+)?\s*(?:pF|nF|uF|µF|mF))(?:$|[^\p{L}\p{N}])/iu,
     电感: /(?:^|[^\p{L}\p{N}.])(\d+(?:\.\d+)?\s*(?:nH|uH|µH|mH|H))(?:$|[^\p{L}\p{N}])/iu
   }
-  const match = raw.match(patterns[category])
+  const canonical = ['贴片电阻', '直插/采样电阻'].includes(category) ? '电阻'
+    : ['MLCC', '电解/固态'].includes(category) ? '电容'
+      : category === '电感/晶振' ? '电感' : category
+  const match = raw.match(patterns[canonical])
   return match?.[1]?.replace(/\s+/g, '') || ''
 }
 

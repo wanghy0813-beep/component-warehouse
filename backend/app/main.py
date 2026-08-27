@@ -186,6 +186,7 @@ from .services.excel_import import (
     parse_excel,
 )
 from .services.price_import import PriceStatementError, SHIPPED_STATUS, money, parse_price_statement
+from .services.hardware_categories import CATEGORY_BY_NAME, classify_hardware_category
 from .services.external_order_import import (
     parse_external_order,
     find_external_duplicate,
@@ -1841,6 +1842,21 @@ def normalize_for_inventory(db: Session, values: dict, *, clean_name: bool = Tru
         normalized["warehouse_code"] = normalize_warehouse_code(normalized.get("warehouse_code"))
     if not normalized.get("datasheet_url") and normalized.get("lcsc_number") and not normalized.get("buy_url"):
         normalized["datasheet_url"] = f"https://www.lcsc.com/product-detail/{normalized['lcsc_number']}.html"
+    category = db.get(Category, normalized.get("category_id")) if normalized.get("category_id") else None
+    if category is None:
+        category_name, reason = classify_hardware_category(
+            normalized.get("name"), normalized.get("model"), normalized.get("manufacturer"),
+            normalized.get("description"), normalized.get("parameters"), normalized.get("package"),
+            normalized.get("tags"), normalized.get("source_title"),
+        )
+        if category_name:
+            category = db.query(Category).filter(Category.name == category_name).first()
+            if category:
+                normalized["category_id"] = category.id
+                if reason and not normalized.get("remark"):
+                    normalized["remark"] = f"17区自动分类：{reason}"
+    if category and category.name in CATEGORY_BY_NAME and not normalized.get("location"):
+        normalized["location"] = CATEGORY_BY_NAME[category.name].location
     return normalized
 
 

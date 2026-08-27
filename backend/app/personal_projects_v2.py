@@ -325,7 +325,9 @@ def status_history_out(rows: list[PersonalProjectStatusEventV2]) -> list[dict]:
 def lifecycle_out(project: PersonalProjectV2, rows: list[PersonalProjectStatusEventV2]) -> dict:
     first_reached: dict[str, PersonalProjectStatusEventV2] = {}
     for row in sorted(rows, key=lambda item: item.created_at):
-        if row.to_status in LIFECYCLE_STATUSES and row.to_status not in first_reached:
+        if row.to_status in LIFECYCLE_STATUSES and (
+            row.to_status not in first_reached or row.source == "timeline_actual"
+        ):
             first_reached[row.to_status] = row
     current_index = LIFECYCLE_STATUSES.index(project.status) if project.status in LIFECYCLE_STATUSES else -1
     nodes = []
@@ -816,6 +818,78 @@ def replace_project_actual_timeline(
         PersonalProjectStatusEventV2.project_id == project.id
     ).delete(synchronize_session=False)
     add_actual_timeline_events(db, project, auth.user_id, dict(ordered))
+    db.commit()
+    db.refresh(project)
+    return get_project(project_id, auth, db)
+
+
+@router.patch("/projects/{project_id}/timeline/actual")
+def backfill_project_actual_timeline_nodes(
+    project_id: str,
+    payload: TimelineActualUpdate,
+    auth: Protected,
+    db: Session = Depends(get_db),
+):
+    """Add or correct individual reached lifecycle dates without rewriting audit history."""
+    project = require_project(db, project_id, auth)
+    history = db.query(PersonalProjectStatusEventV2).filter(
+        PersonalProjectStatusEventV2.project_id == project.id
+    ).order_by(PersonalProjectStatusEventV2.created_at.asc()).all()
+    reached_indexes = [
+        LIFECYCLE_STATUSES.index(row.to_status)
+        for row in history
+        if row.to_status in LIFECYCLE_STATUSES
+    ]
+    if project.status in LIFECYCLE_STATUSES:
+        reached_indexes.append(LIFECYCLE_STATUSES.index(project.status))
+    if not reached_indexes:
+        raise HTTPException(status_code=409, detail="项目还没有可补录的研发节点")
+    max_reached = max(reached_indexes)
+    values = payload.lifecycle_dates or {}
+    unknown = [status for status in values if status not in LIFECYCLE_STATUSES]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"未知研发节点：{unknown[0]}")
+    future = [status for status, occurred_on in values.items() if occurred_on > today()]
+    if future:
+        raise HTTPException(status_code=422, detail="实际节点日期不能晚于今天")
+    unreached = [status for status in values if LIFECYCLE_STATUSES.index(status) > max_reached]
+    if unreached:
+        raise HTTPException(status_code=422, detail=f"尚未到达 {PROJECT_STATUSES[unreached[0]]}，不能补录日期")
+    if not values:
+        raise HTTPException(status_code=422, detail="请至少填写一个节点日期")
+
+    existing_dates: dict[str, date] = {}
+    for row in history:
+        if row.to_status not in LIFECYCLE_STATUSES:
+            continue
+        if row.to_status not in existing_dates or row.source == "timeline_actual":
+            existing_dates[row.to_status] = row.created_at.date()
+    effective = {**existing_dates, **values}
+    ordered_known = [
+        (status, effective[status])
+        for status in LIFECYCLE_STATUSES[:max_reached + 1]
+        if status in effective
+    ]
+    if any(ordered_known[index][1] > ordered_known[index + 1][1] for index in range(len(ordered_known) - 1)):
+        raise HTTPException(status_code=422, detail="节点日期必须按研发阶段依次递增")
+
+    if "planning" in values:
+        project.start_date = validate_project_start_date(values["planning"])
+    for status, occurred_on in values.items():
+        db.query(PersonalProjectStatusEventV2).filter(
+            PersonalProjectStatusEventV2.project_id == project.id,
+            PersonalProjectStatusEventV2.to_status == status,
+            PersonalProjectStatusEventV2.source == "timeline_actual",
+        ).delete(synchronize_session=False)
+        index = LIFECYCLE_STATUSES.index(status)
+        db.add(PersonalProjectStatusEventV2(
+            id=new_id(), project_id=project.id,
+            from_status=LIFECYCLE_STATUSES[index - 1] if index else None,
+            to_status=status, source="timeline_actual",
+            note="项目立项（后补实际日期）" if index == 0 else f"进入 {PROJECT_STATUSES[status]}（后补实际日期）",
+            created_by_user_id=auth.user_id,
+            created_at=datetime.combine(occurred_on, datetime_time(hour=9)) + timedelta(minutes=index),
+        ))
     db.commit()
     db.refresh(project)
     return get_project(project_id, auth, db)

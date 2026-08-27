@@ -26,7 +26,7 @@
           clearable
           collapse-tags
           collapse-tags-tooltip
-          placeholder="默认排除：开发板、连接件"
+          placeholder="默认排除：模块/开发板/显示、USB/XT/线束"
         >
           <el-option
             v-for="item in excludedCategoryOptions"
@@ -103,7 +103,7 @@ const storageKey = 'cw_label_40_settings'
 const defaults = {
   scope: 'imported',
   imported_range: [],
-  excluded_categories: ['开发板', '连接件'],
+  excluded_categories: ['模块/开发板/显示', 'USB/XT/线束'],
   start_slot: 1,
   copies: 1,
   offset_x_mm: 0,
@@ -122,7 +122,7 @@ try { stored = JSON.parse(localStorage.getItem(storageKey) || '{}') } catch {}
 const form = reactive({ ...defaults, ...stored })
 if (!Array.isArray(form.excluded_categories)) form.excluded_categories = []
 if (stored.exclusion_default_version !== 2) {
-  for (const name of ['开发板', '连接件']) {
+  for (const name of ['模块/开发板/显示', 'USB/XT/线束']) {
     if (!form.excluded_categories.includes(name)) form.excluded_categories.push(name)
   }
 }

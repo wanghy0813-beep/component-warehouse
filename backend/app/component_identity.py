@@ -14,38 +14,18 @@ from .models import (
     ComponentIdentityRegistry,
     CompetitionLibraryComponent,
 )
+from .services.hardware_categories import HARDWARE_CATEGORIES
 
 
 V060_COMPONENT_IDENTITIES = "v0.6.0-component-identities"
-DEFAULT_CATEGORY_PREFIXES = {
-    "电阻": "RES",
-    "电容": "CAP",
-    "电感": "IND",
-    "二极管": "DIO",
-    "三极管": "BJT",
-    "MOS管": "MOS",
-    "芯片": "ICS",
-    "连接件": "CON",
-    "接口": "IF",
-    "保护器件": "PRO",
-    "电源": "PWR",
-    "开关": "SWT",
-    "传感器": "SEN",
-    "开发板": "DEV",
-    "设备": "EQP",
-    "显示模块": "DIS",
-    "机电件": "MEC",
-    "功能模块": "FNC",
-    "通信模块": "COM",
-    "散热件": "HET",
-    "结构件": "STR",
-    "时钟源": "CLK",
-    "其他": "OTH",
-    "未分类": "UNC",
-}
-
-# Three characters are required. IFC is used instead of IF for the interface category.
-DEFAULT_CATEGORY_PREFIXES["接口"] = "IFC"
+DEFAULT_CATEGORY_PREFIXES = {item.name: item.prefix for item in HARDWARE_CATEGORIES}
+DEFAULT_CATEGORY_PREFIXES.update({
+    "电阻": "RES", "电容": "CAP", "电感": "IND", "二极管": "DIO", "三极管": "BJT",
+    "MOS管": "MOS", "芯片": "ICS", "连接件": "CON", "接口": "IFC", "保护器件": "PRO",
+    "电源": "PWR", "开关": "SWT", "传感器": "SEN", "开发板": "DEV", "设备": "EQP",
+    "显示模块": "DIS", "机电件": "MEC", "功能模块": "FNC", "通信模块": "COM",
+    "散热件": "HET", "结构件": "STR", "时钟源": "CLK", "其他": "OTH", "未分类": "UNC",
+})
 CODE_PATTERN = re.compile(r"^[A-Z0-9]{3}-\d{8}$")
 PREFIX_PATTERN = re.compile(r"^[A-Z0-9]{3}$")
 

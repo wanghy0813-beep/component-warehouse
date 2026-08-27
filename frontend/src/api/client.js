@@ -367,6 +367,9 @@ export const getWorkspaceProject = (projectId) =>
 export const replaceWorkspaceProjectTimeline = (projectId, lifecycleDates) =>
   api.put(projectWorkspacePath(projectId, '/timeline/actual'), { lifecycle_dates: lifecycleDates }).then((response) => response.data)
 
+export const backfillWorkspaceProjectTimeline = (projectId, lifecycleDates) =>
+  api.patch(projectWorkspacePath(projectId, '/timeline/actual'), { lifecycle_dates: lifecycleDates }).then((response) => response.data)
+
 export const updateWorkspaceProject = (projectId, payload) =>
   api.patch(projectWorkspacePath(projectId), payload).then((response) => response.data)
 

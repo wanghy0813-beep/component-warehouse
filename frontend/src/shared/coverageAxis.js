@@ -122,7 +122,7 @@ function createResistanceAxis(values) {
 }
 
 export function createCoverageAxis(values, category) {
-  return category === '电阻' ? createResistanceAxis(values) : createLogAxis(values)
+  return ['电阻', '贴片电阻', '直插/采样电阻'].includes(category) ? createResistanceAxis(values) : createLogAxis(values)
 }
 
 export function layoutCoveragePointLabels(points, { minimumGap = 4, maximumRows = 4 } = {}) {

@@ -307,6 +307,33 @@ def test_initial_timeline_can_be_backfilled_but_manual_audit_history_is_never_ov
     assert refused_actual.status_code == 409
 
 
+def test_missing_reached_timeline_nodes_can_be_added_after_manual_status_history(workspace_env):
+    client = workspace_env["client"]
+    started = date.today() - timedelta(days=10)
+    project = client.post("/api/project-workspace/projects", json={
+        "project_code": "WXY-SPARSE-TIMELINE",
+        "name": "节点后补",
+        "status": "planning",
+        "start_date": started.isoformat(),
+    }).json()
+    assert client.post(
+        f"/api/project-workspace/projects/{project['id']}/status",
+        json={"status": "pcb_design", "source": "web", "note": "已进入 PCB"},
+    ).status_code == 200
+    response = client.patch(
+        f"/api/project-workspace/projects/{project['id']}/timeline/actual",
+        json={"lifecycle_dates": {
+            "component_selection": (started + timedelta(days=2)).isoformat(),
+            "schematic": (started + timedelta(days=5)).isoformat(),
+        }},
+    )
+    assert response.status_code == 200, response.text
+    nodes = {row["status"]: row for row in response.json()["lifecycle"]["nodes"]}
+    assert nodes["component_selection"]["source"] == "timeline_actual"
+    assert nodes["schematic"]["occurred_on"] == (started + timedelta(days=5)).isoformat()
+    assert any(row["source"] == "web" for row in response.json()["status_history"])
+
+
 def test_project_start_date_cannot_be_in_the_future(workspace_env):
     response = workspace_env["client"].post("/api/project-workspace/projects", json={
         "project_code": "WXY-FUTURE",

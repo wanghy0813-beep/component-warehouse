@@ -10,6 +10,7 @@ import xlrd
 
 from ..models import Component, ImportRecord
 from .category_governance import canonical_order_category_name
+from .hardware_categories import classify_hardware_category
 from .mimo_ai import MimoRequestError, analyze_external_order_table
 
 
@@ -217,10 +218,14 @@ def _parsed_ai_external_row(item: dict[str, Any], filename: str | None, valid_ca
     normalized_spec = str(item.get("normalized_spec") or "").strip() or None
     quantity = _to_int(item.get("actual_quantity"), 1)
     order_category = canonical_order_category_name(item.get("order_category"), valid_categories)
+    deterministic_category, deterministic_reason = classify_hardware_category(
+        item.get("normalized_name"), item.get("model"), item.get("parameters"),
+        item.get("package"), item.get("product_title"), item.get("sku_text"),
+    )
     ai_category = str(item.get("category") or "").strip()
     confidence = str(item.get("confidence") or "").strip().lower()
     requires_confirmation = bool(item.get("requires_confirmation"))
-    category = order_category if order_category else (
+    category = order_category or (deterministic_category if deterministic_category in valid_categories else "") or (
         ai_category
         if ai_category in valid_categories and confidence == "high" and not requires_confirmation
         else ""
@@ -233,6 +238,7 @@ def _parsed_ai_external_row(item: dict[str, Any], filename: str | None, valid_ca
         f"外部订单 AI 导入行: {source_row}",
         f"订单分类: {order_category}" if order_category else None,
         f"AI 识别依据: {item.get('reason')}" if item.get("reason") else None,
+        f"17区规则: {deterministic_reason}" if deterministic_reason else None,
         f"订单购买件数: {item.get('order_quantity')}" if item.get("order_quantity") not in (None, "") else None,
         f"每件包含数量: {item.get('component_quantity_per_order')}" if item.get("component_quantity_per_order") not in (None, "") else None,
         f"原始标题: {source_title}",

@@ -15,7 +15,8 @@ from app.seed import DEFAULT_CATEGORIES
 
 
 def test_v060_identity_migration_uses_global_non_reusable_sequence(tmp_path):
-    assert "设备" in DEFAULT_CATEGORIES
+    assert len(DEFAULT_CATEGORIES) == 17
+    assert "模块/开发板/显示" in DEFAULT_CATEGORIES
     engine = create_engine(f"sqlite:///{tmp_path / 'identity.db'}")
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)

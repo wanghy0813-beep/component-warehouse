@@ -150,9 +150,8 @@ def _pick(values: list[Any], mapping: dict[str, int], field: str) -> str:
 
 def guess_category(order_category: str, name: str | None, parameters: str | None, db: Session) -> int | None:
     category = category_from_order_text(db, order_category)
-    if str(order_category or "").strip():
-        return category.id if category else None
-    category = category_from_order_text(db, name) or category_from_order_text(db, parameters)
+    if not category:
+        category = category_from_order_text(db, " ".join(str(value or "") for value in (name, parameters, order_category)))
     return category.id if category else None
 
 

@@ -1,0 +1,108 @@
+[
+  {
+    "order_number": "SO2608220081", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 2, "lcsc_number": "C2960225", "model": "63V47uF CD288",
+    "name": "47µF 63V 直插铝电解电容", "manufacturer": "HRK", "quantity": 20, "unit_price": "0.1635",
+    "merchandise_total": "3.27", "paid_total": "3.27", "category": "电解/固态", "package": "插件,D6.3xL12mm",
+    "parameters": "47µF ±20%，63V，直插铝电解", "function": "电源滤波、储能和纹波抑制"
+  },
+  {
+    "order_number": "SO2608220081", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 3, "lcsc_number": "C46634460", "model": "JER2512F3R005",
+    "name": "5mΩ 3W 2512 电流采样电阻", "manufacturer": "JIERR", "quantity": 10, "unit_price": "0.428",
+    "merchandise_total": "4.28", "paid_total": "4.28", "category": "直插/采样电阻", "package": "2512",
+    "parameters": "5mΩ ±1%，3W", "function": "大电流采样、分流和功率检测"
+  },
+  {
+    "order_number": "SO2608220081", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 4, "lcsc_number": "C7509403", "model": "XL1509A-5.0E1",
+    "name": "XL1509A-5.0E1 2A 降压稳压器", "manufacturer": "XLSEMI", "quantity": 5, "unit_price": "1.7045",
+    "merchandise_total": "8.52", "paid_total": "8.52", "category": "电源IC", "package": "SOP-8",
+    "parameters": "4.5–50V 输入，固定 5V 输出，2A，150kHz", "function": "宽输入降压 DC-DC 稳压",
+    "datasheet_url": "https://www.xlsemi.com/datasheet/XL1509A-EN.pdf"
+  },
+  {
+    "order_number": "SO2608220081", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 5, "lcsc_number": "C108639", "model": "NCE6020AK",
+    "name": "NCE6020AK N 沟道功率 MOSFET", "manufacturer": "NCE", "quantity": 5, "unit_price": "1.2697",
+    "merchandise_total": "6.35", "paid_total": "6.35", "category": "BJT/MOS", "package": "TO-252-2L",
+    "parameters": "60V，20A，N 沟道", "function": "电源开关、高频开关和负载驱动",
+    "datasheet_url": "http://www.ncepower.com"
+  },
+  {
+    "order_number": "SO2608220081", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 6, "lcsc_number": "C5184243", "model": "USB4105-GF-A-120",
+    "name": "USB4105-GF-A-120 USB Type-C 母座", "manufacturer": "GCT", "quantity": 2, "unit_price": "5.76",
+    "merchandise_total": "11.52", "paid_total": "11.52", "category": "USB/XT/线束", "package": "SMD",
+    "parameters": "USB 2.0 Type-C 母座，16 触点，水平贴装", "function": "USB Type-C 电源和 USB 2.0 数据连接",
+    "datasheet_url": "https://gct.co/connector/usb4105"
+  },
+  {
+    "order_number": "SO2608220117", "ordered_at": "2026-08-22", "received_at": "2026-08-24",
+    "source": "立创商城对账单", "source_row": 8, "lcsc_number": "C282578", "model": "IP5506_BZ_188",
+    "name": "IP5506_BZ_188 移动电源管理 SOC", "manufacturer": "INJOINIC", "quantity": 1, "unit_price": "3.34",
+    "merchandise_total": "3.34", "paid_total": "3.34", "category": "电源IC", "package": "ESOP-16",
+    "parameters": "2A 充电，最高 2.4A 放电，内置升压和电量显示驱动", "function": "单芯片移动电源充电、升压放电和电量显示",
+    "datasheet_url": "https://www.injoinic.com/api/static/uploads/20250528/20250528180649_6836e039cd9b2.pdf"
+  },
+  {
+    "order_number": "5127187107149000536", "ordered_at": "2026-08-13", "source": "淘宝订单截图", "source_row": 1,
+    "external_ref": "EXT-K-TYPE-PROBE-1M", "model": "K型 1米（不防水）", "name": "K 型铠装热电偶测温探头",
+    "quantity": 1, "unit_price": "2.16", "merchandise_total": "2.16", "paid_total": "2.16", "category": "传感器", "package": "探针 φ4×30mm，1m 线",
+    "parameters": "K 型，1 米，不防水；商品标题同时出现 Pt100，分度号建议使用前实测确认", "function": "接触式温度测量"
+  },
+  {
+    "order_number": "5127189447031000536", "ordered_at": "2026-08-12", "source": "淘宝订单截图", "source_row": 2,
+    "external_ref": "EXT-PT1000-M222-100MM", "model": "PT1000 A级/两线制100mm", "name": "PT1000 A 级薄膜铂电阻温度传感器",
+    "quantity": 1, "unit_price": "7.00", "merchandise_total": "7.00", "paid_total": "7.00", "category": "传感器", "package": "M222，两线制，100mm",
+    "parameters": "PT1000，A 级，两线制，100mm", "function": "精密电阻式温度测量"
+  },
+  {
+    "order_number": "5127193947120019717", "ordered_at": "2026-08-19", "source": "淘宝订单截图", "source_row": 3,
+    "external_ref": "EXT-ST7796U-35-40P", "model": "ST7796U-3.5-320x480-40P", "name": "3.5 英寸 ST7796U TFT LCD 裸屏",
+    "quantity": 1, "unit_price": "29.04", "merchandise_total": "29.04", "order_shipping": "7.98", "category": "模块/开发板/显示", "package": "插接 40PIN",
+    "parameters": "320×480，3.5 英寸，ST7796U", "function": "彩色图形和人机界面显示",
+    "datasheet_url": "https://yuyinglcd.com/ch/strapi-uploads/ST_7796_U_SPEC_V1_0_33fd805e9b.pdf"
+  },
+  {
+    "order_number": "5127193947120019717", "ordered_at": "2026-08-19", "source": "淘宝订单截图", "source_row": 4,
+    "external_ref": "EXT-SH1106-13-30P-W", "model": "SH1106-1.3-128x64-30P-W", "name": "1.3 英寸 SH1106 OLED 白色裸屏",
+    "quantity": 2, "unit_price": "7.46", "merchandise_total": "14.92", "order_shipping": "7.98", "category": "模块/开发板/显示", "package": "30PIN 裸屏",
+    "parameters": "128×64，1.3 英寸，白色，SH1106", "function": "低功耗单色图形和字符显示",
+    "datasheet_url": "https://www.crystalfontz.com/controllers/SinoWealth/SH1106"
+  },
+  {
+    "order_number": "5127193947120019717", "ordered_at": "2026-08-19", "source": "淘宝订单截图", "source_row": 5,
+    "external_ref": "EXT-ST7789-154-12P", "model": "ST7789-1.54-240x240-12P", "name": "1.54 英寸 ST7789 IPS TFT LCD 裸屏",
+    "quantity": 2, "unit_price": "8.33", "merchandise_total": "16.66", "order_shipping": "7.98", "category": "模块/开发板/显示", "package": "焊接 12PIN FPC",
+    "parameters": "240×240，1.54 英寸，IPS，ST7789", "function": "彩色图形和人机界面显示",
+    "datasheet_url": "https://orientdisplay.com/controller-datasheets/sitronix/st7789v-lcd-controller-datasheet/"
+  },
+  {
+    "order_number": "5127193551415091737", "ordered_at": "2026-08-22", "received_at": "2026-08-27", "source": "淘宝订单截图", "source_row": 6,
+    "external_ref": "EXT-CH224A", "model": "CH224A", "name": "CH224A USB PD 受电协议芯片", "manufacturer": "WCH",
+    "quantity": 3, "unit_price": "1.18", "merchandise_total": "3.54", "paid_total": "3.55", "category": "电源IC", "package": "ESSOP-10",
+    "parameters": "USB Type-C UFP/PD 受电，支持请求固定电压，最高 100W", "function": "从 USB PD 适配器协商所需供电电压",
+    "datasheet_url": "https://www.wch-ic.com/downloads/CH224DS1_PDF.html"
+  },
+  {
+    "order_number": "5127371750366192120", "ordered_at": "2026-08-22", "received_at": "2026-08-27", "source": "淘宝订单截图", "source_row": 7,
+    "external_ref": "EXT-ESP32-C3-MINI-1-N4", "model": "ESP32-C3-MINI-1-N4", "name": "ESP32-C3-MINI-1-N4 Wi-Fi/BLE 模组", "manufacturer": "Espressif",
+    "quantity": 1, "unit_price": "5.30", "merchandise_total": "5.30", "paid_total": "5.30", "category": "模块/开发板/显示", "package": "SMD 模组",
+    "parameters": "ESP32-C3，RISC-V 单核，2.4GHz Wi-Fi，Bluetooth 5，4MB Flash", "function": "嵌入式无线联网、BLE 通信和控制",
+    "datasheet_url": "https://documentation.espressif.com/esp32-c3-mini-1_datasheet_en.html"
+  },
+  {
+    "order_number": "5127372326281055727", "ordered_at": "2026-08-21", "received_at": "2026-08-27", "source": "淘宝订单截图", "source_row": 8,
+    "external_ref": "EXT-IP6557", "model": "IP6557", "name": "IP6557 USB-C PD3.1 双向升降压芯片", "manufacturer": "INJOINIC",
+    "quantity": 5, "unit_price": "5.50", "merchandise_total": "27.50", "paid_total": "27.50", "category": "电源IC", "package": "QFN40",
+    "parameters": "USB-C PD3.1/PPS/EPR，双向 Buck-Boost，最高约 140W", "function": "高功率移动电源和 USB-C 双向快充控制"
+  },
+  {
+    "order_number": "TB-20260827-AP64350-SCREENSHOT", "ordered_at": "2026-08-27", "received_at": "2026-08-27", "source": "淘宝订单截图", "source_row": 9,
+    "external_ref": "EXT-AP64350SP-13", "model": "AP64350SP-13", "name": "AP64350SP-13 3.5A 同步降压稳压器", "manufacturer": "Diodes Incorporated",
+    "quantity": 3, "unit_price": "6.32", "merchandise_total": "18.96", "paid_total": "18.96", "category": "电源IC", "package": "SOP-8",
+    "parameters": "3.8–40V 输入，3.5A，同步 Buck，低静态电流", "function": "宽输入高效率降压 DC-DC 稳压",
+    "datasheet_url": "https://www.diodes.com/datasheet/download/AP64350.pdf"
+  }
+]

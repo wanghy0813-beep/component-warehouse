@@ -3,6 +3,8 @@
 !.env.example
 
 data/
+!scripts/data/
+!scripts/data/2026-08-27-purchases.json
 *.db
 *.sqlite
 *.sqlite3

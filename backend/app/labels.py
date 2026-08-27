@@ -43,6 +43,22 @@ LABEL_LOGO_FILE = os.path.join(os.path.dirname(__file__), "assets", "brand-logo-
 SERVER_RENDER_DPI = 300
 DEFAULT_CATEGORY_COLORS = {"#eef6ff", "#eef2f7", "#eff6ff", "#f8fafc", "#ffffff", ""}
 CATEGORY_FALLBACK_COLORS = {
+    "贴片电阻": "#DBEAFE",
+    "直插/采样电阻": "#BFDBFE",
+    "MLCC": "#DCFCE7",
+    "电解/固态": "#BBF7D0",
+    "电感/晶振": "#FEF3C7",
+    "二极管/保护": "#FCE7F3",
+    "BJT/MOS": "#FFE4E6",
+    "电源IC": "#FFEDD5",
+    "模拟IC": "#EDE9FE",
+    "数字/接口IC": "#E0E7FF",
+    "排针/排母": "#CCFBF1",
+    "PH/XH/ZH/MX": "#99F6E4",
+    "USB/XT/线束": "#F5F5F4",
+    "开关/机电": "#FAE8FF",
+    "模块/开发板/显示": "#FDE68A",
+    "结构/工具/电池": "#E7E5E4",
     "电阻": "#DBEAFE",
     "电容": "#DCFCE7",
     "电感": "#FEF3C7",
@@ -85,6 +101,9 @@ CUSTOM_LABEL_FIELD_PREVIEW_VALUES = {
 STANDARD_CATEGORY_LABEL_KIND = "standard_category_group"
 KNOWN_CATEGORY_NAMES = set(CATEGORY_FALLBACK_COLORS.keys())
 MODEL_SUMMARY_CATEGORY_NAMES = {
+    "模块/开发板/显示",
+    "开关/机电",
+    "结构/工具/电池",
     "开发板",
     "设备",
     "功能模块",

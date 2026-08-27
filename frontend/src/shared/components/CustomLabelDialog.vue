@@ -335,7 +335,7 @@ const fieldPreviewValues = {
   warehouse_code: 'RES-00000001',
   name: '10k 电阻',
   model: '0805W8F1002T5E',
-  category: '电阻',
+  category: '贴片电阻',
   package: '0805',
   normalized_spec: '10kΩ',
   lcsc_number: 'C17414',
@@ -347,30 +347,25 @@ const fieldPreviewValues = {
   scan_url: 'https://wxy-lab.example/scan/RES-00000001'
 }
 const categoryPresets = [
-  '电阻',
-  '电容',
-  '电感',
-  '二极管',
-  '三极管',
-  'MOS管',
-  '芯片',
-  '电源',
-  '接口',
-  '连接件',
-  '时钟源',
-  '开关',
-  '开发板',
-  '功能模块',
-  '通信模块',
-  '显示模块',
-  '机电件',
-  '散热件',
-  '保护器件',
+  '贴片电阻',
+  '直插/采样电阻',
+  'MLCC',
+  '电解/固态',
+  '电感/晶振',
+  '二极管/保护',
+  'BJT/MOS',
+  '电源IC',
+  '模拟IC',
+  '数字/接口IC',
   '传感器',
-  '结构件',
-  '其他'
+  '排针/排母',
+  'PH/XH/ZH/MX',
+  'USB/XT/线束',
+  '开关/机电',
+  '模块/开发板/显示',
+  '结构/工具/电池'
 ].map((name) => ({ name }))
-const modelSummaryCategories = new Set(['开发板', '功能模块', '通信模块', '显示模块', '机电件', '传感器', '结构件'])
+const modelSummaryCategories = new Set(['模块/开发板/显示', '开关/机电', '传感器', '结构/工具/电池'])
 const templateExamples = [
   { id: 'category-bin', name: '分类料盒标签', use: '抽屉 / 分格盒 / 货架' },
   { id: 'inventory-check', name: '待盘点/待确认标签', use: '复核 / 临时标记' }
@@ -540,7 +535,7 @@ function elementsForTemplateExample(id) {
   const stamp = Date.now()
   const examples = {
     'category-bin': [
-      ...standardCategoryElements('电阻', stamp)
+      ...standardCategoryElements('贴片电阻', stamp)
     ],
     'inventory-check': [
       { id: `status-${stamp}`, type: 'text', text: '待确认', x_mm: 4.8, y_mm: 6.4, width_mm: 17, height_mm: 6, font_size: 15, font_family: 'system', color: '#b42318', align: 'left' },
