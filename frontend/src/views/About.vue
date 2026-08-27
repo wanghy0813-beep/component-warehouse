@@ -79,14 +79,14 @@
 
       <section v-if="!IS_DESKTOP" class="panel codex-panel">
         <div class="section-head">
-          <h2>Codex 接入</h2>
-          <el-tag type="success" effect="plain">查询 + 审批草案</el-tag>
+          <h2>WXY LAB Hardware · ChatGPT 接入</h2>
+          <el-tag type="success" effect="plain">完整读取 + 审批草案</el-tag>
         </div>
-        <p>让 ChatGPT 分析板卡和 BOM 时直接查询个人库存；写入只生成网页审批单。</p>
+        <p>让 ChatGPT 分析板卡、BOM 和项目时完整读取个人业务库；写入只生成网页审批单。</p>
         <div class="codex-points">
           <span>个人库隔离</span><span>逐单审批</span><span>30 天可撤销</span>
         </div>
-        <el-button type="primary" plain @click="$router.push('/integrations/codex')">管理 Codex 接入</el-button>
+        <el-button type="primary" plain @click="$router.push('/integrations/codex')">管理 ChatGPT 接入</el-button>
       </section>
 
       <section v-else class="panel online-only-panel">

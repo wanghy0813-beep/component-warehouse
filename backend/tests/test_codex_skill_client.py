@@ -29,6 +29,19 @@ class MockHandler(BaseHTTPRequestHandler):
             status, payload = 200, {"owner_user_id": 1, "scopes": ["inventory:read"], "expires_at": "2027-07-18T00:00:00Z"}
         elif self.path.endswith("/v1/categories"):
             status, payload = 200, {"items": [{"id": 2, "name": "设备", "code_prefix": "EQP"}], "count": 1}
+        elif self.path.endswith("/v1/workspace"):
+            status, payload = 200, {
+                "service_name": "WXY LAB Hardware",
+                "read_mode": "full_personal_workspace",
+                "datasets": [{"dataset": "components", "count": 1}],
+            }
+        elif "/v1/workspace/components" in self.path:
+            status, payload = 200, {
+                "dataset": "components",
+                "items": [{"warehouse_code": "RES-00000001"}],
+                "next_cursor": None,
+                "complete": True,
+            }
         elif "/components/search" in self.path:
             status, payload = 200, {"items": [{"warehouse_code": "RES-00000001", "available_quantity": 8, "average_unit_price": 0.125, "price_currency": "CNY"}]}
         elif self.path.endswith("/components/match"):
@@ -81,6 +94,14 @@ def test_client_search_match_propose_status_and_undo(mock_service, tmp_path):
 
     categories = client_module.run(parse(*config_flag, "categories"))
     assert categories["items"] == [{"id": 2, "name": "设备", "code_prefix": "EQP"}]
+
+    workspace = client_module.run(parse(*config_flag, "workspace"))
+    assert workspace["service_name"] == "WXY LAB Hardware"
+    assert workspace["datasets"][0]["dataset"] == "components"
+    dataset = client_module.run(parse(*config_flag, "read", "components", "--limit", "50"))
+    assert dataset["complete"] is True
+    assert dataset["items"][0]["warehouse_code"] == "RES-00000001"
+    assert any("/v1/workspace/components?limit=50" in row[1] for row in MockHandler.requests)
 
     match_file = tmp_path / "match.json"
     match_file.write_text(json.dumps([{"designator": "R1", "quantity": 2, "value": "10k", "footprint": "0603"}]))

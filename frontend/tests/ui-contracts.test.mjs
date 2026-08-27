@@ -286,7 +286,8 @@ test('Codex integration exposes one-time read tokens and SSO-only operation appr
 
   assert.match(router, /\/integrations\/codex\/operations\/:operationId/)
   assert.match(integrations, /密钥只显示一次/)
-  assert.match(integrations, /读取个人库并提交无副作用草案/)
+  assert.match(integrations, /WXY LAB Hardware · ChatGPT 接入/)
+  assert.match(integrations, /完整读取个人业务库并提交无副作用草案/)
   assert.match(integrations, /listCodexTokens/)
   assert.match(integrations, /revokeCodexToken/)
   assert.match(operation, /批准并执行/)
@@ -295,7 +296,7 @@ test('Codex integration exposes one-time read tokens and SSO-only operation appr
   assert.match(operation, /目标状态变化后本单会拒绝执行/)
   assert.match(api, /approveCodexOperation/)
   assert.match(api, /requestCodexOperationUndo/)
-  assert.match(management, /管理 Codex 接入/)
+  assert.match(management, /管理 ChatGPT 接入/)
 })
 
 test('management cards use a compact desktop grid without oversized empty rows', () => {

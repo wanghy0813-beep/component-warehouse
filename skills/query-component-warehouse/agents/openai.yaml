@@ -1,6 +1,6 @@
 interface:
-  display_name: "查询元器件仓库"
-  short_description: "查询个人元器件库存、匹配板卡 BOM，并生成需网页审批的变更单"
-  default_prompt: "使用 $query-component-warehouse 分析这块板，优先采用我个人库里的器件；如需写入，只生成网页审批单。"
+  display_name: "WXY LAB Hardware"
+  short_description: "完整读取个人硬件业务库、分析库存与项目，并生成需网页审批的变更单"
+  default_prompt: "使用 $query-component-warehouse 读取我的 WXY LAB Hardware 个人业务库并完成分析；如需写入，只生成网页审批单。"
 policy:
   allow_implicit_invocation: true

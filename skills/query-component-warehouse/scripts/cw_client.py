@@ -21,7 +21,7 @@ from typing import Any
 
 
 DEFAULT_CONFIG = Path(os.environ.get("CW_CODEX_CONFIG", "~/.config/component-warehouse/codex.json")).expanduser()
-USER_AGENT = "query-component-warehouse-skill/1.3"
+USER_AGENT = "query-component-warehouse-skill/1.4"
 
 
 class ClientError(RuntimeError):
@@ -246,6 +246,11 @@ def _build_parser() -> argparse.ArgumentParser:
     get.add_argument("warehouse_code")
 
     sub.add_parser("categories", help="列出系统维护的元器件和设备分类")
+    sub.add_parser("workspace", help="列出完整个人业务库的数据集、字段和记录数")
+    read = sub.add_parser("read", help="分页读取一个个人业务库数据集")
+    read.add_argument("dataset", help="workspace 返回的数据集名称")
+    read.add_argument("--cursor", help="上一页返回的 next_cursor")
+    read.add_argument("--limit", type=int, default=100)
 
     match = sub.add_parser("match", help="批量匹配结构化板卡/BOM 需求 JSON")
     match.add_argument("input", help="JSON 文件路径，或 - 从标准输入读取")
@@ -289,6 +294,15 @@ def run(args: argparse.Namespace) -> Any:
         return _request(config, "GET", f"v1/components/{urllib.parse.quote(args.warehouse_code, safe='')}")
     if args.command == "categories":
         return _request(config, "GET", "v1/categories")
+    if args.command == "workspace":
+        return _request(config, "GET", "v1/workspace")
+    if args.command == "read":
+        return _request(
+            config,
+            "GET",
+            f"v1/workspace/{urllib.parse.quote(args.dataset, safe='')}",
+            query={"cursor": args.cursor, "limit": args.limit},
+        )
     if args.command == "match":
         payload = _load_input(args.input)
         if isinstance(payload, list):

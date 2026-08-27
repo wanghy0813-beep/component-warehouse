@@ -7,6 +7,8 @@ The client adds `/api/integrations/codex/` to the configured service root and au
 | Client command | Endpoint | Notes |
 |---|---|---|
 | session (configuration check) | `GET v1/session` | Owner, scope, expiry, service version |
+| `workspace` | `GET v1/workspace` | Complete personal-business dataset catalog, safe fields, and record counts |
+| `read DATASET` | `GET v1/workspace/{dataset}` | Cursor-paginated rows, up to 200 per page; follow `next_cursor` until null |
 | `search` | `GET v1/components/search` | Name, model, spec, package, LCSC number, stock filters |
 | `get` | `GET v1/components/{warehouse_code}` | Full personal component, lots, suppliers, movements |
 | `categories` | `GET v1/categories` | System-maintained component and equipment categories with stable numeric IDs and code prefixes |
@@ -18,6 +20,8 @@ The client adds `/api/integrations/codex/` to the configured service root and au
 | `project-costs` | `GET v1/projects/{id_or_code}/costs` | BOM estimate, actual material use, direct expense, comprehensive cost, purchases, and unpriced counts |
 | `risks` | `GET v1/risks` | Dynamic and manual personal risks with stable codes |
 | `purchases` | `GET v1/purchases` | Personal orders, stable codes, outstanding and reliable in-transit quantities |
+
+`workspace` is the complete personal-business read boundary for WXY LAB Hardware. It covers every dataset used by offline synchronization plus personal order/price import history: inventory, lots, stock movements, supplier and price records, current and archived project chains, BOM/board/solder/cost/expense/risk/file metadata, fabrication and assembly metadata, purchases and receipts, EDA records, and custom labels. It excludes team or other-user rows, account credentials, all token tables, audit logs, AI cache, sync internals, server storage paths, raw internal import snapshots, and binary file contents. Dataset names and fields are returned by the live catalog; do not guess them. A dataset is complete only after every page has been read and `next_cursor` is null.
 
 Component results from `search`, `get`, and candidates inside `match` include nullable `average_unit_price` with `price_currency: "CNY"`. This is the personal inventory's landed weighted average. Report it with the component when present; report null as “未计价”, never as zero. Supplier-part `unit_price` remains a separate quote and must not replace this average.
 

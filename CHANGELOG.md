@@ -1,5 +1,11 @@
 # WXY LAB Hardware Changelog
 
+## 2026-08-27 · ChatGPT integration
+
+- Renamed the installed ChatGPT/Codex integration to `WXY LAB Hardware` across its Skill metadata and web management surfaces.
+- Expanded the existing personal access token from inventory-oriented queries to a catalogued, cursor-paginated read API covering all 57 personal business datasets, including offline-workspace data and personal import history.
+- Kept the trust boundary unchanged: team and other-user data, credentials and tokens, audit logs, AI caches, sync internals, binary contents, and server paths remain excluded; every write still requires browser approval.
+
 ## 2026-08-24 · v1.4.0
 
 - Added the `cwbackup/v2` ZIP64 disaster-recovery format with an online-consistent SQLite snapshot, database-referenced files only, per-file SHA256, scope/version/server/cursor metadata, staged restore, pre-restore backup, integrity checks, directory switching, and automatic rollback.

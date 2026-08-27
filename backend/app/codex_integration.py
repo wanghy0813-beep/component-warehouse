@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from .auth import AuthContext, require_access
@@ -22,7 +22,7 @@ from .component_identity import (
     identity_by_code,
     refresh_identity_snapshot,
 )
-from .database import get_db
+from .database import Base, get_db
 from .models import (
     ActivityLog,
     Category,
@@ -61,6 +61,8 @@ from .services.inventory import (
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
 from .services.stock_ledger import record_stock_delta
+from .services.sync_bootstrap import collect_personal_rows
+from .services.sync_core import EXCLUDED_SYNC_FIELDS, json_value as sync_json_value, primary_key_column
 from .services.project_tracking import (
     EXPENSE_CATEGORY_LABELS,
     PCB_VERSION_STATUS_LABELS,
@@ -99,7 +101,8 @@ from .personal_projects_v2 import (
 
 
 router = APIRouter(tags=["codex-integration"])
-SERVICE_VERSION = "2026-08-18-project-v2"
+SERVICE_NAME = "WXY LAB Hardware"
+SERVICE_VERSION = "2026-08-27-full-personal-read"
 TOKEN_PREFIX = "cw_codex_"
 READ_SCOPE = "inventory:read"
 APPROVAL_TTL = timedelta(minutes=10)
@@ -108,6 +111,36 @@ MAX_ACTIONS = 100
 MAX_MATCH_ROWS = 200
 READ_RATE_LIMIT = 120
 PROPOSAL_RATE_LIMIT = 20
+WORKSPACE_READ_RATE_LIMIT = 30
+WORKSPACE_PAGE_LIMIT = 200
+WORKSPACE_EXCLUDED_DATASETS = {"users"}
+WORKSPACE_PERSONAL_EXTRA_DATASETS = {
+    "import_records",
+    "order_import_batches",
+    "order_import_lines",
+    "price_import_batches",
+    "price_import_lines",
+}
+WORKSPACE_EXCLUDED_FIELDS = set(EXCLUDED_SYNC_FIELDS) | {
+    "password_hash",
+    "previous_component",
+    "raw_data",
+    "row_data",
+    "source_file",
+    "storage_path",
+    "team_library_id",
+}
+WORKSPACE_EXCLUDED_BOUNDARIES = [
+    "team data",
+    "other users",
+    "account credentials",
+    "integration and EDA tokens",
+    "audit logs",
+    "AI cache",
+    "sync internals",
+    "binary file contents",
+    "server storage paths",
+]
 
 
 class TokenCreate(BaseModel):
@@ -414,15 +447,140 @@ def _component_out(
     }
 
 
+def _workspace_dataset_rows(db: Session, owner_user_id: int) -> dict[str, list[dict[str, Any]]]:
+    selected = collect_personal_rows(db, owner_user_id)
+    for name in WORKSPACE_PERSONAL_EXTRA_DATASETS:
+        table = Base.metadata.tables.get(name)
+        if table is None or "owner_user_id" not in table.c:
+            continue
+        primary = primary_key_column(table)
+        statement = select(table).where(table.c.owner_user_id == owner_user_id).order_by(primary.asc())
+        selected[name] = [dict(row) for row in db.execute(statement).mappings().all()]
+    return {
+        name: rows
+        for name, rows in selected.items()
+        if name not in WORKSPACE_EXCLUDED_DATASETS and name in Base.metadata.tables
+    }
+
+
+def _workspace_field_visible(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        name not in WORKSPACE_EXCLUDED_FIELDS
+        and "user_id" not in lowered
+        and "password" not in lowered
+        and "token" not in lowered
+        and not lowered.endswith("_path")
+    )
+
+
+def _workspace_value(name: str, value: Any) -> Any:
+    if isinstance(value, str) and name.endswith("_json"):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return sync_json_value(value)
+
+
+def _workspace_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: _workspace_value(name, value)
+        for name, value in row.items()
+        if _workspace_field_visible(name)
+    }
+
+
+def _workspace_dataset_catalog(selected: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    datasets = []
+    for name in sorted(selected):
+        table = Base.metadata.tables[name]
+        datasets.append(
+            {
+                "dataset": name,
+                "primary_key": primary_key_column(table).name,
+                "fields": [column.name for column in table.columns if _workspace_field_visible(column.name)],
+                "count": len(selected[name]),
+            }
+        )
+    return datasets
+
+
 @router.get("/api/integrations/codex/v1/session")
 def codex_session(principal: CodexPrincipal = Depends(require_codex_token)):
     return {
+        "service_name": SERVICE_NAME,
         "owner_user_id": principal.owner_user_id,
         "scopes": principal.scopes,
         "expires_at": principal.expires_at,
         "service_version": SERVICE_VERSION,
+        "read_mode": "full_personal_workspace",
+        "workspace_catalog": "/api/integrations/codex/v1/workspace",
+        "excluded_boundaries": WORKSPACE_EXCLUDED_BOUNDARIES,
         "write_mode": "browser_approval_only",
-        "limits": {"read_per_minute": READ_RATE_LIMIT, "proposals_per_minute": PROPOSAL_RATE_LIMIT},
+        "limits": {
+            "read_per_minute": READ_RATE_LIMIT,
+            "workspace_read_per_minute": WORKSPACE_READ_RATE_LIMIT,
+            "workspace_page_size": WORKSPACE_PAGE_LIMIT,
+            "proposals_per_minute": PROPOSAL_RATE_LIMIT,
+        },
+    }
+
+
+@router.get("/api/integrations/codex/v1/workspace")
+def get_workspace_catalog(
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    _limiter.check(principal.token_id, "workspace-read", WORKSPACE_READ_RATE_LIMIT)
+    selected = _workspace_dataset_rows(db, principal.owner_user_id)
+    datasets = _workspace_dataset_catalog(selected)
+    return {
+        "service_name": SERVICE_NAME,
+        "scope": "personal",
+        "read_mode": "full_personal_workspace",
+        "complete_personal_read": True,
+        "datasets": datasets,
+        "dataset_count": len(datasets),
+        "record_count": sum(item["count"] for item in datasets),
+        "excluded_boundaries": WORKSPACE_EXCLUDED_BOUNDARIES,
+    }
+
+
+@router.get("/api/integrations/codex/v1/workspace/{dataset}")
+def read_workspace_dataset(
+    dataset: str,
+    cursor: str | None = None,
+    limit: int = Query(default=100, ge=1, le=WORKSPACE_PAGE_LIMIT),
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    _limiter.check(principal.token_id, "workspace-read", WORKSPACE_READ_RATE_LIMIT)
+    selected = _workspace_dataset_rows(db, principal.owner_user_id)
+    if dataset not in selected:
+        raise HTTPException(status_code=404, detail="该数据集不在个人业务库只读范围内")
+    rows = selected[dataset]
+    primary_name = primary_key_column(Base.metadata.tables[dataset]).name
+    start = 0
+    if cursor:
+        identifiers = [str(row.get(primary_name)) for row in rows]
+        try:
+            start = identifiers.index(cursor) + 1
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="分页游标无效，请重新读取数据集目录") from error
+    page = rows[start : start + limit]
+    has_more = start + len(page) < len(rows)
+    next_cursor = str(page[-1].get(primary_name)) if page and has_more else None
+    return {
+        "service_name": SERVICE_NAME,
+        "scope": "personal",
+        "dataset": dataset,
+        "primary_key": primary_name,
+        "items": [_workspace_row(row) for row in page],
+        "count": len(page),
+        "total": len(rows),
+        "next_cursor": next_cursor,
+        "complete": next_cursor is None,
     }
 
 

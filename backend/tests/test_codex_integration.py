@@ -18,6 +18,7 @@ from app.models import (
     IntegrationAccessToken,
     IntegrationOperation,
     InventoryLot,
+    OrderImportBatch,
     PersonalProjectBomItemV2,
     PersonalProjectExpenseV2,
     PersonalProjectV2,
@@ -225,6 +226,101 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     assert shortage_row["auto_selected"] is False
     assert shortage_row["selected_component_id"] is None
     assert shortage_row["matches"][0]["available_quantity"] == 1
+
+
+def test_complete_workspace_read_is_paginated_personal_and_safe(codex_env):
+    db = codex_env["Session"]()
+    db.add_all(
+        [
+            Component(
+                id=3,
+                owner_user_id=1,
+                warehouse_code="CAP-00000003",
+                name="1uF 电容",
+                quantity=5,
+                category_id=1,
+            ),
+            OrderImportBatch(id=1, owner_user_id=1, source_file="/tmp/private.xlsx", order_number="OWNER-ORDER"),
+            OrderImportBatch(id=2, owner_user_id=2, source_file="/tmp/other.xlsx", order_number="OTHER-ORDER"),
+        ]
+    )
+    db.commit()
+    db.close()
+    _, headers = create_machine_token(codex_env)
+    session = codex_env["client"].get("/api/integrations/codex/v1/session", headers=headers)
+    assert session.status_code == 200, session.text
+    assert session.json()["service_name"] == "WXY LAB Hardware"
+    assert session.json()["read_mode"] == "full_personal_workspace"
+    assert session.json()["write_mode"] == "browser_approval_only"
+
+    catalog = codex_env["client"].get("/api/integrations/codex/v1/workspace", headers=headers)
+    assert catalog.status_code == 200, catalog.text
+    payload = catalog.json()
+    assert payload["complete_personal_read"] is True
+    datasets = {row["dataset"]: row for row in payload["datasets"]}
+    assert datasets["components"]["count"] == 2
+    assert datasets["inventory_lots"]["count"] == 1
+    assert "users" not in datasets
+    assert "integration_access_tokens" not in datasets
+    assert "activity_logs" not in datasets
+    assert "competition_libraries" not in datasets
+    assert "storage_path" not in datasets["personal_project_files_v2"]["fields"]
+    assert datasets["order_import_batches"]["count"] == 1
+    assert "source_file" not in datasets["order_import_batches"]["fields"]
+    assert all("user_id" not in field for row in datasets.values() for field in row["fields"])
+
+    components = codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/components",
+        params={"limit": 1},
+        headers=headers,
+    )
+    assert components.status_code == 200, components.text
+    assert components.json()["total"] == 2
+    assert components.json()["complete"] is False
+    assert components.json()["next_cursor"] == "1"
+    assert [row["warehouse_code"] for row in components.json()["items"]] == ["RES-00000001"]
+    item = components.json()["items"][0]
+    assert "owner_user_id" not in item
+    assert "ai_summary" not in item
+    assert "PRIVATE-ONLY" not in components.text
+
+    second_page = codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/components",
+        params={"cursor": components.json()["next_cursor"], "limit": 1},
+        headers=headers,
+    )
+    assert second_page.status_code == 200, second_page.text
+    assert second_page.json()["complete"] is True
+    assert second_page.json()["next_cursor"] is None
+    assert [row["warehouse_code"] for row in second_page.json()["items"]] == ["CAP-00000003"]
+
+    lots = codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/inventory_lots",
+        headers=headers,
+    )
+    assert lots.status_code == 200, lots.text
+    assert [row["id"] for row in lots.json()["items"]] == ["lot-owner-1"]
+    assert "owner_user_id" not in lots.json()["items"][0]
+
+    imports = codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/order_import_batches",
+        headers=headers,
+    )
+    assert imports.status_code == 200, imports.text
+    assert [row["order_number"] for row in imports.json()["items"]] == ["OWNER-ORDER"]
+    assert "source_file" not in imports.json()["items"][0]
+    assert "OTHER-ORDER" not in imports.text
+
+    assert codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/users",
+        headers=headers,
+    ).status_code == 404
+    invalid_cursor = codex_env["client"].get(
+        "/api/integrations/codex/v1/workspace/components",
+        params={"cursor": "not-a-real-id"},
+        headers=headers,
+    )
+    assert invalid_cursor.status_code == 422
 
 
 def test_proposal_never_writes_and_browser_approval_and_undo_use_ledger(codex_env):

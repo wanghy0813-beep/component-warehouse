@@ -1,15 +1,16 @@
 ---
 name: query-component-warehouse
-description: Query the user's personal WXY LAB Hardware workspace while analyzing circuit boards, schematics, BOMs, component selection, shortages, substitutions, projects, purchases, or stock availability. Use automatically when an electronics task benefits from checking which components the user already owns. Also use it to prepare workspace changes, but only as browser-approved operation proposals.
+description: Read the user's complete personal WXY LAB Hardware business workspace while analyzing circuit boards, schematics, BOMs, inventory, stock history, projects, purchases, EDA data, labels, risks, or component selection. Use automatically when an electronics task benefits from current personal hardware data. Also use it to prepare workspace changes, but only as browser-approved operation proposals.
 ---
 
 # Query WXY LAB Hardware
 
-Use the deterministic client in `scripts/cw_client.py`. Treat the service as the source of truth for current personal inventory, stable warehouse codes, reservations, projects, purchasing, and risks.
+Use the deterministic client in `scripts/cw_client.py`. Treat the service as the source of truth for the complete personal business workspace: inventory, stock history, stable warehouse codes, reservations, Project V2 records, purchasing, import history, risks, EDA metadata, custom labels, and attachment metadata.
 
 ## Safety boundaries
 
 - Query only the token owner's personal library. The token can read inventory and create inert operation proposals; it cannot approve or execute them. Never infer access to team or another user's data.
+- Complete read means all paginated personal business datasets advertised by `workspace`. It never includes team data, account credentials, tokens, audit logs, AI cache, sync internals, server paths, or binary file contents.
 - Never display, echo, log, pass as a command argument, or include the `cw_codex_` token in an answer.
 - Keep board photos, schematics, design archives, and local BOM files local. Extract structured requirements first; send only those fields to `match`.
 - Never claim a write happened when only a proposal exists. The client cannot approve operations.
@@ -23,6 +24,7 @@ Use the deterministic client in `scripts/cw_client.py`. Treat the service as the
    Exclude net names, IC pin names, power rails, test points, and functional annotations from component requirements. Tokens such as `RFREQ`, `RIPROPI`, `BEC`, `VCC`, `GND`, `SW`, `FB`, `COMP`, and `BOOT` are not components unless a real reference designator plus value/model/package identifies a populated part. Do not search every OCR label independently.
 2. Normalize each requirement to the supported structured fields: `reference`/`designator`, `quantity`, `manufacturer_part`, `manufacturer`, `supplier_part`, `supplier`, `parameters`/`value`, `footprint`, and `category`.
 3. Use `match` for more than one requirement. Use `search` for exploratory selection and `get` for the stable warehouse code selected from results.
+   Use `workspace` first when the request needs complete library coverage, history, EDA, labels, archived records, or a data audit. Read the required dataset with `read`, following `next_cursor` until it is null before claiming the dataset is complete.
 4. Distinguish results exactly:
    - `exact`: one uniquely high-confidence match; it may be selected automatically.
    - `candidate`: alternatives requiring manual electrical, package, and pinout review.
@@ -47,6 +49,9 @@ Run commands from this skill directory:
 python3 scripts/cw_client.py search "STM32" --stock available
 python3 scripts/cw_client.py get ICS-00000001
 python3 scripts/cw_client.py categories
+python3 scripts/cw_client.py workspace
+python3 scripts/cw_client.py read components --limit 100
+python3 scripts/cw_client.py read stock_movements_v2 --cursor CURSOR --limit 100
 python3 scripts/cw_client.py match /path/to/structured-bom.json
 python3 scripts/cw_client.py projects
 python3 scripts/cw_client.py project-dashboard

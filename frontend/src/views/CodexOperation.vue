@@ -2,9 +2,9 @@
   <section class="page operation-page">
     <header class="page-header operation-hero">
       <div>
-        <el-button text @click="$router.push('/integrations/codex')">← 返回 Codex 接入</el-button>
+        <el-button text @click="$router.push('/integrations/codex')">← 返回 ChatGPT 接入</el-button>
         <h1 class="page-title">写操作审批</h1>
-        <p class="page-subtitle">{{ operation?.reason || '查看 Codex 生成的标准化差异，确认后才会修改数据。' }}</p>
+        <p class="page-subtitle">{{ operation?.reason || '查看 WXY LAB Hardware 为 ChatGPT 生成的标准化差异，确认后才会修改数据。' }}</p>
       </div>
       <el-tag v-if="operation" :type="statusType(operation.status)" effect="dark" size="large">{{ statusLabel(operation.status) }}</el-tag>
     </header>
@@ -114,7 +114,7 @@ async function approve() {
     })
     if (value !== '批准执行') return
   } else {
-    await ElMessageBox.confirm('确认按上方差异执行全部动作？任一动作失败时会整体回滚。', '批准 Codex 操作', {
+    await ElMessageBox.confirm('确认按上方差异执行全部动作？任一动作失败时会整体回滚。', '批准 ChatGPT 操作', {
       type: 'warning', confirmButtonText: '批准并执行', cancelButtonText: '取消',
     })
   }
@@ -131,7 +131,7 @@ async function approve() {
 }
 
 async function reject() {
-  await ElMessageBox.confirm('拒绝后本审批单不会产生任何写入。', '拒绝 Codex 操作', {
+  await ElMessageBox.confirm('拒绝后本审批单不会产生任何写入。', '拒绝 ChatGPT 操作', {
     confirmButtonText: '拒绝', cancelButtonText: '取消', type: 'info',
   })
   rejecting.value = true

@@ -3,8 +3,8 @@
     <header class="page-header codex-hero">
       <div>
         <el-button text @click="$router.push('/about')">← 返回管理</el-button>
-        <h1 class="page-title">Codex 接入</h1>
-        <p class="page-subtitle">长期令牌仅查询个人库；所有写入必须在这里逐单审批。</p>
+        <h1 class="page-title">WXY LAB Hardware · ChatGPT 接入</h1>
+        <p class="page-subtitle">长期令牌可完整读取个人业务库；所有写入必须在这里逐单审批。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
     </header>
@@ -21,7 +21,7 @@
         <div class="section-head">
           <div>
             <h2>查询令牌</h2>
-            <span>默认 365 天 · 读取个人库并提交无副作用草案</span>
+            <span>默认 365 天 · 完整读取个人业务库并提交无副作用草案</span>
           </div>
           <el-button type="primary" @click="openCreate">新建令牌</el-button>
         </div>
@@ -37,7 +37,7 @@
               <el-button v-if="token.status === 'active'" type="danger" plain size="small" @click="revoke(token)">撤销</el-button>
             </div>
           </article>
-          <el-empty v-if="!tokens.length" description="还没有 Codex 令牌" :image-size="72" />
+          <el-empty v-if="!tokens.length" description="还没有 ChatGPT / Codex 令牌" :image-size="72" />
         </div>
       </section>
 
@@ -58,7 +58,7 @@
           >
             <span class="risk-dot" :class="operation.risk_level"></span>
             <div>
-              <strong>{{ operation.reason || operation.preview?.[0]?.label || 'Codex 操作' }}</strong>
+              <strong>{{ operation.reason || operation.preview?.[0]?.label || 'ChatGPT 操作' }}</strong>
               <small>{{ operation.preview?.length || 0 }} 个动作 · {{ formatTime(operation.created_at) }}</small>
             </div>
             <el-tag :type="operationTag(operation.status)" effect="plain">{{ operationLabel(operation.status) }}</el-tag>
@@ -68,10 +68,10 @@
       </section>
     </div>
 
-    <el-dialog v-model="createVisible" title="新建 Codex 只读令牌" width="480px" append-to-body>
+    <el-dialog v-model="createVisible" title="新建 WXY LAB Hardware 只读令牌" width="480px" append-to-body>
       <el-form label-position="top">
         <el-form-item label="名称">
-          <el-input v-model="tokenForm.name" maxlength="120" placeholder="例如：工作站 Codex" />
+          <el-input v-model="tokenForm.name" maxlength="120" placeholder="例如：我的 ChatGPT" />
         </el-form-item>
         <el-form-item label="有效期">
           <el-input-number v-model="tokenForm.expires_in_days" :min="1" :max="3650" />
@@ -85,7 +85,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="secretVisible" title="保存 Codex 令牌" width="620px" append-to-body :close-on-click-modal="false">
+    <el-dialog v-model="secretVisible" title="保存 WXY LAB Hardware 令牌" width="620px" append-to-body :close-on-click-modal="false">
       <el-alert type="success" show-icon :closable="false" title="令牌创建成功，请立即复制到技能配置中。" />
       <div class="secret-box">
         <code>{{ oneTimeSecret }}</code>
@@ -141,7 +141,7 @@ async function load() {
     tokens.value = tokenRows
     operations.value = operationRows
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '读取 Codex 接入信息失败')
+    ElMessage.error(error.response?.data?.detail || '读取 ChatGPT 接入信息失败')
   } finally {
     loading.value = false
   }
@@ -169,7 +169,7 @@ async function create() {
 }
 
 async function revoke(token) {
-  await ElMessageBox.confirm(`撤销“${token.name}”？使用该令牌的技能会立即停止访问。`, '撤销 Codex 令牌', {
+  await ElMessageBox.confirm(`撤销“${token.name}”？使用该令牌的技能会立即停止访问。`, '撤销 ChatGPT 令牌', {
     type: 'warning', confirmButtonText: '撤销', cancelButtonText: '取消',
   })
   await revokeCodexToken(token.id)
