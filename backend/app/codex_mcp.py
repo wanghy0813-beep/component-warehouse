@@ -52,6 +52,7 @@ from .codex_integration import (
     _limiter,
     codex_session,
     create_operation,
+    codex_categories,
     get_component,
     get_operation_status,
     get_project,
@@ -660,6 +661,28 @@ _TOOL_OUTPUT_SCHEMAS = {
         ),
         title="PersonalWorkspaceDatasetPage",
     ),
+    "list_inventory_categories": _object_schema(
+        {
+            "items": _array_schema(
+                _object_schema(
+                    {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                        "color": _NULLABLE_STRING,
+                        "code_prefix": _NULLABLE_STRING,
+                        "zone": _NULLABLE_INTEGER,
+                        "location": _NULLABLE_STRING,
+                        "summary": _NULLABLE_STRING,
+                    },
+                    required=("id", "name", "color", "code_prefix", "zone", "location", "summary"),
+                )
+            ),
+            "count": {"type": "integer"},
+            "classification_standard": {"type": "string", "const": "WXY LAB Hardware 17-zone"},
+        },
+        required=("items", "count", "classification_standard"),
+        title="InventoryCategoryList",
+    ),
     "search_inventory": _PERSONAL_COMPONENT_LIST_SCHEMA,
     "get_inventory_component": _COMPONENT_DETAIL_OUTPUT_SCHEMA,
     "match_inventory": _object_schema(
@@ -1150,6 +1173,7 @@ mcp = AppsFastMCP(
     name="WXY LAB Hardware",
     instructions=(
         "Read the authenticated user's complete personal WXY LAB Hardware business workspace. "
+        "Inventory categories follow the WXY LAB Hardware 17-zone standard; use list_inventory_categories for the current zone directory. "
         "Never expose team data, other users, credentials, tokens, audit logs, AI cache, sync internals, binary contents, or server paths. "
         "Never treat package-only similarity as electrical compatibility. "
         "Write tools create browser approval proposals and never approve changes."
@@ -1279,6 +1303,16 @@ def read_workspace_dataset(
             db=db,
         )
     )
+
+
+@mcp.tool(
+    title="列出 17 区元器件分类",
+    description="读取当前 WXY LAB Hardware 17 区分类、物理区号、库位、编号前缀和用途说明。",
+    annotations=READ_ONLY,
+)
+def list_inventory_categories() -> dict[str, Any]:
+    principal = _principal()
+    return _call_with_db(lambda db: codex_categories(_principal=principal, db=db))
 
 
 @mcp.tool(

@@ -1519,8 +1519,6 @@ def startup_application():
         if FEATURE_EDA_ENABLED:
             purge_expired_assets(db)
         seed_categories(db)
-        ensure_category(db, "连接件", "#e8fff8")
-        ensure_category(db, "时钟源", "#eef2ff")
         seed_category_prefixes(db)
         run_component_identity_migration(db)
         ensure_project_codes(db)

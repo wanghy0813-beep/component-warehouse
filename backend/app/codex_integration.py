@@ -60,6 +60,7 @@ from .services.inventory import (
     reserved_quantities,
 )
 from .services.component_search import find_unit_conversion_match, keyword_unit_variants
+from .services.hardware_categories import CATEGORY_BY_NAME
 from .services.stock_ledger import record_stock_delta
 from .services.sync_bootstrap import collect_personal_rows
 from .services.sync_core import EXCLUDED_SYNC_FIELDS, json_value as sync_json_value, primary_key_column
@@ -102,7 +103,7 @@ from .personal_projects_v2 import (
 
 router = APIRouter(tags=["codex-integration"])
 SERVICE_NAME = "WXY LAB Hardware"
-SERVICE_VERSION = "2026-08-27-full-personal-read"
+SERVICE_VERSION = "2026-08-28-17-zone-full-personal-read"
 TOKEN_PREFIX = "cw_codex_"
 READ_SCOPE = "inventory:read"
 APPROVAL_TTL = timedelta(minutes=10)
@@ -597,10 +598,14 @@ def codex_categories(
                 "name": row.name,
                 "color": row.color,
                 "code_prefix": row.code_prefix,
+                "zone": CATEGORY_BY_NAME[row.name].zone if row.name in CATEGORY_BY_NAME else None,
+                "location": CATEGORY_BY_NAME[row.name].location if row.name in CATEGORY_BY_NAME else None,
+                "summary": CATEGORY_BY_NAME[row.name].summary if row.name in CATEGORY_BY_NAME else None,
             }
             for row in rows
         ],
         "count": len(rows),
+        "classification_standard": "WXY LAB Hardware 17-zone",
     }
 
 

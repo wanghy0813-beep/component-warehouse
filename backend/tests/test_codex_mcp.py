@@ -223,6 +223,7 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
             "warehouse_session",
             "list_workspace_datasets",
             "read_workspace_dataset",
+            "list_inventory_categories",
             "search_inventory",
             "get_inventory_component",
             "match_inventory",
@@ -263,6 +264,12 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
         assert workspace_payload["service_name"] == "WXY LAB Hardware"
         assert workspace_payload["complete_personal_read"] is True
         assert "users" not in {row["dataset"] for row in workspace_payload["datasets"]}
+
+        category_payload = _tool_payload(
+            _mcp_request(client, tokens["access_token"], "tools/call", {"name": "list_inventory_categories"})
+        )
+        _assert_tool_output(tool_descriptors, "list_inventory_categories", category_payload)
+        assert category_payload["classification_standard"] == "WXY LAB Hardware 17-zone"
 
         workspace_components = _tool_payload(
             _mcp_request(
