@@ -53,6 +53,8 @@ from .codex_integration import (
     codex_session,
     create_operation,
     codex_categories,
+    execute_operation,
+    execute_operation_undo,
     get_component,
     get_operation_status,
     get_project,
@@ -72,7 +74,8 @@ from .models import IntegrationAccessToken, User
 
 READ_SCOPE = "inventory:read"
 PROPOSE_SCOPE = "operations:propose"
-SUPPORTED_SCOPES = (READ_SCOPE, PROPOSE_SCOPE)
+EXECUTE_SCOPE = "operations:execute"
+SUPPORTED_SCOPES = (READ_SCOPE, PROPOSE_SCOPE, EXECUTE_SCOPE)
 PUBLIC_ORIGIN = os.getenv("COMPONENT_WAREHOUSE_PUBLIC_ORIGIN", "https://wxylab.ltd").rstrip("/")
 MCP_RESOURCE_URL = os.getenv(
     "COMPONENT_WAREHOUSE_MCP_RESOURCE_URL",
@@ -574,7 +577,13 @@ _TOOL_OUTPUT_SCHEMAS = {
             "read_mode": {"type": "string", "const": "full_personal_workspace"},
             "workspace_catalog": {"type": "string"},
             "excluded_boundaries": _array_schema({"type": "string"}),
-            "write_mode": {"type": "string", "const": "browser_approval_only"},
+            "write_mode": {
+                "type": "string",
+                "enum": ["browser_approval_only", "chatgpt_risk_direct_with_undo"],
+            },
+            "direct_write": {"type": "boolean"},
+            "undo_window_days": {"type": "integer"},
+            "write_boundaries": _array_schema({"type": "string"}),
             "limits": _object_schema(
                 {
                     "read_per_minute": {"type": "integer"},
@@ -599,6 +608,9 @@ _TOOL_OUTPUT_SCHEMAS = {
             "workspace_catalog",
             "excluded_boundaries",
             "write_mode",
+            "direct_write",
+            "undo_window_days",
+            "write_boundaries",
             "limits",
         ),
         title="WarehouseSession",
@@ -725,6 +737,8 @@ _TOOL_OUTPUT_SCHEMAS = {
         required=("items", "count", "scope"),
         title="PersonalPurchaseList",
     ),
+    "execute_reversible_operation": _OPERATION_OUTPUT_SCHEMA,
+    "undo_reversible_operation": _OPERATION_OUTPUT_SCHEMA,
     "propose_operation": _OPERATION_OUTPUT_SCHEMA,
     "get_operation_state": _OPERATION_OUTPUT_SCHEMA,
     "propose_operation_undo": _OPERATION_OUTPUT_SCHEMA,
@@ -1150,18 +1164,19 @@ class AppsFastMCP(FastMCP):
                 item_list = tool.inputSchema["properties"]["items"]
                 item_list.update({"items": _MATCH_ITEM_SCHEMA, "minItems": 1, "maxItems": 200})
                 tool.inputSchema["properties"]["top_n"].update({"minimum": 1, "maximum": 10})
-            elif tool.name == "propose_operation":
+            elif tool.name in {"propose_operation", "execute_reversible_operation"}:
                 tool.inputSchema.pop("$defs", None)
                 action_list = tool.inputSchema["properties"]["actions"]
                 action_list.update({"items": _OPERATION_ACTION_SCHEMA, "minItems": 1, "maxItems": 100})
                 tool.inputSchema["properties"]["idempotency_key"].update(
                     {"minLength": 8, "maxLength": 120}
                 )
-            # Operation tools only create a short-lived browser approval draft.
-            # They cannot approve or execute changes, so the same personal-library
-            # read grant is sufficient and ChatGPT does not need a second OAuth
-            # round trip while validating the connector.
-            schemes = [{"type": "oauth2", "scopes": [READ_SCOPE]}]
+            required_scopes = (
+                [READ_SCOPE, EXECUTE_SCOPE]
+                if tool.name in {"execute_reversible_operation", "undo_reversible_operation"}
+                else [READ_SCOPE]
+            )
+            schemes = [{"type": "oauth2", "scopes": required_scopes}]
             setattr(tool, "securitySchemes", schemes)
             tool.meta = {**(tool.meta or {}), "securitySchemes": schemes}
         return tools
@@ -1174,9 +1189,11 @@ mcp = AppsFastMCP(
     instructions=(
         "Read the authenticated user's complete personal WXY LAB Hardware business workspace. "
         "Inventory categories follow the WXY LAB Hardware 17-zone standard; use list_inventory_categories for the current zone directory. "
+        "Prefer execute_reversible_operation for user-requested personal business changes when operations:execute is granted. "
+        "Direct writes are atomic, idempotent, audited with before/after snapshots, and undoable for 30 days. "
         "Never expose team data, other users, credentials, tokens, audit logs, AI cache, sync internals, binary contents, or server paths. "
         "Never treat package-only similarity as electrical compatibility. "
-        "Write tools create browser approval proposals and never approve changes."
+        "Never change accounts, credentials, tokens, team permissions, or perform irreversible deletion."
     ),
     website_url=f"{PUBLIC_ORIGIN}/hardware/",
     token_verifier=provider,
@@ -1189,7 +1206,7 @@ mcp = AppsFastMCP(
             default_scopes=list(SUPPORTED_SCOPES),
         ),
         revocation_options=RevocationOptions(enabled=True),
-        required_scopes=[READ_SCOPE],
+        required_scopes=[READ_SCOPE, EXECUTE_SCOPE],
         resource_server_url=AnyHttpUrl(MCP_RESOURCE_URL),
     ),
     streamable_http_path="/mcp",
@@ -1261,6 +1278,12 @@ def _oauth_rate_limit(request: Request, bucket: str, limit: int) -> JSONResponse
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 PROPOSAL_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+DIRECT_REVERSIBLE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
 
 @mcp.tool(
@@ -1409,8 +1432,41 @@ def list_inventory_purchases() -> dict[str, Any]:
 
 
 @mcp.tool(
+    title="直接执行可撤销的个人库操作",
+    description=(
+        "立即、原子且幂等地执行个人库存、项目、BOM、成本或采购变更。"
+        "服务端记录请求、风险、变更前后值和反向动作，并提供 30 天撤销；"
+        "不支持账号、凭据、令牌、团队权限或不可逆删除。"
+    ),
+    annotations=DIRECT_REVERSIBLE,
+)
+def execute_reversible_operation(
+    idempotency_key: str,
+    actions: list[OperationAction],
+    reason: str = "",
+) -> dict[str, Any]:
+    principal = _principal(EXECUTE_SCOPE)
+    payload = OperationCreate(
+        idempotency_key=idempotency_key,
+        reason=reason.strip() or None,
+        actions=actions,
+    )
+    return _call_with_db(lambda db: execute_operation(payload, principal=principal, db=db))
+
+
+@mcp.tool(
+    title="直接撤销 WXY LAB Hardware 操作",
+    description="在 30 天撤销窗口内立即执行已记录的反向事务；撤销本身也会记录完整日志。",
+    annotations=DIRECT_REVERSIBLE,
+)
+def undo_reversible_operation(operation_id: str) -> dict[str, Any]:
+    principal = _principal(EXECUTE_SCOPE)
+    return _call_with_db(lambda db: execute_operation_undo(operation_id, principal=principal, db=db))
+
+
+@mcp.tool(
     title="生成 WXY LAB Hardware 写操作审批单",
-    description="校验操作并生成 10 分钟有效的网页审批单；不会直接修改库存、项目、BOM 或采购。",
+    description="仅在用户明确要求网页二次审核时使用；生成 10 分钟有效的审批单，不直接修改数据。",
     annotations=PROPOSAL_ONLY,
 )
 def propose_operation(
@@ -1470,6 +1526,7 @@ def _approval_payload(row: McpOAuthAuthorization, client: McpOAuthClient) -> dic
         "permissions": {
             READ_SCOPE: "完整读取你的个人库存、流水、项目、采购、EDA、标签及文件元数据",
             PROPOSE_SCOPE: "生成需要你在网页逐单批准的变更草案，不可自行批准或执行",
+            EXECUTE_SCOPE: "直接执行个人库存、项目、BOM、成本和采购变更；完整留痕并支持 30 天撤销",
         },
     }
 

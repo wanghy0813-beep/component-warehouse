@@ -103,15 +103,17 @@ from .personal_projects_v2 import (
 
 router = APIRouter(tags=["codex-integration"])
 SERVICE_NAME = "WXY LAB Hardware"
-SERVICE_VERSION = "2026-08-28-17-zone-full-personal-read"
+SERVICE_VERSION = "2026-08-28-direct-reversible-write"
 TOKEN_PREFIX = "cw_codex_"
 READ_SCOPE = "inventory:read"
+EXECUTE_SCOPE = "operations:execute"
 APPROVAL_TTL = timedelta(minutes=10)
 UNDO_TTL = timedelta(days=30)
 MAX_ACTIONS = 100
 MAX_MATCH_ROWS = 200
 READ_RATE_LIMIT = 120
 PROPOSAL_RATE_LIMIT = 20
+EXECUTE_RATE_LIMIT = 30
 WORKSPACE_READ_RATE_LIMIT = 30
 WORKSPACE_PAGE_LIMIT = 200
 WORKSPACE_EXCLUDED_DATASETS = {"users"}
@@ -509,6 +511,7 @@ def _workspace_dataset_catalog(selected: dict[str, list[dict[str, Any]]]) -> lis
 
 @router.get("/api/integrations/codex/v1/session")
 def codex_session(principal: CodexPrincipal = Depends(require_codex_token)):
+    direct_write = EXECUTE_SCOPE in principal.scopes
     return {
         "service_name": SERVICE_NAME,
         "owner_user_id": principal.owner_user_id,
@@ -518,7 +521,15 @@ def codex_session(principal: CodexPrincipal = Depends(require_codex_token)):
         "read_mode": "full_personal_workspace",
         "workspace_catalog": "/api/integrations/codex/v1/workspace",
         "excluded_boundaries": WORKSPACE_EXCLUDED_BOUNDARIES,
-        "write_mode": "browser_approval_only",
+        "write_mode": "chatgpt_risk_direct_with_undo" if direct_write else "browser_approval_only",
+        "direct_write": direct_write,
+        "undo_window_days": int(UNDO_TTL.total_seconds() // 86400),
+        "write_boundaries": [
+            "personal inventory, projects, BOM, costs and purchases only",
+            "atomic and idempotent operations",
+            "before and after audit snapshots",
+            "no account, credential, token, team permission or irreversible delete operations",
+        ],
         "limits": {
             "read_per_minute": READ_RATE_LIMIT,
             "workspace_read_per_minute": WORKSPACE_READ_RATE_LIMIT,
@@ -1957,7 +1968,7 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
             )
         else:
             add_workspace_initial_timeline_events(
-                db, project, owner_user_id, source="chatgpt_approval"
+                db, project, owner_user_id, source="chatgpt_mcp"
             )
         inverse = {"action": "workspace.project.archive", "target_id": code, "payload": {}}
         result = _snapshot_workspace_project(project)
@@ -1990,7 +2001,7 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
                 project.end_date = _date_value(payload["restore_end_date"])
             db.add(PersonalProjectStatusEventV2(
                 id=str(uuid4()), project_id=project.id, from_status=previous, to_status=project.status,
-                note=payload.get("note"), source="chatgpt_approval", created_by_user_id=owner_user_id,
+                note=payload.get("note"), source="chatgpt_mcp", created_by_user_id=owner_user_id,
             ))
             inverse = {
                 "action": "workspace.project.status", "target_id": project.project_code,
@@ -2125,8 +2136,8 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
                 project_id=project.id,
                 from_status=None,
                 to_status=project.status,
-                note="通过 ChatGPT 网页审批创建项目",
-                source="chatgpt_approval",
+                note="通过 ChatGPT MCP 创建项目",
+                source="chatgpt_mcp",
                 created_by_user_id=owner_user_id,
             )
         )
@@ -2162,7 +2173,7 @@ def _execute_action(db: Session, owner_user_id: int, action: dict[str, Any]) -> 
                     from_status=previous,
                     to_status=project.status,
                     note=payload.get("note"),
-                    source="chatgpt_approval",
+                    source="chatgpt_mcp",
                     created_by_user_id=owner_user_id,
                 )
             )
@@ -2453,6 +2464,132 @@ def _execute_actions(db: Session, owner_user_id: int, actions: list[dict[str, An
     return results, inverse
 
 
+def _run_operation(
+    db: Session,
+    operation: IntegrationOperation,
+    actor_user_id: int,
+    *,
+    activity_action: str,
+    activity_summary: str,
+) -> dict[str, Any]:
+    operation_id = operation.id
+    now = _utcnow()
+    request = _load(operation.request_json, {})
+    prepared, current_before, _ = _prepare_actions(db, operation.owner_user_id, request.get("actions") or [])
+    if _hash(current_before) != operation.precondition_hash:
+        operation.status = "stale"
+        operation.failure_message = "目标数据已变化，必须重新提交操作"
+        db.commit()
+        raise HTTPException(status_code=409, detail=operation.failure_message)
+    normalized = [{key: value for key, value in row.items() if key != "preview"} for row in prepared]
+    try:
+        results, inverse = _execute_actions(db, operation.owner_user_id, normalized)
+        operation.status = "succeeded"
+        operation.approved_by_user_id = actor_user_id
+        operation.approved_at = now
+        operation.executed_at = now
+        operation.after_json = _dump(results)
+        operation.inverse_json = _dump(inverse)
+        operation.undo_expires_at = now + UNDO_TTL
+        db.add(
+            ActivityLog(
+                owner_user_id=actor_user_id,
+                action=activity_action,
+                entity_type="integration_operation",
+                summary=f"{activity_summary} {operation.id}",
+                detail=_dump(
+                    {
+                        "operation_id": operation.id,
+                        "risk_level": operation.risk_level,
+                        "actions": [row["action"] for row in normalized],
+                    }
+                ),
+            )
+        )
+        if operation.undo_of_operation_id:
+            original = db.get(IntegrationOperation, operation.undo_of_operation_id)
+            if original:
+                original.status = "undone"
+                original.undone_by_operation_id = operation.id
+        db.commit()
+    except HTTPException as exc:
+        db.rollback()
+        failed = db.get(IntegrationOperation, operation_id)
+        if failed and failed.status not in {"stale", "undone"}:
+            failed.status = "failed"
+            failed.failure_message = str(exc.detail)[:2000]
+            db.commit()
+        raise
+    except Exception as exc:
+        db.rollback()
+        failed = db.get(IntegrationOperation, operation_id)
+        if failed:
+            failed.status = "failed"
+            failed.failure_message = str(exc)[:2000]
+            db.commit()
+        raise HTTPException(status_code=409, detail=f"操作未执行，全部动作已回滚：{exc}") from exc
+    db.refresh(operation)
+    return _operation_out(operation)
+
+
+@router.post("/api/integrations/codex/v1/operations/execute")
+def execute_operation(
+    payload: OperationCreate,
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    if EXECUTE_SCOPE not in principal.scopes:
+        raise HTTPException(status_code=403, detail="当前连接没有直接执行权限，请重新授权 operations:execute")
+    _limiter.check(principal.token_id, "execute", EXECUTE_RATE_LIMIT)
+    existing = (
+        db.query(IntegrationOperation)
+        .filter(
+            IntegrationOperation.access_token_id == principal.token_id,
+            IntegrationOperation.idempotency_key == payload.idempotency_key,
+        )
+        .first()
+    )
+    if existing:
+        if existing.status == "executing":
+            return _run_operation(
+                db,
+                existing,
+                principal.owner_user_id,
+                activity_action="chatgpt_operation_executed",
+                activity_summary="ChatGPT 恢复并执行可撤销操作",
+            )
+        return _operation_out(existing)
+    raw_actions = [row.model_dump() for row in payload.actions]
+    if any(row["action"] == "purchase.reverse_receive" for row in raw_actions):
+        raise HTTPException(status_code=422, detail="到货反向流水只能由撤销流程生成")
+    prepared, before, risk = _prepare_actions(db, principal.owner_user_id, raw_actions)
+    normalized = [{key: value for key, value in row.items() if key != "preview"} for row in prepared]
+    operation = IntegrationOperation(
+        id=str(uuid4()),
+        owner_user_id=principal.owner_user_id,
+        access_token_id=principal.token_id,
+        idempotency_key=payload.idempotency_key,
+        status="executing",
+        risk_level=risk,
+        reason=payload.reason,
+        request_json=_dump({"actions": normalized}),
+        preview_json=_dump([row["preview"] for row in prepared]),
+        before_json=_dump(before),
+        precondition_hash=_hash(before),
+        approval_expires_at=_utcnow() + APPROVAL_TTL,
+    )
+    db.add(operation)
+    db.commit()
+    db.refresh(operation)
+    return _run_operation(
+        db,
+        operation,
+        principal.owner_user_id,
+        activity_action="chatgpt_operation_executed",
+        activity_summary="ChatGPT 直接执行可撤销操作",
+    )
+
+
 @router.post("/api/integrations/codex/v1/operations")
 def create_operation(
     payload: OperationCreate,
@@ -2517,7 +2654,13 @@ def get_operation_status(
     return _operation_out(operation)
 
 
-def _make_undo_operation(db: Session, operation: IntegrationOperation, token_id: str) -> IntegrationOperation:
+def _make_undo_operation(
+    db: Session,
+    operation: IntegrationOperation,
+    token_id: str,
+    *,
+    direct: bool = False,
+) -> IntegrationOperation:
     now = _utcnow()
     if operation.status != "succeeded" or operation.undone_by_operation_id:
         raise HTTPException(status_code=409, detail="该操作当前不能撤销")
@@ -2532,7 +2675,9 @@ def _make_undo_operation(db: Session, operation: IntegrationOperation, token_id:
     for existing in existing_rows:
         if _expire_if_needed(existing, now):
             continue
-        if existing.status == "pending_approval":
+        if existing.status in {"pending_approval", "executing"}:
+            if direct and existing.status == "pending_approval":
+                existing.status = "executing"
             db.commit()
             return existing
     if existing_rows:
@@ -2545,7 +2690,7 @@ def _make_undo_operation(db: Session, operation: IntegrationOperation, token_id:
         owner_user_id=operation.owner_user_id,
         access_token_id=token_id,
         idempotency_key=f"undo:{operation.id}:{uuid4().hex[:8]}",
-        status="pending_approval",
+        status="executing" if direct else "pending_approval",
         risk_level="high" if risk == "high" else "normal",
         reason=f"撤销 Codex 操作 {operation.id}",
         request_json=_dump({"actions": normalized}),
@@ -2571,6 +2716,32 @@ def request_operation_undo(
     if not operation or operation.owner_user_id != principal.owner_user_id or operation.access_token_id != principal.token_id:
         raise HTTPException(status_code=404, detail="操作不存在")
     return _operation_out(_make_undo_operation(db, operation, principal.token_id))
+
+
+@router.post("/api/integrations/codex/v1/operations/{operation_id}/execute-undo")
+def execute_operation_undo(
+    operation_id: str,
+    principal: CodexPrincipal = Depends(require_codex_token),
+    db: Session = Depends(get_db),
+):
+    if EXECUTE_SCOPE not in principal.scopes:
+        raise HTTPException(status_code=403, detail="当前连接没有直接撤销权限，请重新授权 operations:execute")
+    _limiter.check(principal.token_id, "execute", EXECUTE_RATE_LIMIT)
+    operation = db.get(IntegrationOperation, operation_id)
+    if not operation or operation.owner_user_id != principal.owner_user_id or operation.access_token_id != principal.token_id:
+        raise HTTPException(status_code=404, detail="操作不存在")
+    if operation.undone_by_operation_id:
+        completed_undo = db.get(IntegrationOperation, operation.undone_by_operation_id)
+        if completed_undo:
+            return _operation_out(completed_undo)
+    undo = _make_undo_operation(db, operation, principal.token_id, direct=True)
+    return _run_operation(
+        db,
+        undo,
+        principal.owner_user_id,
+        activity_action="chatgpt_operation_undone",
+        activity_summary="ChatGPT 直接撤销操作",
+    )
 
 
 @router.get("/api/integrations/codex/operations")
@@ -2640,56 +2811,15 @@ def browser_approve_operation(
         operation.status = "expired"
         db.commit()
         raise HTTPException(status_code=410, detail="审批链接已过期，请让 Codex 重新生成预览")
-    request = _load(operation.request_json, {})
-    prepared, current_before, _ = _prepare_actions(db, operation.owner_user_id, request.get("actions") or [])
-    if _hash(current_before) != operation.precondition_hash:
-        operation.status = "stale"
-        operation.failure_message = "目标数据已变化，必须重新生成预览"
-        db.commit()
-        raise HTTPException(status_code=409, detail=operation.failure_message)
-    normalized = [{key: value for key, value in row.items() if key != "preview"} for row in prepared]
-    try:
-        results, inverse = _execute_actions(db, operation.owner_user_id, normalized)
-        operation.status = "succeeded"
-        operation.approved_by_user_id = auth.user_id
-        operation.approved_at = now
-        operation.executed_at = now
-        operation.after_json = _dump(results)
-        operation.inverse_json = _dump(inverse)
-        operation.undo_expires_at = now + UNDO_TTL
-        db.add(
-            ActivityLog(
-                owner_user_id=auth.user_id,
-                action="codex_operation_approved",
-                entity_type="integration_operation",
-                summary=f"批准并执行 Codex 操作 {operation.id}",
-                detail=_dump({"operation_id": operation.id, "actions": [row["action"] for row in normalized]}),
-            )
-        )
-        if operation.undo_of_operation_id:
-            original = db.get(IntegrationOperation, operation.undo_of_operation_id)
-            if original:
-                original.status = "undone"
-                original.undone_by_operation_id = operation.id
-        db.commit()
-    except HTTPException as exc:
-        db.rollback()
-        failed = db.get(IntegrationOperation, operation_id)
-        if failed:
-            failed.status = "failed"
-            failed.failure_message = str(exc.detail)[:2000]
-            db.commit()
-        raise
-    except Exception as exc:
-        db.rollback()
-        failed = db.get(IntegrationOperation, operation_id)
-        if failed:
-            failed.status = "failed"
-            failed.failure_message = str(exc)[:2000]
-            db.commit()
-        raise HTTPException(status_code=409, detail=f"操作未执行，全部动作已回滚：{exc}") from exc
-    db.refresh(operation)
-    return _operation_out(operation, include_sensitive=True)
+    result = _run_operation(
+        db,
+        operation,
+        auth.user_id,
+        activity_action="codex_operation_approved",
+        activity_summary="批准并执行 Codex 操作",
+    )
+    refreshed = db.get(IntegrationOperation, result["id"])
+    return _operation_out(refreshed, include_sensitive=True)
 
 
 @router.post("/api/integrations/codex/operations/{operation_id}/undo")

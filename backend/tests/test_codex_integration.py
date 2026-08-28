@@ -142,9 +142,26 @@ def test_token_is_shown_once_hashed_and_personal_reads_are_isolated(codex_env):
     categories = codex_env["client"].get("/api/integrations/codex/v1/categories", headers=headers)
     assert categories.status_code == 200
     assert categories.json()["items"] == [
-        {"id": 1, "name": "电阻", "color": "#fff", "code_prefix": "RES"},
-        {"id": 2, "name": "设备", "color": "#eee", "code_prefix": "EQP"},
+        {
+            "id": 1,
+            "name": "电阻",
+            "color": "#fff",
+            "code_prefix": "RES",
+            "zone": None,
+            "location": None,
+            "summary": None,
+        },
+        {
+            "id": 2,
+            "name": "设备",
+            "color": "#eee",
+            "code_prefix": "EQP",
+            "zone": None,
+            "location": None,
+            "summary": None,
+        },
     ]
+    assert categories.json()["classification_standard"] == "WXY LAB Hardware 17-zone"
     result = codex_env["client"].get(
         "/api/integrations/codex/v1/components/search",
         params={"q": "电阻"},

@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 
 from app import codex_mcp
 from app.database import Base
-from app.models import Category, Component, IntegrationOperation, PersonalProjectV2, User
+from app.models import ActivityLog, Category, Component, IntegrationOperation, PersonalProjectV2, User
 
 
 def _pkce_challenge(verifier: str) -> str:
@@ -31,14 +31,14 @@ def _register(client: TestClient, redirect_uri: str = "https://chatgpt.com/conne
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "client_name": "ChatGPT WXY LAB Hardware Test",
-            "scope": "inventory:read operations:propose",
+            "scope": "inventory:read operations:propose operations:execute",
         },
     )
     assert response.status_code == 201, response.text
     return response.json()["client_id"]
 
 
-def _link(client: TestClient, client_id: str, scope: str = "inventory:read") -> dict:
+def _link(client: TestClient, client_id: str, scope: str = "inventory:read operations:execute") -> dict:
     redirect_uri = "https://chatgpt.com/connector/oauth/component-test"
     verifier = "component-warehouse-test-verifier-" + "x" * 48
     authorize = client.get(
@@ -231,6 +231,8 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
             "get_inventory_project",
             "list_inventory_risks",
             "list_inventory_purchases",
+            "execute_reversible_operation",
+            "undo_reversible_operation",
             "propose_operation",
             "get_operation_state",
             "propose_operation_undo",
@@ -241,8 +243,13 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
         search_descriptor = tool_descriptors["search_inventory"]
         match_descriptor = tool_descriptors["match_inventory"]
         proposal_descriptor = tool_descriptors["propose_operation"]
+        execute_descriptor = tool_descriptors["execute_reversible_operation"]
         assert search_descriptor["securitySchemes"] == [{"type": "oauth2", "scopes": ["inventory:read"]}]
         assert proposal_descriptor["securitySchemes"] == [{"type": "oauth2", "scopes": ["inventory:read"]}]
+        assert execute_descriptor["securitySchemes"] == [
+            {"type": "oauth2", "scopes": ["inventory:read", "operations:execute"]}
+        ]
+        assert execute_descriptor["annotations"]["destructiveHint"] is False
         match_item_schema = match_descriptor["inputSchema"]["properties"]["items"]["items"]
         action_schema = proposal_descriptor["inputSchema"]["properties"]["actions"]["items"]
         assert match_item_schema.get("additionalProperties") is not True
@@ -256,6 +263,8 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
         _assert_tool_output(tool_descriptors, "warehouse_session", session_payload)
         assert session_payload["service_name"] == "WXY LAB Hardware"
         assert session_payload["read_mode"] == "full_personal_workspace"
+        assert session_payload["write_mode"] == "chatgpt_risk_direct_with_undo"
+        assert session_payload["direct_write"] is True
 
         workspace_payload = _tool_payload(
             _mcp_request(client, tokens["access_token"], "tools/call", {"name": "list_workspace_datasets"})
@@ -388,6 +397,57 @@ def test_oauth_mcp_flow_is_scoped_rotated_and_browser_approved(tmp_path, monkeyp
         with Session() as db:
             assert db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "PRJ-MCP-TEST").count() == 0
             assert db.query(IntegrationOperation).filter(IntegrationOperation.status == "pending_approval").count() == 1
+
+        direct_arguments = {
+            "idempotency_key": "mcp-project-direct-001",
+            "reason": "MCP direct reversible test",
+            "actions": [
+                {
+                    "action": "workspace.project.create",
+                    "payload": {"project_code": "PRJ-MCP-DIRECT", "name": "MCP 直接执行测试项目"},
+                }
+            ],
+        }
+        direct = _tool_payload(
+            _mcp_request(
+                client,
+                tokens["access_token"],
+                "tools/call",
+                {"name": "execute_reversible_operation", "arguments": direct_arguments},
+            )
+        )
+        _assert_tool_output(tool_descriptors, "execute_reversible_operation", direct)
+        assert direct["status"] == "succeeded"
+        assert direct["undo_expires_at"]
+        replay = _tool_payload(
+            _mcp_request(
+                client,
+                tokens["access_token"],
+                "tools/call",
+                {"name": "execute_reversible_operation", "arguments": direct_arguments},
+            )
+        )
+        assert replay["id"] == direct["id"]
+        with Session() as db:
+            assert db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "PRJ-MCP-DIRECT").count() == 1
+            assert db.query(ActivityLog).filter(ActivityLog.action == "chatgpt_operation_executed").count() == 1
+
+        undone = _tool_payload(
+            _mcp_request(
+                client,
+                tokens["access_token"],
+                "tools/call",
+                {"name": "undo_reversible_operation", "arguments": {"operation_id": direct["id"]}},
+            )
+        )
+        _assert_tool_output(tool_descriptors, "undo_reversible_operation", undone)
+        assert undone["status"] == "succeeded"
+        with Session() as db:
+            original = db.get(IntegrationOperation, direct["id"])
+            project = db.query(PersonalProjectV2).filter(PersonalProjectV2.project_code == "PRJ-MCP-DIRECT").one()
+            assert original.status == "undone"
+            assert project.archived_at is not None
+            assert db.query(ActivityLog).filter(ActivityLog.action == "chatgpt_operation_undone").count() == 1
 
         operation_state = _tool_payload(
             _mcp_request(
